@@ -198,6 +198,7 @@ export function setDriverHarnessSessionId(
     projectRoot: string;
     driverId: string;
     harnessSessionId: string;
+    allowOverwrite?: boolean;
   }
 ): DriverRow {
   const sid = input.harnessSessionId.trim();
@@ -217,9 +218,11 @@ export function setDriverHarnessSessionId(
       if (existing.harness_session_id === sid) {
         return existing;
       }
-      throw new Error(
-        `Driver ${input.driverId} already has harness_session_id '${existing.harness_session_id}'`
-      );
+      if (input.allowOverwrite !== true) {
+        throw new Error(
+          `Driver ${input.driverId} already has harness_session_id '${existing.harness_session_id}'`
+        );
+      }
     }
 
     db.setDriverHarnessSessionId(input.driverId, sid);
@@ -1434,12 +1437,13 @@ export async function runDriverTurn(input: {
 
     const recordDetectedSid = (extracted: string): void => {
       if (!extracted) return;
-      if (!currentSid) {
+      if (!currentSid || currentSid !== extracted) {
         try {
           const updated = setDriverHarnessSessionId(input.db, {
             projectRoot,
             driverId: driver.driver_id,
             harnessSessionId: extracted,
+            allowOverwrite: true,
           });
           currentSid = updated.harness_session_id ?? extracted;
         } catch {

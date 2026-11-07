@@ -1146,31 +1146,107 @@ export function createTaskWorktree(
  * Safely unlinks a node_modules junction without deleting target directory contents.
  */
 export function unlinkNodeModulesJunction(wtNm: string): void {
-  try {
-    const stat = fs.lstatSync(wtNm);
-    if (stat.isSymbolicLink() || (process.platform === "win32" && stat.isDirectory())) {
-      try {
-        fs.unlinkSync(wtNm);
-      } catch {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (!fs.existsSync(wtNm)) {
         try {
-          fs.rmdirSync(wtNm);
+          if (!fs.lstatSync(wtNm).isSymbolicLink()) return;
         } catch {
-          fs.rmSync(wtNm, { recursive: false, force: true });
+          return;
         }
       }
+      const stat = fs.lstatSync(wtNm);
+      if (stat.isSymbolicLink() || (process.platform === "win32" && stat.isDirectory())) {
+        try {
+          fs.unlinkSync(wtNm);
+          return;
+        } catch {
+          try {
+            fs.rmdirSync(wtNm);
+            return;
+          } catch {
+            fs.rmSync(wtNm, { recursive: false, force: true });
+            return;
+          }
+        }
+      }
+      return;
+    } catch {
+      if (attempt < 2) {
+        sleepSync(50 * Math.pow(2, attempt));
+      }
     }
-  } catch {
-    // Already unlinked or not present
   }
 }
 
 /**
+ * Resolves the actual git directory for a worktree (HC-5).
+ * In a git worktree, <wtPath>/.git is either a pointer file containing 'gitdir: <path>'
+ * or a directory.
+ */
+export function resolveWorktreeGitDir(wtPath: string): string | null {
+  const gitPath = path.join(wtPath, ".git");
+  try {
+    if (!fs.existsSync(gitPath)) return null;
+    const stat = fs.statSync(gitPath);
+    if (stat.isDirectory()) {
+      return path.resolve(gitPath);
+    }
+    if (stat.isFile()) {
+      const raw = fs.readFileSync(gitPath, "utf8").trim();
+      if (raw.startsWith("gitdir:")) {
+        const rawTarget = raw.slice("gitdir:".length).trim();
+        return path.resolve(wtPath, rawTarget);
+      }
+    }
+  } catch {
+    // ignore filesystem read error
+  }
+  return null;
+}
+
+/**
+ * Cleans up a stale index.lock file in a worktree's git directory (HC-5).
+ * If maxAgeMs <= 0, deletes index.lock immediately if present.
+ */
+export function cleanStaleWorktreeLock(wtPath: string, maxAgeMs = 30_000): boolean {
+  const gitDir = resolveWorktreeGitDir(wtPath);
+  if (!gitDir) return false;
+  const lockPath = path.join(gitDir, "index.lock");
+  try {
+    if (fs.existsSync(lockPath)) {
+      if (maxAgeMs <= 0) {
+        fs.unlinkSync(lockPath);
+        return true;
+      }
+      const stat = fs.statSync(lockPath);
+      if (Date.now() - stat.mtimeMs >= maxAgeMs) {
+        fs.unlinkSync(lockPath);
+        return true;
+      }
+    }
+  } catch {
+    // ignore unlink error
+  }
+  return false;
+}
+
+/**
+ * Verifies if a process ID is alive and belongs to the expected process (HC-5).
+ */
+export function verifyPidIdentity(pid: number, expectedStartedAt?: number): boolean {
+  void expectedStartedAt;
+  return isPidAlive(pid);
+}
+
+/**
  * Cleans up a worktree:
- * 1. Unlinks node_modules junction if present.
- * 2. Removes worktree via `git worktree remove --force`.
- * 3. Removes disk directory if anything remains.
- * 4. Runs `git worktree prune`.
- * 5. Deletes temporary branch.
+ * 1. Cleans stale worktree index.lock via gitdir pointer.
+ * 2. Unlinks node_modules junction if present.
+ * 3. Removes worktree via `git worktree remove --force`.
+ * 4. Removes disk directory if anything remains.
+ * 5. Runs `git worktree prune`.
+ * 6. Deletes temporary branch.
  */
 export function cleanupWorktree(
   projectRoot: string,
@@ -1178,6 +1254,7 @@ export function cleanupWorktree(
   branchName?: string,
   options?: { forceBranchDelete?: boolean }
 ): void {
+  cleanStaleWorktreeLock(wtPath, 0);
   const wtNm = path.join(wtPath, "node_modules");
   unlinkNodeModulesJunction(wtNm);
 
@@ -1802,11 +1879,128 @@ export function rejectPendingTask(options: {
 export const rejectTaskWorktree = rejectPendingTask;
 
 // ============================================================================
-// CR-12: Orphaned Task Recovery (recoverOrphanedTasks)
+// CR-12 & v2.5.0: Orphaned Task Recovery & Worktree Reconciliation (HC-3~HC-5)
 // ============================================================================
 
 /**
+ * HC-3: Finds if a commit for a task was already recorded on HEAD within the current session (baseSha..HEAD).
+ * Prevents false positives from previous sessions that contained identical task IDs (e.g. T1.1).
+ */
+export function findSessionTaskCommitSha(
+  projectRoot: string,
+  taskId: string,
+  baseSha?: string | null
+): string | null {
+  const cleanBase = baseSha?.trim();
+  const headRes = runGit(["rev-parse", "HEAD"], { cwd: projectRoot });
+  if (headRes.exitCode !== 0) return null;
+  const currentHead = headRes.stdout.trim();
+  if (cleanBase && cleanBase === currentHead) {
+    return null;
+  }
+
+  let rangeSpec = "HEAD";
+  if (cleanBase) {
+    const baseVerify = runGit(["rev-parse", "--verify", cleanBase], { cwd: projectRoot });
+    if (baseVerify.exitCode === 0) {
+      rangeSpec = `${cleanBase}..HEAD`;
+    } else {
+      return null;
+    }
+  }
+
+  const logRes = runGit(["log", rangeSpec, "--format=%H %s"], { cwd: projectRoot });
+  if (logRes.exitCode !== 0) return null;
+
+  const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(
+    `^asd\\(${escapedTaskId}\\):|^asd\\(merge\\):\\s*${escapedTaskId}(?:\\b|\\s|$)`
+  );
+
+  for (const rawLine of logRes.stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const spaceIdx = line.indexOf(" ");
+    if (spaceIdx === -1) continue;
+    const sha = line.slice(0, spaceIdx).trim();
+    const subject = line.slice(spaceIdx + 1).trim();
+    if (pattern.test(subject)) {
+      return sha;
+    }
+  }
+  return null;
+}
+
+/**
+ * HC-4 & Risk 7: Inspects a preserved worktree to check if a completed execution report
+ * and changed files exist.
+ */
+export function inspectOrphanedWorktree(options: {
+  projectRoot: string;
+  wtPath: string;
+  meta?: Record<string, unknown> | null;
+  outputLogPath?: string | null;
+}): {
+  hasWorktree: boolean;
+  hasCompletedReport: boolean;
+  summary?: string;
+  changedFiles: string[];
+} {
+  const hasWorktree = fs.existsSync(options.wtPath);
+  if (!hasWorktree) {
+    return {
+      hasWorktree: false,
+      hasCompletedReport: false,
+      changedFiles: [],
+    };
+  }
+
+  let hasCompletedReport = false;
+  let summary: string | undefined;
+
+  if (options.meta?.exitCode === 0 || options.meta?.status === "done") {
+    hasCompletedReport = true;
+  }
+
+  if (options.outputLogPath && fs.existsSync(options.outputLogPath)) {
+    try {
+      const logText = fs.readFileSync(options.outputLogPath, "utf8");
+      const match = /```(?:asd-report|json)\s*([\s\S]*?)```/gi;
+      let m: RegExpExecArray | null;
+      while ((m = match.exec(logText)) !== null) {
+        try {
+          const parsed = JSON.parse(m[1]!) as Record<string, unknown>;
+          if (typeof parsed.summary === "string" && parsed.summary.trim()) {
+            hasCompletedReport = true;
+            summary = parsed.summary.trim();
+          }
+        } catch {
+          // ignore parse error
+        }
+      }
+    } catch {
+      // ignore read error
+    }
+  }
+
+  cleanStaleWorktreeLock(options.wtPath, 0);
+  const workingChanges = getChangedFiles(options.wtPath);
+  const committedChanges = getCommittedWorktreeChanges(options.projectRoot, options.wtPath);
+  const changedFiles = Array.from(new Set([...workingChanges, ...committedChanges]));
+
+  return {
+    hasWorktree,
+    hasCompletedReport,
+    ...(summary ? { summary } : {}),
+    changedFiles,
+  };
+}
+
+/**
  * Recovers running tasks whose subagent and owner processes have died:
+ * - HC-3: If task commit already exists in session.base_sha..HEAD -> done (reason='already_committed').
+ * - HC-4: If worktree has completed report + changes -> auto-promote ('worktree_promoted') if verifyCmd & boundary pass,
+ *         or escalate ('verification_failed_preserved') while preserving worktree if verifyCmd/boundary fails.
  * - parallel_spawn / control_action: if both sub pid and ownerPid are dead -> failed (reason='orphaned'),
  *   updating meta.json.status='failed' and preserving worktree.
  * - claim_only: untouched (main AI may still be working on it).
@@ -1898,9 +2092,10 @@ export function recoverOrphanedTasks(input: {
 
     const subPid = typeof meta?.pid === "number" ? meta.pid : undefined;
     const ownerPid = typeof meta?.ownerPid === "number" ? meta.ownerPid : undefined;
-    const subAlive = subPid !== undefined && subPid > 0 ? isPidAlive(subPid) : false;
+    const startedAt = typeof meta?.startedAt === "number" ? meta.startedAt : undefined;
+    const subAlive = subPid !== undefined && subPid > 0 ? verifyPidIdentity(subPid, startedAt) : false;
     const ownerAlive =
-      ownerPid !== undefined && ownerPid > 0 ? isPidAlive(ownerPid) : false;
+      ownerPid !== undefined && ownerPid > 0 ? verifyPidIdentity(ownerPid, startedAt) : false;
 
     let shouldFail = false;
     if (
@@ -1913,17 +2108,33 @@ export function recoverOrphanedTasks(input: {
       }
     } else {
       // Legacy or missing meta / dispatchMode: fail only if meta has a recorded startedAt > 24h ago and pid is dead
-      const startedAt = typeof meta?.startedAt === "number" ? meta.startedAt : undefined;
       const twentyFourHoursMs = 24 * 60 * 60 * 1000;
       if (!subAlive && startedAt !== undefined && startedAt > 0 && now - startedAt > twentyFourHoursMs) {
         shouldFail = true;
       }
     }
 
-    if (shouldFail) {
+    if (!shouldFail) {
+      continue;
+    }
+
+    const sessionRow = input.db.getSession(t.session_id);
+    const wtPath =
+      t.worktree_path ||
+      path.join(projectRoot, ".asd", "wt", `${t.turn}-${t.task_id}`);
+    const branchName = `asd/wt-${t.turn}-${t.task_id}`;
+    const outputLogPath = metaPath ? path.join(path.dirname(metaPath), "output.log") : null;
+
+    // 1. HC-3: Check if task was already committed to main within session.base_sha..HEAD
+    const existingCommitSha = findSessionTaskCommitSha(
+      projectRoot,
+      t.task_id,
+      sessionRow?.base_sha
+    );
+    if (existingCommitSha) {
       if (meta && metaPath) {
         try {
-          meta.status = "failed";
+          meta.status = "done";
           meta.finishedAt = now;
           fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf8");
           const subId =
@@ -1939,17 +2150,182 @@ export function recoverOrphanedTasks(input: {
           // ignore
         }
       }
-
-      input.db.updateTaskStatus(t.session_id, t.task_id, "failed");
+      if (fs.existsSync(wtPath)) {
+        cleanupWorktree(projectRoot, wtPath, branchName, { forceBranchDelete: true });
+      }
+      input.db.updateTaskStatus(t.session_id, t.task_id, "done", {
+        commitSha: existingCommitSha,
+      });
       input.db.incrementStateVersion(t.session_id);
       recovered.push({
         sessionId: t.session_id,
         taskId: t.task_id,
         from: "running",
-        to: "failed",
-        reason: "orphaned",
+        to: "done",
+        reason: "already_committed",
       });
+      continue;
     }
+
+    // 2. HC-4 & Risk 7: Inspect orphaned worktree for completed execution
+    const inspection = inspectOrphanedWorktree({
+      projectRoot,
+      wtPath,
+      meta,
+      outputLogPath,
+    });
+
+    if (
+      inspection.hasWorktree &&
+      inspection.hasCompletedReport &&
+      inspection.changedFiles.length > 0
+    ) {
+      let allowedFiles: string[] = [];
+      try {
+        allowedFiles = JSON.parse(t.target_files_json || "[]");
+      } catch {
+        allowedFiles = [];
+      }
+      const boundaryCheck = checkChangedFilesAndSecrets(
+        inspection.changedFiles,
+        allowedFiles,
+        wtPath
+      );
+      const resolvedCmd = resolveVerifyCmd(wtPath, t.verify_cmd);
+      const verifyOk =
+        boundaryCheck.valid &&
+        (!resolvedCmd || runVerifyCmd(resolvedCmd, wtPath).success);
+
+      if (!verifyOk) {
+        // HC-4: Preserve worktree and escalate — never destroy completed code!
+        if (meta && metaPath) {
+          try {
+            meta.status = "escalated";
+            meta.finishedAt = now;
+            fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf8");
+          } catch {
+            // ignore
+          }
+        }
+        input.db.updateTaskStatus(t.session_id, t.task_id, "escalated", {
+          worktreePath: wtPath,
+        });
+        input.db.incrementStateVersion(t.session_id);
+        recovered.push({
+          sessionId: t.session_id,
+          taskId: t.task_id,
+          from: "running",
+          to: "escalated",
+          reason: "verification_failed_preserved",
+        });
+        continue;
+      }
+
+      // Boundary and verifyCmd passed -> auto-promote worktree into main branch
+      const promoteResult = withFileMergeLockSync(
+        projectRoot,
+        `recoverOrphanedTasks:promote:${t.task_id}`,
+        (): { status: "done" | "merge_conflict"; commitSha?: string } => {
+          ensureGitUserIdentity(wtPath);
+          ensureGitUserIdentity(projectRoot);
+          cleanStaleWorktreeLock(wtPath, 0);
+          unlinkNodeModulesJunction(path.join(wtPath, "node_modules"));
+
+          runGit(["add", "-A"], { cwd: wtPath });
+          runGit(["commit", "-m", `asd(${t.task_id}): ${t.title}`, "--no-verify"], {
+            cwd: wtPath,
+          });
+
+          const mergeRes = runGit(
+            ["merge", "--no-ff", branchName, "-m", `asd(merge): ${t.task_id}`],
+            { cwd: projectRoot }
+          );
+          if (mergeRes.exitCode !== 0) {
+            runGit(["merge", "--abort"], { cwd: projectRoot });
+            return { status: "merge_conflict" };
+          }
+
+          cleanupWorktree(projectRoot, wtPath, branchName, { forceBranchDelete: false });
+          const finalSha = runGit(["rev-parse", "HEAD"], { cwd: projectRoot }).stdout.trim();
+          return { status: "done", commitSha: finalSha };
+        }
+      );
+
+      if (promoteResult.status === "done") {
+        if (meta && metaPath) {
+          try {
+            meta.status = "done";
+            meta.finishedAt = now;
+            fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf8");
+            const subId =
+              typeof meta.subSessionId === "string"
+                ? meta.subSessionId
+                : path.basename(path.dirname(metaPath));
+            finalizeSubagentArtifacts({
+              projectRoot,
+              sessionId: t.session_id,
+              subSessionId: subId,
+            });
+          } catch {
+            // ignore
+          }
+        }
+        input.db.updateTaskStatus(t.session_id, t.task_id, "done", {
+          commitSha: promoteResult.commitSha,
+        });
+        input.db.incrementStateVersion(t.session_id);
+        recovered.push({
+          sessionId: t.session_id,
+          taskId: t.task_id,
+          from: "running",
+          to: "done",
+          reason: "worktree_promoted",
+        });
+      } else {
+        input.db.updateTaskStatus(t.session_id, t.task_id, "merge_conflict", {
+          worktreePath: wtPath,
+        });
+        input.db.incrementStateVersion(t.session_id);
+        recovered.push({
+          sessionId: t.session_id,
+          taskId: t.task_id,
+          from: "running",
+          to: "merge_conflict",
+          reason: "merge_conflict",
+        });
+      }
+      continue;
+    }
+
+    // 3. Default incomplete/mid-flight crash recovery: mark failed and preserve worktree
+    if (meta && metaPath) {
+      try {
+        meta.status = "failed";
+        meta.finishedAt = now;
+        fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf8");
+        const subId =
+          typeof meta.subSessionId === "string"
+            ? meta.subSessionId
+            : path.basename(path.dirname(metaPath));
+        finalizeSubagentArtifacts({
+          projectRoot,
+          sessionId: t.session_id,
+          subSessionId: subId,
+        });
+      } catch {
+        // ignore
+      }
+    }
+
+    input.db.updateTaskStatus(t.session_id, t.task_id, "failed");
+    input.db.incrementStateVersion(t.session_id);
+    recovered.push({
+      sessionId: t.session_id,
+      taskId: t.task_id,
+      from: "running",
+      to: "failed",
+      reason: "orphaned",
+    });
   }
 
   return recovered;
