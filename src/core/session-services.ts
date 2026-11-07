@@ -44,15 +44,81 @@ import {
   finalizeSubagentArtifacts,
   spawnSubagent,
 } from "./spawner.ts";
-import { buildPromptForTask } from "../mcp/server.ts";
 import { buildResumeHarnessCommand, readCliRecentSessions } from "./session-tracker.ts";
 import { loadRoutingConfig, resolveAsdPaths } from "./config.ts";
 import { scanSubagentLogs, type SubagentLogRecord } from "./subagent-logs.ts";
-import { runAsdDoctor, syncAgentModelsIfNeeded } from "../adapters/installer.ts";
-import type { CliRecentSessionEntry } from "./types.ts";
+import { getCoreInstallerHooks, type CliRecentSessionEntry } from "./types.ts";
 import type { HarnessModelCatalog, DashboardSnapshot } from "./models.ts";
 import { discoverHarnessModels } from "./models.ts";
 import { ASD_VERSION } from "./types.ts";
+
+export function buildPromptForTask(
+  task: TaskRow,
+  upstreamDecisions: string[] = [],
+  upstreamFiles: string[] = []
+): string {
+  let targetFiles: string[] = [];
+  try {
+    targetFiles = JSON.parse(task.target_files_json || "[]");
+  } catch {
+    targetFiles = [];
+  }
+
+  const lines: string[] = [
+    `# ASD Subagent Task: ${task.task_id}`,
+    `Title: ${task.title}`,
+    `Track: ${task.track}`,
+    `Role: ${task.role}`,
+    `Category: ${task.category}`,
+    `Difficulty: ${task.difficulty}`,
+    "",
+    "## Allowed Target Files",
+    targetFiles.length > 0 ? targetFiles.map((f) => `- ${f}`).join("\n") : "- None specified",
+    "",
+  ];
+
+  if (task.context_hint) {
+    lines.push("## Context Hint", task.context_hint, "");
+  }
+
+  if (task.acceptance) {
+    lines.push("## Acceptance Criteria", task.acceptance, "");
+  }
+
+  if (upstreamDecisions.length > 0) {
+    lines.push("## Upstream Key Decisions", upstreamDecisions.map((d) => `- ${d}`).join("\n"), "");
+  }
+
+  if (upstreamFiles.length > 0) {
+    lines.push("## Upstream Changed Files", upstreamFiles.map((f) => `- ${f}`).join("\n"), "");
+  }
+
+  lines.push(
+    "## Operational Guidelines",
+    "1. Modify ONLY the files listed under Allowed Target Files (plus test files under tests/ or *.test.ts when needed to keep tests passing).",
+    "2. Ensure implementation satisfies the acceptance criteria.",
+    "3. Run automated tests and ensure zero errors.",
+    "4. If you discover that a file OUTSIDE Allowed Target Files (e.g., owned by another harness/task) MUST be modified, DO NOT modify it directly (it will be blocked). Instead, complete your work within Allowed Target Files and emit an `asd-report` JSON block at the very end of your response:",
+    "```asd-report",
+    "{",
+    '  "summary": "Brief summary of completed work",',
+    '  "key_decisions": ["Key decision 1"],',
+    '  "risks": ["Any remaining risk"],',
+    '  "cross_scope_requests": [',
+    "    {",
+    '      "target_file": "path/to/other-harness-file.ts",',
+    '      "caller_files": ["path/to/your-own-file-to-bundle.ts"],',
+    '      "reason": "Why the external file needs modification",',
+    '      "suggested_change": "Exact interface/function change needed"',
+    "    }",
+    "  ]",
+    "}",
+    "```",
+    "(Up to 2 cross_scope_requests per task are automatically scheduled into the next Turn with your caller_files bundled; any additional requests beyond 2 are forwarded to the Main Director Agent for review.)"
+  );
+
+  return lines.join("\n");
+}
 
 const doctorCache = new Map<string, DashboardSnapshot["harnesses"]>();
 const modelCatalogCache = new Map<string, HarnessModelCatalog>();
@@ -384,9 +450,20 @@ export async function collectDashboardSnapshot(options?: {
   const cacheKey = `${projectRoot}::${homeDir ?? ""}`;
   let harnesses = doctorCache.get(cacheKey);
   if (!harnesses) {
-    const doctor = await runAsdDoctor({ projectRoot, homeDir });
-    harnesses = doctor.harnesses;
-    doctorCache.set(cacheKey, harnesses);
+    const hooks = getCoreInstallerHooks();
+    if (hooks?.runAsdDoctor) {
+      try {
+        const doctor = (await hooks.runAsdDoctor({ projectRoot, homeDir })) as
+          | { harnesses?: DashboardSnapshot["harnesses"] }
+          | undefined;
+        harnesses = doctor?.harnesses;
+        if (harnesses) {
+          doctorCache.set(cacheKey, harnesses);
+        }
+      } catch {
+        // Fallback on doctor failure
+      }
+    }
   }
 
   const routingConfig = loadRoutingConfig(projectRoot, homeDir);

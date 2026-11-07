@@ -431,3 +431,102 @@ export interface HarnessAdapter {
   globalConfigTargets(homeDir: string): string[];
   supportsHeadlessSpawn?: boolean;
 }
+
+// ============================================================================
+// Harness Plugin Contracts & Core Injection Registry (HC-1)
+// ============================================================================
+
+export interface HarnessCapabilities {
+  supportsSessionResume: boolean;
+  canReadNativeTranscript: boolean;
+  transportMode: "cli-stdio" | "daemon-sse";
+  supportsNativeMcp: boolean;
+  supportsNativeHooks: boolean;
+}
+
+export interface SpawnCommandSpec {
+  command: string;
+  args: string[];
+  envOverrides?: Record<string, string | undefined>;
+  stdinPayload?: string;
+  closeStdinOnSpawn?: boolean;
+  cwd?: string;
+}
+
+export interface StreamParserContext {
+  sessionId?: string;
+  harness: HarnessId;
+  subSessionId?: string;
+}
+
+export interface StatefulStreamParser {
+  pushChunk(chunk: string | Buffer): unknown[];
+  flush(): unknown[];
+}
+
+export interface HarnessRuntimePlugin {
+  readonly id: HarnessId;
+  getCapabilities(): HarnessCapabilities;
+  buildSpawnSpec?(opts: Record<string, unknown>): SpawnCommandSpec;
+  buildResumeSpec?(opts: Record<string, unknown>): SpawnCommandSpec | null;
+  createStreamParser?(ctx: StreamParserContext): StatefulStreamParser;
+  abortSession?(handle: unknown): Promise<void> | void;
+  shutdownDaemon?(): Promise<void> | void;
+  readTranscript?(sessionId: string, opts?: Record<string, unknown>): unknown;
+}
+
+export interface HarnessProvisionerPlugin {
+  readonly id: HarnessId;
+  doctor?(opts?: { projectRoot?: string; homeDir?: string }): Promise<unknown> | unknown;
+  syncAgentModels?(opts?: { homeDir?: string; projectRoot?: string; force?: boolean }): unknown;
+  configureEnvironment?(opts?: Record<string, unknown>): Promise<unknown> | unknown;
+}
+
+export interface CoreInstallerHooks {
+  runAsdDoctor?: (options?: { homeDir?: string; projectRoot?: string }) => Promise<unknown> | unknown;
+  syncAgentModelsIfNeeded?: (options?: {
+    homeDir?: string;
+    projectRoot?: string;
+    force?: boolean;
+  }) => { updated: boolean; filesWritten: string[] } | unknown;
+}
+
+const runtimePluginRegistry = new Map<HarnessId, HarnessRuntimePlugin>();
+const provisionerPluginRegistry = new Map<HarnessId, HarnessProvisionerPlugin>();
+let coreInstallerHooks: CoreInstallerHooks | null = null;
+
+export function registerHarnessRuntimePlugin(plugin: HarnessRuntimePlugin): void {
+  runtimePluginRegistry.set(plugin.id, plugin);
+}
+
+export function getHarnessRuntimePlugin(id: HarnessId): HarnessRuntimePlugin | undefined {
+  return runtimePluginRegistry.get(id);
+}
+
+export function listHarnessRuntimePlugins(): HarnessRuntimePlugin[] {
+  return [...runtimePluginRegistry.values()];
+}
+
+export function registerHarnessProvisionerPlugin(plugin: HarnessProvisionerPlugin): void {
+  provisionerPluginRegistry.set(plugin.id, plugin);
+}
+
+export function getHarnessProvisionerPlugin(id: HarnessId): HarnessProvisionerPlugin | undefined {
+  return provisionerPluginRegistry.get(id);
+}
+
+export function listHarnessProvisionerPlugins(): HarnessProvisionerPlugin[] {
+  return [...provisionerPluginRegistry.values()];
+}
+
+export const registerCoreHarnessProvisioner = registerHarnessProvisionerPlugin;
+export const getCoreHarnessProvisioner = getHarnessProvisionerPlugin;
+
+export function registerCoreInstallerHooks(hooks: CoreInstallerHooks): void {
+  coreInstallerHooks = { ...(coreInstallerHooks ?? {}), ...hooks };
+}
+
+export function getCoreInstallerHooks(): CoreInstallerHooks | null {
+  return coreInstallerHooks;
+}
+

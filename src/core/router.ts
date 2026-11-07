@@ -1302,9 +1302,8 @@ export function selectDiverseReviewer(
 // ============================================================================
 
 import { atomicWriteFileSync } from "./render.ts";
-import { syncAgentModelsIfNeeded } from "../adapters/installer.ts";
 import { resolveAsdPaths } from "./config.ts";
-import type { RoutingConfig } from "./types.ts";
+import { getCoreInstallerHooks, type RoutingConfig } from "./types.ts";
 
 export function saveProjectRoutingConfig(options: {
   projectRoot: string;
@@ -1324,7 +1323,7 @@ export function saveProjectRoutingConfig(options: {
     if (fs.existsSync(paths.localRoutingPath)) {
       fs.unlinkSync(paths.localRoutingPath);
     }
-    syncAgentModelsIfNeeded({ homeDir: options.homeDir, projectRoot, force: true });
+    getCoreInstallerHooks()?.syncAgentModelsIfNeeded?.({ homeDir: options.homeDir, projectRoot, force: true });
     const effective = loadRoutingConfig(projectRoot, options.homeDir);
     return {
       ok: true,
@@ -1370,7 +1369,7 @@ export function saveProjectRoutingConfig(options: {
     JSON.stringify(normalizedConfig, null, 2) +
     "\n";
   atomicWriteFileSync(paths.localRoutingPath, content);
-  syncAgentModelsIfNeeded({ homeDir: options.homeDir, projectRoot, force: true });
+  getCoreInstallerHooks()?.syncAgentModelsIfNeeded?.({ homeDir: options.homeDir, projectRoot, force: true });
 
   return {
     ok: true,

@@ -38,6 +38,7 @@ import {
 import {
   AGENT_ROLES,
   ASD_VERSION,
+  registerCoreInstallerHooks,
   type AgentRole,
   type HarnessAdapter,
   type HarnessId,
@@ -2279,6 +2280,11 @@ export async function doctorProbe(
 }
 
 export const runAsdDoctor = doctorProbe;
+
+registerCoreInstallerHooks({
+  runAsdDoctor,
+  syncAgentModelsIfNeeded,
+});
 
 // ============================================================================
 // Self-Updater: runAsdUpdate (`asd update`)

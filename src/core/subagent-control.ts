@@ -44,7 +44,7 @@ import {
   finalizeSubagentArtifacts,
   spawnSubagent,
 } from "./spawner.ts";
-import { buildPromptForTask } from "../mcp/server.ts";
+import { buildPromptForTask } from "./session-services.ts";
 import { buildResumeHarnessCommand } from "./session-tracker.ts";
 import { loadRoutingConfig, resolveAsdPaths } from "./config.ts";
 import { scanSubagentLogs, type SubagentLogRecord } from "./subagent-logs.ts";

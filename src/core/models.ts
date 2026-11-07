@@ -15,7 +15,6 @@ import {
   resolveSpawnCommand,
   type CommandRunner,
 } from "./spawner.ts";
-import { runAsdDoctor, syncAgentModelsIfNeeded } from "../adapters/installer.ts";
 import type { HarnessId } from "./types.ts";
 
 export type HarnessModelCatalog = Record<HarnessId, string[]>;

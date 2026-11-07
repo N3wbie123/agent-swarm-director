@@ -34,7 +34,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { autoSyncIfNeeded, syncAgentModelsIfNeeded } from "../adapters/installer.ts";
+import { autoSyncIfNeeded, runAsdDoctor, syncAgentModelsIfNeeded } from "../adapters/installer.ts";
+import { buildPromptForTask as buildCorePromptForTask } from "../core/session-services.ts";
+import { registerCoreInstallerHooks } from "../core/types.ts";
+registerCoreInstallerHooks({ runAsdDoctor, syncAgentModelsIfNeeded });
 import { loadRoutingConfig, resolveAsdPaths } from "../core/config.ts";
 import { openProjectDb, type SessionRow, type SqliteDriver, type TaskRow } from "../core/db.ts";
 import {
@@ -380,6 +383,10 @@ export function buildPromptForTask(
     "(Up to 2 cross_scope_requests per task are automatically scheduled into the next Turn with your caller_files bundled; any additional requests beyond 2 are forwarded to the Main Director Agent for review.)"
   );
 
+  return buildCorePromptForTask(task, upstreamDecisions, upstreamFiles);
+}
+
+function _unusedLegacyPromptLines(lines: string[]): string {
   return lines.join("\n");
 }
 
