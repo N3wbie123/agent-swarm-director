@@ -32,6 +32,13 @@ export * from "./adapters/codex.ts";
 export * from "./adapters/antigravity.ts";
 export * from "./adapters/cursor.ts";
 export * from "./adapters/installer.ts";
+export {
+  createHarnessProvisionerPlugin,
+  createHarnessRuntimePlugin,
+  getHarnessCapabilities,
+  HARNESS_IDS,
+  registerDefaultHarnessPlugins,
+} from "./adapters/registry.ts";
 
 export {
   AsdMcpServer,

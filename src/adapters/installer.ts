@@ -1522,6 +1522,7 @@ export async function syncHarnessConfigs(
 }
 
 export const runAsdSync = syncHarnessConfigs;
+export const installGlobalConfigs = syncHarnessConfigs;
 
 // ============================================================================
 // Main-Session Auto-Sync
