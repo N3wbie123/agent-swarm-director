@@ -56,13 +56,15 @@ export {
   saveSessionMemo,
   type DashboardSnapshot,
   type DashboardStateSnapshot,
-  type DashboardServerHandle,
-  type HarnessModelCatalog,
 } from "./core/session-services.ts";
 export {
   discoverHarnessModels,
   getModelsDiskCachePath,
   type HarnessModelCatalog,
 } from "./core/models.ts";
+export {
+  startDashboardServer,
+  type DashboardServerHandle,
+} from "./cli/dashboard.ts";
 export { runSubagentControlAction } from "./core/subagent-control.ts";
 export { saveProjectRoutingConfig } from "./core/router.ts";

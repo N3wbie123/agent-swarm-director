@@ -20,108 +20,36 @@
  *   primary model dropdowns, and 4-option subagent controller.
  */
 
-import * as child_process from "node:child_process";
-import * as fs from "node:fs";
 import * as http from "node:http";
-import * as os from "node:os";
 import * as path from "node:path";
 
-import { runAsdDoctor, syncAgentModelsIfNeeded } from "../adapters/installer.ts";
-import { loadRoutingConfig, resolveAsdPaths } from "../core/config.ts";
-import {
-  type DebateRow,
-  type DriverRow,
-  openProjectDb,
-  type SessionRow,
-  SqliteDriver,
-  type TaskRow,
-} from "../core/db.ts";
-import {
-  buildDefaultHarnessCommand,
-  buildRound1Prompt,
-  buildRound2Prompt,
-  parseReviewerOpening,
-  synthesizeInsightVerdict,
-} from "../core/debate.ts";
-import { atomicWriteFileSync, renderPlanMd } from "../core/render.ts";
-import {
-  createTaskWorktree,
-  verifyAndCommitLightTask,
-  verifyAndMergeHeavyTask,
-} from "../core/workspace.ts";
-import {
-  inferModelFamily,
-  normalizeAgentRole,
-  resolveFallback,
-  resolveNextLightSubagentFallback,
-} from "../core/router.ts";
-import {
-  type CommandRunner,
-  DEFAULT_DEBATE_TIMEOUT_MS,
-  DEFAULT_IDLE_TIMEOUT_MS,
-  killProcessTree,
-  resolveSpawnCommand,
-  finalizeSubagentArtifacts,
-  spawnSubagent,
-} from "../core/spawner.ts";
-import { buildPromptForTask } from "../mcp/server.ts";
-import {
-  type AgentRole,
-  ASD_VERSION,
-  type DifficultyTier,
-  type HarnessId,
-  type RoutingConfig,
-  type TaskTrack,
-} from "../core/types.ts";
-import { scanSubagentLogs, type SubagentLogRecord } from "../core/subagent-logs.ts";
-import {
-  buildResumeHarnessCommand,
-  readCliRecentSessions,
-} from "../core/session-tracker.ts";
-import type { CliRecentSessionEntry } from "../core/types.ts";
-import {
-  collectDashboardSnapshot,
-  saveSessionMemo,
-  type DashboardSnapshot,
-  type HarnessModelCatalog,
-} from "../core/session-services.ts";
 import {
   discoverHarnessModels,
   getModelsDiskCachePath,
   type HarnessModelCatalog,
 } from "../core/models.ts";
-import { runSubagentControlAction } from "../core/subagent-control.ts";
 import { saveProjectRoutingConfig } from "../core/router.ts";
+import {
+  collectDashboardSnapshot,
+  saveSessionMemo,
+  type DashboardSnapshot,
+  type DashboardStateSnapshot,
+} from "../core/session-services.ts";
+import type { CommandRunner } from "../core/spawner.ts";
+import { runSubagentControlAction } from "../core/subagent-control.ts";
+import {
+  ASD_VERSION,
+  type HarnessId,
+  type RoutingConfig,
+} from "../core/types.ts";
 
-export type DashboardStateSnapshot = DashboardSnapshot;
-
-export interface DashboardSnapshot {
-  version: string;
-  projectRoot: string;
-  systemLocale: string;
-  timestamp: number;
-  session: SessionRow | null;
-  sessions: SessionRow[];
-  tasks: TaskRow[];
-  allTasks: TaskRow[];
-  debates: DebateRow[];
-  allDebates: DebateRow[];
-  drivers: Record<string, DriverRow[]>;
-  subagentLogs: SubagentLogRecord[];
-  cliRecentSessions?: CliRecentSessionEntry[];
-  routingConfig: RoutingConfig;
-  hasLocalRouting: boolean;
-  localRoutingPath: string;
-  availableModels: HarnessModelCatalog;
-  worktreeStatuses?: Record<string, string[]>;
-  harnesses: Record<
-    string,
-    { installed: boolean; headlessSupported: boolean; binary?: string; resolvedPath?: string | null }
-  >;
-}
-
-const doctorCache = new Map<string, DashboardSnapshot["harnesses"]>();
-const modelCatalogCache = new Map<string, HarnessModelCatalog>();
+export type { DashboardSnapshot, DashboardStateSnapshot, HarnessModelCatalog };
+export {
+  collectDashboardSnapshot,
+  discoverHarnessModels,
+  getModelsDiskCachePath,
+  saveSessionMemo,
+};
 
 function detectSystemLocale(): string {
   try {

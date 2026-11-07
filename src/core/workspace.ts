@@ -1433,6 +1433,7 @@ export interface WorktreeDiffSnapshot {
 }
 
 /**
+ * @public
  * Collects changed files, `git status --short`, and unified diff
  * (including untracked file contents and committed worktree changes in merge-base mode)
  * for either a task worktree or projectRoot.
@@ -1724,6 +1725,13 @@ export async function approvePendingTask(options: {
 }
 
 /**
+ * @public
+ * External SDK and GUI gate alias for approvePendingTask.
+ */
+export const approveTaskWorktree = approvePendingTask;
+
+/**
+ * @public
  * Rejects and rolls back a task paused at `'verifying'` (or `'merge_conflict'`),
  * cleaning up its worktree or uncommitted changes and marking it `'failed'`.
  */
@@ -1786,6 +1794,12 @@ export function rejectPendingTask(options: {
     ...(untouchedFiles !== undefined ? { untouchedFiles } : {}),
   };
 }
+
+/**
+ * @public
+ * External SDK and GUI gate alias for rejectPendingTask.
+ */
+export const rejectTaskWorktree = rejectPendingTask;
 
 // ============================================================================
 // CR-12: Orphaned Task Recovery (recoverOrphanedTasks)

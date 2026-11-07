@@ -5,11 +5,11 @@
  * No UI/server dependencies.
  */
 
+import * as child_process from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
-import { atomicWriteFileSync, renderPlanMd } from "./render.ts";
+import { loadRoutingConfig, resolveAsdPaths } from "./config.ts";
 import {
   type DebateRow,
   type DriverRow,
@@ -18,39 +18,50 @@ import {
   SqliteDriver,
   type TaskRow,
 } from "./db.ts";
-import {
-  buildDefaultHarnessCommand,
-  buildRound1Prompt,
-  buildRound2Prompt,
-  parseReviewerOpening,
-  synthesizeInsightVerdict,
-} from "./debate.ts";
-import {
-  createTaskWorktree,
-  verifyAndCommitLightTask,
-  verifyAndMergeHeavyTask,
-} from "./workspace.ts";
-import {
-  inferModelFamily,
-  normalizeAgentRole,
-  resolveFallback,
-  resolveNextLightSubagentFallback,
-} from "./router.ts";
-import {
-  type CommandRunner,
-  DEFAULT_DEBATE_TIMEOUT_MS,
-  DEFAULT_IDLE_TIMEOUT_MS,
-  killProcessTree,
-  finalizeSubagentArtifacts,
-  spawnSubagent,
-} from "./spawner.ts";
-import { buildResumeHarnessCommand, readCliRecentSessions } from "./session-tracker.ts";
-import { loadRoutingConfig, resolveAsdPaths } from "./config.ts";
+import { discoverHarnessModels, type HarnessModelCatalog } from "./models.ts";
+import { atomicWriteFileSync } from "./render.ts";
+import { readCliRecentSessions } from "./session-tracker.ts";
 import { scanSubagentLogs, type SubagentLogRecord } from "./subagent-logs.ts";
-import { getCoreInstallerHooks, type CliRecentSessionEntry } from "./types.ts";
-import type { HarnessModelCatalog, DashboardSnapshot } from "./models.ts";
-import { discoverHarnessModels } from "./models.ts";
-import { ASD_VERSION } from "./types.ts";
+import {
+  ASD_VERSION,
+  getCoreInstallerHooks,
+  type CliRecentSessionEntry,
+  type RoutingConfig,
+} from "./types.ts";
+
+export type { HarnessModelCatalog };
+
+export interface DashboardSnapshot {
+  version: string;
+  projectRoot: string;
+  systemLocale: string;
+  timestamp: number;
+  session: SessionRow | null;
+  sessions: SessionRow[];
+  tasks: TaskRow[];
+  allTasks: TaskRow[];
+  debates: DebateRow[];
+  allDebates: DebateRow[];
+  drivers: Record<string, DriverRow[]>;
+  subagentLogs: SubagentLogRecord[];
+  cliRecentSessions?: CliRecentSessionEntry[];
+  routingConfig: RoutingConfig;
+  hasLocalRouting: boolean;
+  localRoutingPath: string;
+  availableModels: HarnessModelCatalog;
+  worktreeStatuses?: Record<string, string[]>;
+  harnesses?: Record<
+    string,
+    {
+      installed: boolean;
+      headlessSupported: boolean;
+      binary?: string;
+      resolvedPath?: string | null;
+    }
+  >;
+}
+
+export type DashboardStateSnapshot = DashboardSnapshot;
 
 export function buildPromptForTask(
   task: TaskRow,
@@ -121,7 +132,6 @@ export function buildPromptForTask(
 }
 
 const doctorCache = new Map<string, DashboardSnapshot["harnesses"]>();
-const modelCatalogCache = new Map<string, HarnessModelCatalog>();
 
 const worktreeStatusCache = new Map<
   string,
@@ -143,89 +153,6 @@ function readMainJsonMeta(projectRoot: string, sessionId: string): Record<string
     return JSON.parse(fs.readFileSync(mainJsonPath, "utf8")) as Record<string, unknown>;
   } catch {
     return null;
-  }
-
-}
-
-function tryRefreshDebateVerdictFromLog(
-  projectRoot: string,
-  homeDir: string | undefined,
-  sessionId: string,
-  taskId: string,
-  subSessionId: string,
-  role: string,
-  harness: string,
-  model: string,
-  rawOutput: string
-): void {
-  const parsed = parseReviewerOpening(rawOutput);
-  if (!parsed) return;
-
-  const paths = resolveAsdPaths(projectRoot, homeDir);
-  if (!fs.existsSync(paths.dbPath)) return;
-
-  const realSessionId = sessionId.includes("::")
-    ? sessionId.split("::")[0]!
-    : sessionId;
-
-  let db: SqliteDriver | undefined;
-  try {
-    db = openProjectDb(projectRoot, homeDir);
-    const debates = db.getSessionDebates(realSessionId);
-    const debMatch = subSessionId.match(/-deb-(D-[A-Za-z0-9-]+)-/);
-    const debateId = debMatch?.[1] || taskId;
-    const debateRow = debates.find(
-      (d) => d.debate_id === debateId || (d.task_id && d.task_id === taskId)
-    );
-    if (!debateRow) return;
-
-    let r1: { openings?: Array<Record<string, unknown>>; failedReviewers?: unknown[] } = {
-      openings: [],
-      failedReviewers: [],
-    };
-    try {
-      if (debateRow.round1_bundle_json) {
-        r1 = JSON.parse(debateRow.round1_bundle_json);
-      }
-    } catch {}
-
-    const openings = Array.isArray(r1.openings) ? r1.openings : [];
-    const newOpening = {
-      reviewerId: subSessionId,
-      role,
-      harness,
-      model,
-      modelFamily: inferModelFamily(model, harness as import("./types.ts").HarnessId),
-      verdict: parsed.verdict,
-      hard_constraints: parsed.hard_constraints,
-      decisions: parsed.decisions,
-      risks: parsed.risks,
-      reasoning: parsed.reasoning,
-      rawOutput,
-    };
-
-    const existingIdx = openings.findIndex(
-      (o) => o.role === role && o.harness === harness
-    );
-    if (existingIdx >= 0) {
-      openings[existingIdx] = newOpening;
-    } else {
-      openings.push(newOpening);
-    }
-
-    const insightVerdict = synthesizeInsightVerdict(openings);
-
-    db.updateDebateVerdict(debateRow.debate_id, "done", {
-      round1BundleJson: JSON.stringify({
-        openings,
-        failedReviewers: r1.failedReviewers ?? [],
-      }),
-      insightVerdictJson: JSON.stringify(insightVerdict),
-    });
-  } catch {
-    // Ignore DB refresh error
-  } finally {
-    db?.close();
   }
 }
 

@@ -21,7 +21,6 @@ export type HarnessModelCatalog = Record<HarnessId, string[]>;
 
 const DEFAULT_MODELS_CACHE_TTL_MS = 10 * 60 * 1000;
 
-const doctorCache = new Map<string, HarnessModelCatalog["harnesses"]>();
 const modelCatalogCache = new Map<string, HarnessModelCatalog>();
 
 function detectSystemLocale(): string {
