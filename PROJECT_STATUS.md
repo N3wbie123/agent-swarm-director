@@ -1,7 +1,7 @@
-# Agent Swarm Director (ASD v2.4.3) — 아키텍처 및 전체 파일·함수 상세 레퍼런스
+# Agent Swarm Director (ASD v2.5.0) — 아키텍처 및 전체 파일·함수 상세 레퍼런스
 
 > **최종 갱신일**: 2026-11-04  
-> **버전**: `2.4.3` (`agent-swarm-director`)  
+> **버전**: `2.5.0` (`agent-swarm-director`)  
 > **대상 하네스 (5대 AI 코딩 CLI)**: Claude Code (`@cc`), OpenCode (`@oc`), Codex CLI (`@cx`), Antigravity (`@ag`), Cursor CLI (`@cr`)  
 > **외부 런타임 의존성**: `0개` (`dependencies: {}` — 순수 Node.js `>=22.13.0` 내장 모듈만 사용)
 
@@ -11,7 +11,7 @@
 
 ## 1. 프로젝트 개요 및 3대 아키텍처 불변성
 
-**Agent Swarm Director (ASD v2.4.3)**는 서로 다른 5개의 AI 코딩 하네스(**Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, **Cursor CLI**)를 단일 결정론적 컨트롤 플레인으로 통합 제어하는 **외부 의존성 0개(Zero-Dependency)** 멀티 에이전트 오케스트레이션 엔진이자 SDK입니다.
+**Agent Swarm Director (ASD v2.5.0)**는 서로 다른 5개의 AI 코딩 하네스(**Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, **Cursor CLI**)를 단일 결정론적 컨트롤 플레인으로 통합 제어하는 **외부 의존성 0개(Zero-Dependency)** 멀티 에이전트 오케스트레이션 엔진이자 SDK입니다.
 
 ### 1.1 3대 아키텍처 불변성 (Core Invariants)
 1. **Zero External Runtime Dependencies (`dependencies: {}`)**:
@@ -27,7 +27,7 @@
 
 ```text
 asd-multiagent/
-├── package.json                 # Zero runtime dependencies, version 2.4.3, bin: {"asd": "./src/cli/index.ts"}, exports 서브패스 정의
+├── package.json                 # Zero runtime dependencies, version 2.5.0, bin: {"asd": "./src/cli/index.ts"}, exports 서브패스 정의
 ├── tsconfig.json                # erasableSyntaxOnly: true, strict: true
 ├── README.md / README_ko.md     # 영문/국문 사용자 매뉴얼 (스킬 및 CLI 가이드)
 ├── PROJECT_STATUS.md            # 전체 아키텍처 및 파일별·주요 함수별 상세 레퍼런스 (본 문서)
@@ -35,6 +35,7 @@ asd-multiagent/
 ├── PATCH_NOTES.md / _ko.md      # 영문/국문 버전별 패치 노트
 ├── CORE_GUI_BOUNDARY_AUDIT.md   # Core–GUI 경계 감사 (GUI 기능 분리 원칙 및 위반 정리, v2.4.3)
 ├── ORCHESTRATOR_APP_PLAN.md     # 오케스트레이터 TUI/GUI 앱 개발 계획 (하네스 실측 매트릭스 포함)
+├── HARNESS_INTEGRATION_REFERENCE.md  # 앱팀용 하네스 통합 바이블 (저장소·포맷·실측 이벤트 스키마·함정, v2.5.0)
 ├── presets/
 │   ├── default-routing.jsonc    # 5대 전문 역할 및 카테고리/난이도별 기본 모델 라우팅 + 다중 폴백 체인
 │   └── default-mcp.jsonc        # Gap-filling MCP 서버 카탈로그 (context7, grep_app, websearch)

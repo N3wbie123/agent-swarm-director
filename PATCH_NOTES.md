@@ -1,12 +1,15 @@
-# Patch Notes (`agent-swarm-director` / ASD v2.4.3)
+# Patch Notes (`agent-swarm-director` / ASD v2.5.0)
 
 **English** | [한국어](./PATCH_NOTES_ko.md) | [📖 Back to README](./README.md) | [🏛️ Architecture & Code Reference](./PROJECT_STATUS.md) | [🔌 External SDK Reference](./EXTERNAL_SDK_REFERENCE.md)
 
-Complete chronological patch history for **Agent Swarm Director (ASD v2.4.3)**, organized from the latest updates to the initial foundation.
+Complete chronological patch history for **Agent Swarm Director (ASD v2.5.0)**, organized from the latest updates to the initial foundation.
 
 ---
 
 ## 1. Harness-Native Streaming, Core–GUI Boundary & Session Attribution (v2.4.3)
+
+### `v2.5.0` — Version Bump for Orchestrator CLI/GUI Separation (no code changes)
+- Bumped `ASD_VERSION` / package version to `2.5.0` as the baseline for the upcoming orchestrator CLI/GUI app separation (plan: `ORCHESTRATOR_APP_PLAN.md`; harness integration guide: `HARNESS_INTEGRATION_REFERENCE.md`).
 
 ### `v2.4.3` — Native JSONL Streaming for All 5 Harnesses, Core–GUI Boundary Refactor & `ses_` Session Attribution Guard
 - **Native Streaming for Antigravity & Cursor (`runDriverTurn`)**:
