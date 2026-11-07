@@ -715,7 +715,7 @@ test("v2.4.3 Auto-Migration: syncHarnessConfigs upgrades legacy (< 2.4.2) ~/.asd
         .filter((line) => !line.trim().startsWith("//"))
         .join("\n")
     );
-    assert.equal(migrated._asdVersion, "2.4.3");
+    assert.equal(migrated._asdVersion, "2.5.0");
     assert.ok(migrated.lightSubagents, "Migrated routing.jsonc must include lightSubagents block");
     assert.ok(migrated.lightSubagents.antigravity, "Migrated lightSubagents must include antigravity");
     assert.equal(
