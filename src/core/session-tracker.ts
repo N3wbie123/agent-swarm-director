@@ -61,6 +61,60 @@ export interface HeadlessHarnessCommandOptions {
 }
 
 /**
+ * Builds high-level spawn specifications handling long prompt stdin offloading,
+ * dangerous permission skipping, and platform-specific stdin closure.
+ */
+export function buildSpawnSpec(
+  options: HeadlessHarnessCommandOptions & { resumeSessionId?: string }
+): {
+  command: string;
+  args: string[];
+  stdinPayload?: string;
+  closeStdinOnSpawn?: boolean;
+} {
+  const base = options.resumeSessionId
+    ? buildResumeHarnessCommand({
+        harness: options.harness,
+        harnessSessionId: options.resumeSessionId,
+        prompt: options.prompt,
+        model: options.model,
+        thinkingEffort: options.thinkingEffort,
+        reasoningEffort: options.reasoningEffort,
+        streaming: options.streaming,
+      })
+    : buildHeadlessHarnessCommand(options);
+
+  const spec: {
+    command: string;
+    args: string[];
+    stdinPayload?: string;
+    closeStdinOnSpawn?: boolean;
+  } = {
+    command: base.command,
+    args: [...base.args],
+  };
+
+  if (options.harness === "claude-code") {
+    if (!spec.args.includes("--dangerously-skip-permissions")) {
+      spec.args.push("--dangerously-skip-permissions");
+    }
+    const textPrompt = options.prompt ?? "";
+    if (textPrompt.length > 1500) {
+      spec.stdinPayload = textPrompt;
+      spec.closeStdinOnSpawn = true;
+      const pIdx = spec.args.indexOf("-p");
+      if (pIdx !== -1 && pIdx + 1 < spec.args.length) {
+        spec.args.splice(pIdx + 1, 1);
+      }
+    }
+  } else if (options.harness === "codex") {
+    spec.closeStdinOnSpawn = true;
+  }
+
+  return spec;
+}
+
+/**
  * Builds headless one-shot execution commands for each harness without importing `src/adapters/*`.
  */
 export function buildHeadlessHarnessCommand(

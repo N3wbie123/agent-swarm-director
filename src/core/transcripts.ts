@@ -994,73 +994,88 @@ function accumulateOpencodePart(acc: OpencodePartAccumulator, data: Rec): void {
 }
 
 function readOpencodeDbMessages(dbPath: string, sessionId: string): OpencodeRawMessage[] | null {
-  let db: DatabaseSync;
-  try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
-  } catch {
-    return null;
-  }
-  try {
-    const msgRows = db
-      .prepare("SELECT id, data FROM message WHERE session_id = ? ORDER BY rowid")
-      .all(sessionId) as Array<{ id: unknown; data: unknown }>;
-    const partRows = db
-      .prepare("SELECT message_id, data FROM part WHERE session_id = ? ORDER BY rowid")
-      .all(sessionId) as Array<{ message_id: unknown; data: unknown }>;
-
-    const partsByMessage = new Map<string, OpencodePartAccumulator>();
-    for (const row of partRows) {
-      if (typeof row.message_id !== "string") continue;
-      const data = parseJsonObject(row.data);
-      if (!data) continue;
-      let acc = partsByMessage.get(row.message_id);
-      if (!acc) {
-        acc = { texts: [], thinkings: [], toolUse: [], toolResult: [] };
-        partsByMessage.set(row.message_id, acc);
-      }
-      accumulateOpencodePart(acc, data);
-    }
-
-    const messages: OpencodeRawMessage[] = [];
-    for (const row of msgRows) {
-      if (typeof row.id !== "string") continue;
-      const data = parseJsonObject(row.data);
-      const role = normalizeRole((data && getStr(data, "role")) || "unknown");
-      const timeRec = data ? getRec(data, "time") : undefined;
-      const created = timeRec ? timeRec.created : undefined;
-      const acc = partsByMessage.get(row.id);
-      const text =
-        acc && acc.texts.length > 0
-          ? acc.texts.join("\n")
-          : data
-            ? contentToText(data.content)
-            : "";
-      const thinking = acc && acc.thinkings.length > 0 ? acc.thinkings.join("\n") : undefined;
-      const toolUse = acc && acc.toolUse.length > 0 ? acc.toolUse : undefined;
-      const toolResult = acc && acc.toolResult.length > 0 ? acc.toolResult : undefined;
-      if (!text.trim() && !thinking && !toolUse && !toolResult) continue;
-      const msg: OpencodeRawMessage = {
-        id: row.id,
-        role,
-        text,
-        ...(thinking ? { thinking } : {}),
-        ...(toolUse ? { toolUse } : {}),
-        ...(toolResult ? { toolResult } : {}),
-      };
-      const ts = epochToIso(created);
-      if (ts) msg.timestamp = ts;
-      messages.push(msg);
-    }
-    return messages;
-  } catch {
-    return null; // schema drift or corrupt db -> caller falls back to storage/
-  } finally {
+  const maxRetries = 3;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    let db: DatabaseSync | null = null;
     try {
-      db.close();
-    } catch {
-      // already closed
+      db = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        db.exec("PRAGMA busy_timeout = 3000;");
+      } catch {
+        // ignore if pragma unsupported
+      }
+      const msgRows = db
+        .prepare("SELECT id, data FROM message WHERE session_id = ? ORDER BY rowid")
+        .all(sessionId) as Array<{ id: unknown; data: unknown }>;
+      const partRows = db
+        .prepare("SELECT message_id, data FROM part WHERE session_id = ? ORDER BY rowid")
+        .all(sessionId) as Array<{ message_id: unknown; data: unknown }>;
+
+      const partsByMessage = new Map<string, OpencodePartAccumulator>();
+      for (const row of partRows) {
+        if (typeof row.message_id !== "string") continue;
+        const data = parseJsonObject(row.data);
+        if (!data) continue;
+        let acc = partsByMessage.get(row.message_id);
+        if (!acc) {
+          acc = { texts: [], thinkings: [], toolUse: [], toolResult: [] };
+          partsByMessage.set(row.message_id, acc);
+        }
+        accumulateOpencodePart(acc, data);
+      }
+
+      const messages: OpencodeRawMessage[] = [];
+      for (const row of msgRows) {
+        if (typeof row.id !== "string") continue;
+        const data = parseJsonObject(row.data);
+        const role = normalizeRole((data && getStr(data, "role")) || "unknown");
+        const timeRec = data ? getRec(data, "time") : undefined;
+        const created = timeRec ? timeRec.created : undefined;
+        const acc = partsByMessage.get(row.id);
+        const text =
+          acc && acc.texts.length > 0
+            ? acc.texts.join("\n")
+            : data
+              ? contentToText(data.content)
+              : "";
+        const thinking = acc && acc.thinkings.length > 0 ? acc.thinkings.join("\n") : undefined;
+        const toolUse = acc && acc.toolUse.length > 0 ? acc.toolUse : undefined;
+        const toolResult = acc && acc.toolResult.length > 0 ? acc.toolResult : undefined;
+        if (!text.trim() && !thinking && !toolUse && !toolResult) continue;
+        const msg: OpencodeRawMessage = {
+          id: row.id,
+          role,
+          text,
+          ...(thinking ? { thinking } : {}),
+          ...(toolUse ? { toolUse } : {}),
+          ...(toolResult ? { toolResult } : {}),
+        };
+        const ts = epochToIso(created);
+        if (ts) msg.timestamp = ts;
+        messages.push(msg);
+      }
+      return messages;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const isBusy =
+        errMsg.includes("busy") ||
+        errMsg.includes("locked") ||
+        errMsg.includes("SQLITE_BUSY");
+      if (isBusy && attempt < maxRetries - 1) {
+        continue;
+      }
+      return null;
+    } finally {
+      if (db) {
+        try {
+          db.close();
+        } catch {
+          // already closed
+        }
+      }
     }
   }
+  return null;
 }
 
 function walkJsonFiles(root: string): Array<{ file: string; data: Rec }> {
@@ -1211,9 +1226,28 @@ export function readHarnessTranscript(
   const base: HarnessTranscript = { found: false, harness, sessionId, messages: [], hasMore: false, truncated: false };
 
   try {
-    // transcriptPath has top priority: read the file directly as JSONL.
+    // transcriptPath has top priority: read the file directly as JSONL (or SQLite .db for opencode).
     if (options.transcriptPath && options.transcriptPath.trim()) {
-      const window = readJsonlWindow(options.transcriptPath.trim(), {
+      const tp = options.transcriptPath.trim();
+      if (harness === "opencode" && tp.endsWith(".db")) {
+        const raw = readOpencodeDbMessages(tp, sessionId);
+        if (!raw) {
+          return { ...base, error: "opencode transcript could not be read" };
+        }
+        const all = toTranscriptMessages(raw, options.mergeToolResults);
+        const filtered = options.before !== undefined ? all.filter((m) => m.index < (options.before ?? 0)) : all;
+        const messages = filtered.slice(Math.max(0, filtered.length - limit));
+        return {
+          found: true,
+          harness,
+          sessionId,
+          transcriptPath: tp,
+          messages,
+          hasMore: messages.length > 0 && (messages[0]?.index ?? 0) > 0,
+          truncated: false,
+        };
+      }
+      const window = readJsonlWindow(tp, {
         limit,
         before: options.before,
         maxReadBytes,
@@ -1225,7 +1259,7 @@ export function readHarnessTranscript(
       return {
         ...base,
         found: true,
-        transcriptPath: options.transcriptPath.trim(),
+        transcriptPath: tp,
         messages: window.messages,
         hasMore: window.messages.length > 0 && (window.messages[0]?.index ?? 0) > 0,
         truncated: window.truncated,

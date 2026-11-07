@@ -9,8 +9,53 @@
  */
 
 import * as path from "node:path";
+import { killProcessTree } from "../core/spawner.ts";
 import { AGENT_ROLES, ASD_VERSION, type HarnessAdapter, type HarnessId } from "../core/types.ts";
 import { ASD_SKILLS } from "./claude-code.ts";
+
+export interface OpencodeSessionAbortOptions {
+  mode?: "cli" | "daemon-sse";
+  isSharedDaemon?: boolean;
+  pid?: number;
+  abortController?: AbortController;
+  serverUrl?: string;
+  sessionId?: string;
+}
+
+export function abortOpencodeSession(options: OpencodeSessionAbortOptions): void {
+  if (options.mode === "daemon-sse" || options.isSharedDaemon === true) {
+    options.abortController?.abort();
+    if (options.serverUrl && options.sessionId) {
+      try {
+        void fetch(`${options.serverUrl.replace(/\/+$/, "")}/session/${options.sessionId}/abort`, {
+          method: "POST",
+        }).catch(() => {});
+      } catch {
+        // best-effort
+      }
+    }
+    return;
+  }
+  if (options.pid && options.pid > 0) {
+    killProcessTree(options.pid);
+  }
+}
+
+export interface OpencodeDaemonShutdownOptions {
+  pid: number;
+  ownedByAsd?: boolean;
+  activeSubagents?: number;
+}
+
+export function shutdownOpencodeDaemon(options: OpencodeDaemonShutdownOptions): boolean {
+  if (options.ownedByAsd === true && (options.activeSubagents ?? 0) <= 0) {
+    if (options.pid > 0) {
+      killProcessTree(options.pid);
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Creates OpenCode configuration payload with MCP server catalog and optional routing config.
@@ -70,6 +115,14 @@ export class OpencodeAdapter implements HarnessAdapter {
       args.push("--model", model);
     }
     return { cmd: "opencode", args };
+  }
+
+  abortSession(options: OpencodeSessionAbortOptions): void {
+    abortOpencodeSession(options);
+  }
+
+  shutdownDaemon(options: OpencodeDaemonShutdownOptions): boolean {
+    return shutdownOpencodeDaemon(options);
   }
 
   formatPreToolUseDeny(reason: string): {

@@ -34,6 +34,8 @@ export interface CommandRunnerRunOptions {
   cwd?: string;
   env: Record<string, string>;
   signal?: AbortSignal;
+  stdinPayload?: string;
+  closeStdinOnSpawn?: boolean;
   onStdout: (chunk: string) => void;
   onStderr: (chunk: string) => void;
   /** Called synchronously with the child pid as soon as the process exists. */
@@ -189,32 +191,39 @@ const defaultCommandRunner: CommandRunner = {
     return new Promise((resolve) => {
       const resolved = resolveSpawnCommand(cmd, args, opts.env);
       let finalArgs = resolved.args;
-      let stdinPayload: string | undefined;
-      if (cmd === "claude") {
+      let stdinPayload: string | undefined = opts.stdinPayload;
+      let closeStdinOnSpawn = opts.closeStdinOnSpawn ?? false;
+      if (cmd === "claude" && stdinPayload === undefined) {
         // When prompt is very long (>1500 chars) on Windows, pass via stdin to avoid arg truncation or 3s stdin warning
         const pIdx = finalArgs.indexOf("-p");
         if (pIdx !== -1 && typeof finalArgs[pIdx + 1] === "string" && finalArgs[pIdx + 1]!.length > 1500) {
           stdinPayload = finalArgs[pIdx + 1];
+          closeStdinOnSpawn = true;
           finalArgs = [...finalArgs.slice(0, pIdx + 1), ...finalArgs.slice(pIdx + 2)];
         }
         if (!finalArgs.includes("--dangerously-skip-permissions")) {
           finalArgs = [...finalArgs, "--dangerously-skip-permissions"];
         }
       }
+      const shouldPipeStdin = stdinPayload !== undefined || closeStdinOnSpawn;
       const child = child_process.spawn(resolved.command, finalArgs, {
         cwd: opts.cwd,
         env: opts.env,
-        stdio: [stdinPayload !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
+        stdio: [shouldPipeStdin ? "pipe" : "ignore", "pipe", "pipe"],
         windowsHide: true,
         shell: resolved.shell,
         // POSIX: own process group so process.kill(-pid) reaps the tree.
         // Windows: do NOT detach — taskkill /T handles the tree.
         detached: process.platform !== "win32",
       });
-      if (stdinPayload !== undefined && child.stdin) {
+      if (child.stdin) {
         try {
-          child.stdin.write(stdinPayload, "utf8");
-          child.stdin.end();
+          if (stdinPayload !== undefined) {
+            child.stdin.write(stdinPayload, "utf8");
+          }
+          if (stdinPayload !== undefined || closeStdinOnSpawn) {
+            child.stdin.end();
+          }
         } catch {
           // ignore broken pipe
         }
@@ -281,6 +290,59 @@ export function killProcessTree(pid: number): void {
   killTimer.unref?.();
 }
 
+export interface AbortSessionOptions {
+  harness: HarnessId;
+  pid?: number;
+  mode?: string;
+  isSharedDaemon?: boolean;
+  abortController?: AbortController;
+  serverUrl?: string;
+  sessionId?: string;
+}
+
+export function abortSession(options: AbortSessionOptions): void {
+  if (options.harness === "opencode" && (options.mode === "daemon-sse" || options.isSharedDaemon === true)) {
+    options.abortController?.abort();
+    if (options.serverUrl && options.sessionId) {
+      try {
+        void fetch(`${options.serverUrl.replace(/\/+$/, "")}/session/${options.sessionId}/abort`, {
+          method: "POST",
+        }).catch(() => {});
+      } catch {
+        // best-effort
+      }
+    }
+    return;
+  }
+  if (options.pid && options.pid > 0) {
+    killProcessTree(options.pid);
+  }
+}
+
+export interface ShutdownDaemonOptions {
+  harness: HarnessId;
+  pid: number;
+  ownedByAsd?: boolean;
+  activeSubagents?: number;
+}
+
+export function shutdownDaemon(options: ShutdownDaemonOptions): boolean {
+  if (options.harness === "opencode") {
+    if (options.ownedByAsd === true && (options.activeSubagents ?? 0) <= 0) {
+      if (options.pid > 0) {
+        killProcessTree(options.pid);
+        return true;
+      }
+    }
+    return false;
+  }
+  if (options.pid > 0) {
+    killProcessTree(options.pid);
+    return true;
+  }
+  return false;
+}
+
 // ============================================================================
 // spawnSubagent
 // ============================================================================
@@ -303,6 +365,8 @@ export interface ExecuteHarnessProcessOptions {
   timeoutMs?: number;
   idleTimeoutMs?: number;
   commandRunner?: CommandRunner;
+  stdinPayload?: string;
+  closeStdinOnSpawn?: boolean;
   onSpawn?: (pid: number) => void;
   onSessionIdDetected?: (harnessSessionId: string) => void;
   onOutput?: (redactedChunk: string) => void;
@@ -456,6 +520,8 @@ export function executeHarnessProcess(
         cwd: options.cwd,
         env: options.env,
         signal: options.signal,
+        stdinPayload: options.stdinPayload,
+        closeStdinOnSpawn: options.closeStdinOnSpawn,
         onStdout: handleChunk,
         onStderr: handleChunk,
         onSpawn: (p) => {

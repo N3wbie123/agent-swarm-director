@@ -582,6 +582,210 @@ export interface DriverStreamEvent {
   timestamp: number;
 }
 
+export interface StreamParserOptions {
+  harness: HarnessId;
+  sessionId?: string;
+  subSessionId?: string;
+  now?: () => number;
+}
+
+export interface TypedStatefulStreamParser {
+  pushChunk(chunk: string | Buffer): DriverStreamEvent[];
+  flush(): DriverStreamEvent[];
+}
+
+/**
+ * Creates a stateful stream parser supporting arbitrary chunk boundaries,
+ * multi-line SSE framing (opencode serve), content_block tool_use assembly,
+ * and Cursor duplicate assistant text deduplication.
+ */
+export function createStreamParser(ctx: StreamParserOptions): TypedStatefulStreamParser {
+  const harness = ctx.harness;
+  const getNow = ctx.now ?? (() => Date.now());
+
+  let lineBuffer = "";
+  let sseEvent = "";
+
+  // Tool block assembly state for content_block_start / content_block_delta
+  const activeToolBlocks = new Map<
+    number,
+    { id?: string; name: string; partialJson: string }
+  >();
+
+  // Deduplication state for Cursor assistant text
+  let cursorAccumulatedText = "";
+  const cursorEmittedTexts = new Set<string>();
+
+  function processParsedLine(rawLine: string): DriverStreamEvent[] {
+    const trimmed = rawLine.trim();
+    if (!trimmed) return [];
+
+    // 1. Check for SSE framing (opencode serve)
+    if (trimmed.startsWith("event:")) {
+      sseEvent = trimmed.slice(6).trim();
+      void sseEvent;
+      return [];
+    }
+    if (trimmed.startsWith("data:")) {
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") {
+        sseEvent = "";
+        return [];
+      }
+      return processParsedLine(payload);
+    }
+
+    if (!trimmed.startsWith("{")) {
+      return [{ type: "raw", harness, text: trimmed, timestamp: getNow() }];
+    }
+
+    let obj: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return [{ type: "raw", harness, text: trimmed, timestamp: getNow() }];
+      }
+      obj = parsed as Record<string, unknown>;
+    } catch {
+      return [{ type: "raw", harness, text: trimmed, timestamp: getNow() }];
+    }
+
+    const lineType = typeof obj.type === "string" ? obj.type : "";
+    const index = typeof obj.index === "number" ? obj.index : 0;
+
+    // 2. Stateful assembly: content_block_start (tool_use)
+    if (lineType === "content_block_start" && obj.content_block && typeof obj.content_block === "object") {
+      const cb = obj.content_block as Record<string, unknown>;
+      if (cb.type === "tool_use") {
+        const id = typeof cb.id === "string" ? cb.id : undefined;
+        const name = typeof cb.name === "string" ? cb.name : "tool";
+        let initialJson = "";
+        if (typeof cb.input === "string") {
+          initialJson = cb.input;
+        } else if (cb.input && typeof cb.input === "object" && Object.keys(cb.input).length > 0) {
+          initialJson = JSON.stringify(cb.input);
+        }
+        activeToolBlocks.set(index, { id, name, partialJson: initialJson });
+        return [];
+      }
+    }
+
+    // 3. Stateful assembly: content_block_delta (input_json_delta)
+    if (lineType === "content_block_delta" && obj.delta && typeof obj.delta === "object") {
+      const delta = obj.delta as Record<string, unknown>;
+      if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+        const tb = activeToolBlocks.get(index);
+        if (tb) {
+          tb.partialJson += delta.partial_json;
+        }
+        return [];
+      }
+    }
+
+    // 4. Stateful assembly: content_block_stop
+    if (lineType === "content_block_stop") {
+      const tb = activeToolBlocks.get(index);
+      if (tb) {
+        activeToolBlocks.delete(index);
+        return [
+          {
+            type: "tool_use",
+            harness,
+            toolName: tb.name,
+            ...(tb.id ? { toolId: tb.id } : {}),
+            toolInput: tb.partialJson,
+            timestamp: getNow(),
+          },
+        ];
+      }
+      return [];
+    }
+
+    // 5. Cursor duplicate block deduplication
+    if (harness === "cursor") {
+      if (lineType === "result" && typeof obj.result === "string") {
+        const resText = obj.result.trim();
+        const isDuplicate =
+          (resText.length > 0 && resText === cursorAccumulatedText.trim()) ||
+          cursorEmittedTexts.has(resText);
+        if (isDuplicate) {
+          if (typeof obj.session_id === "string" && obj.session_id) {
+            return [
+              {
+                type: "status",
+                harness,
+                harnessSessionId: obj.session_id,
+                timestamp: getNow(),
+              },
+            ];
+          }
+          return [];
+        }
+      }
+    }
+
+    // 6. Fallback to backward-compatible line parsing
+    const events = parseDriverStreamLine(trimmed, harness, getNow());
+
+    if (harness === "cursor") {
+      for (const ev of events) {
+        if (ev.type === "text" && ev.text) {
+          cursorAccumulatedText += ev.text;
+          cursorEmittedTexts.add(ev.text.trim());
+        }
+      }
+    }
+
+    return events;
+  }
+
+  return {
+    pushChunk(chunk: string | Buffer): DriverStreamEvent[] {
+      const str = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      lineBuffer += str;
+      const events: DriverStreamEvent[] = [];
+
+      let nlIdx = lineBuffer.indexOf("\n");
+      while (nlIdx !== -1) {
+        const line = lineBuffer.slice(0, nlIdx);
+        lineBuffer = lineBuffer.slice(nlIdx + 1);
+        const parsed = processParsedLine(line);
+        for (const ev of parsed) {
+          events.push(ev);
+        }
+        nlIdx = lineBuffer.indexOf("\n");
+      }
+
+      return events;
+    },
+
+    flush(): DriverStreamEvent[] {
+      const events: DriverStreamEvent[] = [];
+      if (lineBuffer.trim().length > 0) {
+        const parsed = processParsedLine(lineBuffer);
+        for (const ev of parsed) {
+          events.push(ev);
+        }
+        lineBuffer = "";
+      }
+
+      for (const [, tb] of activeToolBlocks.entries()) {
+        events.push({
+          type: "tool_use",
+          harness,
+          toolName: tb.name,
+          ...(tb.id ? { toolId: tb.id } : {}),
+          toolInput: tb.partialJson,
+          timestamp: getNow(),
+        });
+      }
+      activeToolBlocks.clear();
+
+      return events;
+    },
+  };
+}
+
 /**
  * Parses a single redacted stdout/stderr line from a running harness CLI
  * (`claude`, `codex`, `opencode`, `agy`, `agent`) into zero or more structured
@@ -1178,21 +1382,17 @@ export async function runDriverTurn(input: {
       args = [...built.args];
     }
 
-    let lineBuffer = "";
+    const streamParser = createStreamParser({
+      harness: driver.harness,
+      sessionId: input.sessionId,
+    });
     const handleOutputChunk = (chunk: string): void => {
       input.onOutput?.(chunk);
-      lineBuffer += chunk;
-      let nlIdx = lineBuffer.indexOf("\n");
-      while (nlIdx !== -1) {
-        const line = lineBuffer.slice(0, nlIdx);
-        lineBuffer = lineBuffer.slice(nlIdx + 1);
-        for (const ev of parseDriverStreamLine(line, driver.harness)) {
-          if (ev.harnessSessionId) {
-            recordDetectedSid(ev.harnessSessionId);
-          }
-          input.onEvent?.(ev);
+      for (const ev of streamParser.pushChunk(chunk)) {
+        if (ev.harnessSessionId) {
+          recordDetectedSid(ev.harnessSessionId);
         }
-        nlIdx = lineBuffer.indexOf("\n");
+        input.onEvent?.(ev);
       }
     };
 
@@ -1272,14 +1472,11 @@ export async function runDriverTurn(input: {
         recordDetectedSid(extracted);
       },
       onBeforeStreamEnd: (res) => {
-        if (lineBuffer.trim().length > 0) {
-          for (const ev of parseDriverStreamLine(lineBuffer, driver.harness)) {
-            if (ev.harnessSessionId) {
-              recordDetectedSid(ev.harnessSessionId);
-            }
-            input.onEvent?.(ev);
+        for (const ev of streamParser.flush()) {
+          if (ev.harnessSessionId) {
+            recordDetectedSid(ev.harnessSessionId);
           }
-          lineBuffer = "";
+          input.onEvent?.(ev);
         }
         if (res.harnessSessionId && !currentSid) {
           recordDetectedSid(res.harnessSessionId);
