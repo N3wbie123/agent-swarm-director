@@ -24,6 +24,7 @@ import {
   extractHarnessSessionIdFromOutput,
   isValidAsdSessionId,
 } from "./session-tracker.ts";
+import { appendCursorStreamFallback } from "./transcripts.ts";
 import type { AgentRole, HarnessId, SubagentDispatchMode, SubagentSessionMeta } from "./types.ts";
 
 // ============================================================================
@@ -488,6 +489,10 @@ export function executeHarnessProcess(
       if (settled) return;
       if (chunk && chunk.length > 0) {
         resetIdleTimer();
+        const fallbackHome = options.env?.HOME || options.env?.USERPROFILE;
+        if (options.harness === "cursor" && detectedHarnessSessionId) {
+          appendCursorStreamFallback(detectedHarnessSessionId, chunk, { homeDir: fallbackHome });
+        }
         if (!detectedHarnessSessionId) {
           sessionDetectBuffer += chunk;
           let nlIdx = sessionDetectBuffer.indexOf("\n");
@@ -502,6 +507,9 @@ export function executeHarnessProcess(
               if (extracted) {
                 detectedHarnessSessionId = extracted;
                 options.onSessionIdDetected?.(extracted);
+                if (options.harness === "cursor") {
+                  appendCursorStreamFallback(detectedHarnessSessionId, sessionDetectBuffer, { homeDir: fallbackHome });
+                }
               }
             }
             nlIdx = sessionDetectBuffer.indexOf("\n");

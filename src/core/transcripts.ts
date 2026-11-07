@@ -23,10 +23,12 @@
  *   found:false with an error string instead.
  */
 
+import * as child_process from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as zlib from "node:zlib";
 import { redactSecrets } from "./redact.ts";
 import type { HarnessId } from "./types.ts";
 
@@ -256,6 +258,95 @@ function extractLineMessage(line: Rec): ExtractedMessageFields | null {
     getStr(line, "ts") ??
     epochToIso(line.time);
 
+  // 0. Cursor stream-json fallback events
+  if (lineType === "thinking") {
+    const text = (getStr(line, "text") ?? "").trim();
+    if (text) {
+      return {
+        role: "assistant",
+        category: "thinking",
+        text: "",
+        thinking: text,
+        timestamp: lineTs,
+      };
+    }
+  }
+
+  if (lineType === "tool_call") {
+    const tc = isRec(line.tool_call) ? line.tool_call : undefined;
+    const callId =
+      getStr(line, "call_id") ??
+      getStr(line, "id") ??
+      (tc ? getStr(tc, "call_id") ?? getStr(tc, "id") ?? getStr(tc, "toolCallId") : undefined);
+    const subtype = getStr(line, "subtype");
+
+    let toolName = "tool";
+    let toolInput: string | undefined;
+    let toolOutput: string | undefined;
+    if (tc) {
+      if (getStr(tc, "name")) {
+        toolName = getStr(tc, "name")!;
+      } else {
+        const familyKey = Object.keys(tc).find((k) => k.endsWith("ToolCall") && isRec(tc[k]));
+        if (familyKey) {
+          toolName = familyKey.replace(/ToolCall$/, "");
+          const family = tc[familyKey] as Rec;
+          const rawArgs = family.args ?? family.input;
+          toolInput = serializeToolInput(rawArgs);
+          if (family.result) {
+            toolOutput = typeof family.result === "string" ? family.result : JSON.stringify(family.result);
+          }
+        }
+      }
+      if (tc.args !== undefined || tc.input !== undefined) {
+        toolInput = serializeToolInput(tc.args ?? tc.input);
+      }
+    }
+
+    if (subtype === "completed" || toolOutput !== undefined || line.result !== undefined) {
+      const out = toolOutput ?? (contentToText(line.result) || getStr(line, "result") || "");
+      return {
+        role: "tool",
+        category: "tool_result",
+        text: "",
+        toolResult: [
+          {
+            output: out,
+            ...(callId ? { toolUseId: callId } : {}),
+            ...(toolName ? { name: toolName } : {}),
+          },
+        ],
+        timestamp: lineTs,
+      };
+    }
+
+    return {
+      role: "assistant",
+      category: "tool_use",
+      text: "",
+      toolUse: [
+        {
+          name: toolName,
+          ...(callId ? { id: callId } : {}),
+          ...(toolInput !== undefined ? { input: toolInput } : {}),
+        },
+      ],
+      timestamp: lineTs,
+    };
+  }
+
+  if (lineType === "result") {
+    const resText = (contentToText(line.result) || getStr(line, "result") || "").trim();
+    if (resText) {
+      return {
+        role: "assistant",
+        category: "assistant",
+        text: resText,
+        timestamp: lineTs,
+      };
+    }
+  }
+
   // 1. Antigravity native step types: USER_INPUT, PLANNER_RESPONSE, TOOL_RESPONSE
   if (lineType === "USER_INPUT") {
     const rawContent = contentToText(line.content) || getStr(line, "text") || "";
@@ -471,7 +562,11 @@ function extractLineMessage(line: Rec): ExtractedMessageFields | null {
     return null;
   }
 
-  const message = getRec(line, "message");
+  const message =
+    getRec(line, "message") ??
+    getRec(line, "data") ??
+    (lineType === "assistant" || lineType === "user" || lineType === "tool" ? line : undefined);
+
   if (message) {
     const rawRole = normalizeRole(getStr(message, "role") ?? lineType ?? "unknown");
     const ts = lineTs ?? getStr(message, "timestamp");
@@ -480,11 +575,47 @@ function extractLineMessage(line: Rec): ExtractedMessageFields | null {
     const toolUse: TranscriptToolUseItem[] = [];
     const toolResult: TranscriptToolResultItem[] = [];
 
-    if (typeof message.content === "string") {
-      const cleaned = cleanClaudeText(message.content);
+    // Support top-level or message-level toolUseResult
+    const toolUseResult = getRec(line, "toolUseResult") ?? getRec(message, "toolUseResult");
+    if (toolUseResult) {
+      const output = (
+        contentToText(toolUseResult.output) ||
+        getStr(toolUseResult, "output") ||
+        getStr(toolUseResult, "result") ||
+        ""
+      ).trim();
+      const toolUseId =
+        getStr(toolUseResult, "toolUseId") ??
+        getStr(toolUseResult, "id") ??
+        getStr(toolUseResult, "tool_use_id");
+      if (output || toolUseId) {
+        toolResult.push({
+          output,
+          ...(toolUseId ? { toolUseId } : {}),
+          ...(toolUseResult.is_error === true || Boolean(toolUseResult.error)
+            ? { isError: true }
+            : {}),
+        });
+      }
+    }
+
+    let contentToProcess: unknown = message.content ?? message.text ?? line.content ?? line.text;
+    if (isRec(contentToProcess) && !Array.isArray(contentToProcess)) {
+      const recContent = contentToProcess as Rec;
+      if (typeof recContent.text === "string") {
+        const cleaned = cleanClaudeText(recContent.text);
+        if (cleaned) textParts.push(cleaned);
+      }
+      if (Array.isArray(recContent.parts)) {
+        contentToProcess = recContent.parts;
+      }
+    }
+
+    if (typeof contentToProcess === "string") {
+      const cleaned = cleanClaudeText(contentToProcess);
       if (cleaned) textParts.push(cleaned);
-    } else if (Array.isArray(message.content)) {
-      for (const block of message.content) {
+    } else if (Array.isArray(contentToProcess)) {
+      for (const block of contentToProcess) {
         if (typeof block === "string") {
           const cleaned = cleanClaudeText(block);
           if (cleaned) textParts.push(cleaned);
@@ -525,6 +656,13 @@ function extractLineMessage(line: Rec): ExtractedMessageFields | null {
         } else if (typeof block.text === "string" && block.text) {
           const cleaned = cleanClaudeText(block.text);
           if (cleaned) textParts.push(cleaned);
+        } else {
+          const fallbackTxt =
+            getStr(block, "text") ?? getStr(block, "summary") ?? getStr(block, "reference");
+          if (fallbackTxt) {
+            const cleaned = cleanClaudeText(fallbackTxt);
+            if (cleaned) textParts.push(cleaned);
+          }
         }
       }
     }
@@ -720,6 +858,42 @@ function mergeOrAppendMessage(list: TranscriptMessage[], next: TranscriptMessage
   list.push(next);
 }
 
+/**
+ * Decompresses a zstd buffer using native node:zlib (Node >=22.13.0) or falls back
+ * to the `zstd -dc` CLI. Returns null on decompression failure or corrupt bytes.
+ */
+export function decompressZstdBuffer(
+  compressed: Buffer,
+  filePath?: string
+): Buffer | null {
+  const zlibAny = zlib as unknown as {
+    zstdDecompressSync?: (buf: Buffer) => Buffer;
+  };
+  if (typeof zlibAny.zstdDecompressSync === "function") {
+    try {
+      return zlibAny.zstdDecompressSync(compressed);
+    } catch {
+      // Fall through to CLI attempt or return null
+    }
+  }
+  try {
+    const args = filePath ? ["-dc", filePath] : ["-dc"];
+    const spawnOpts: child_process.SpawnSyncOptionsWithBufferEncoding = {
+      stdio: [filePath ? "ignore" : "pipe", "pipe", "ignore"],
+      maxBuffer: DEFAULT_MAX_READ_BYTES,
+      windowsHide: true,
+      ...(filePath ? {} : { input: compressed }),
+    };
+    const res = child_process.spawnSync("zstd", args, spawnOpts);
+    if (!res.error && res.status === 0 && Buffer.isBuffer(res.stdout) && res.stdout.length > 0) {
+      return res.stdout;
+    }
+  } catch {
+    // CLI not available
+  }
+  return null;
+}
+
 function readJsonlWindow(
   filePath: string,
   options: { limit: number; before?: number; maxReadBytes: number; mergeToolResults?: boolean }
@@ -736,7 +910,27 @@ function readJsonlWindow(
   let baseIndex = 0;
   let truncated = false;
 
-  if (stat.size <= options.maxReadBytes) {
+  if (filePath.endsWith(".zst")) {
+    let compressedBuf: Buffer;
+    try {
+      compressedBuf = fs.readFileSync(filePath);
+    } catch {
+      return null;
+    }
+    const decompressed = decompressZstdBuffer(compressedBuf, filePath);
+    if (!decompressed) {
+      return null;
+    }
+    raw = decompressed.toString("utf8");
+    if (raw.length > options.maxReadBytes) {
+      raw = raw.slice(raw.length - options.maxReadBytes);
+      const firstNl = raw.indexOf("\n");
+      if (firstNl >= 0) {
+        raw = raw.slice(firstNl + 1);
+      }
+      truncated = true;
+    }
+  } else if (stat.size <= options.maxReadBytes) {
     raw = fs.readFileSync(filePath, "utf8");
   } else {
     // Tail window: read the last maxReadBytes, drop the partial first line,
@@ -838,13 +1032,18 @@ function locateCodex(home: string, threadId: string): string | null {
   const matches = listFilesRecursive(sessionsDir, (dirent) => {
     if (!dirent.isFile()) return false;
     const name = dirent.name;
-    return name.startsWith("rollout-") && name.endsWith(".jsonl") && name.includes(threadId);
+    const isRollout = name.startsWith("rollout-") && name.includes(threadId);
+    return isRollout && (name.endsWith(".jsonl") || name.endsWith(".jsonl.zst"));
   });
   if (matches.length === 0) return null;
   // Most recent rollout wins when multiple match.
   matches.sort((a, b) => {
     try {
-      return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs;
+      const diff = fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs;
+      if (diff !== 0) return diff;
+      if (a.endsWith(".jsonl") && b.endsWith(".zst")) return -1;
+      if (a.endsWith(".zst") && b.endsWith(".jsonl")) return 1;
+      return 0;
     } catch {
       return 0;
     }
@@ -875,6 +1074,31 @@ function opencodeDataDir(home: string): string {
   return path.join(home, ".local", "share", "opencode");
 }
 
+export function resolveCursorFallbackTranscriptPath(
+  sessionId: string,
+  options?: { homeDir?: string }
+): string {
+  const home = resolveHome(options?.homeDir);
+  return path.join(home, ".asd", "transcripts", "cursor", `${sessionId}.jsonl`);
+}
+
+export function appendCursorStreamFallback(
+  sessionId: string,
+  rawChunkOrLines: string,
+  options?: { homeDir?: string }
+): string | null {
+  if (!sessionId || !rawChunkOrLines) return null;
+  const targetPath = resolveCursorFallbackTranscriptPath(sessionId, options);
+  try {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    const payload = rawChunkOrLines.endsWith("\n") ? rawChunkOrLines : `${rawChunkOrLines}\n`;
+    fs.appendFileSync(targetPath, payload, "utf8");
+    return targetPath;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Exported for tests / advanced callers: resolve where a harness transcript
  * lives without reading it.
@@ -897,7 +1121,15 @@ export function locateHarnessTranscript(
     const home = resolveHome(options.homeDir);
 
     if (harness === "cursor") {
-      // No stable on-disk transcript format is published for Cursor CLI.
+      const primaryCandidate = resolveCursorFallbackTranscriptPath(sessionId, options);
+      if (fs.existsSync(primaryCandidate)) {
+        return { found: true, harness: "cursor", sessionId, transcriptPath: primaryCandidate };
+      }
+      const secondaryCandidate = path.join(home, ".cursor", "transcripts", `${sessionId}.jsonl`);
+      if (fs.existsSync(secondaryCandidate)) {
+        return { found: true, harness: "cursor", sessionId, transcriptPath: secondaryCandidate };
+      }
+      // Backward compatibility: strictly return "unsupported" when no fallback exists
       return { ...base, error: "unsupported" };
     }
 

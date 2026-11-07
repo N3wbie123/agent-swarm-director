@@ -57,7 +57,7 @@
 | 이벤트 (실측) | `system/init`(session_id·tools·model) → `stream_event`(content_block_delta: `text_delta`/`thinking_delta`/`input_json_delta`) → `assistant`(완성 블록: text/thinking/tool_use) → `user`(tool_result 운반) → `result`(최종 + cost + session_id) |
 | 전송/이어하기 | `-p` + `--resume <uuid>` (스트리밍 동시 가능), `--continue`, `--fork-session` |
 | 권한/승인 | `--permission-mode`, `--permission-prompts host\|none`, SDK `canUseTool` (v2 확장용) |
-| 함정 | ①긴 프롬프트는 stdin 전달 권장 ②`--dangerously-skip-permissions` 필요시 명시 ③세션 JSONL은 버전마다 드리프트 → 회귀 테스트 필수 |
+| 함정 | ①긴 프롬프트는 stdin 전달 권장 ②`--dangerously-skip-permissions` 필요시 명시 ③세션 JSONL 스키마 드리프트 방어 내장(v2.5.0: `{text, parts}` 객체형 content, message 래퍼 생략, toolUseResult 무손실 복원) |
 
 ### 3.2 OpenCode (`opencode` v1.19.4) — 블록 실시간 (토큰은 serve+SSE만, P2 과제)
 
@@ -74,7 +74,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 세션 저장 | `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl` — **구세션은 `.jsonl.zst`(zstd)** → 히스토리 전체 로드 시 복원 필요. 엔벨로프: `{timestamp, ordinal, type: session_meta\|event_msg\|response_item\|turn_context, payload}` |
+| 세션 저장 | `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl` — **구세션은 `.jsonl.zst`(zstd)** (v2.5.0: `node:zlib` / `zstd` CLI 기반 자동 투명 압축 해제). 엔벨로프: `{timestamp, ordinal, type: session_meta\|event_msg\|response_item\|turn_context, payload}` |
 | 스트리밍 | `codex exec "<prompt>" --json` |
 | 이벤트 (실측) | `thread.started`(thread_id) → `turn.started` → `item.started\|completed`(item.type: `agent_message`/`reasoning`/`command_execution`(aggregated_output, exit_code)/`file_change`/`mcp_tool_call`) → `turn.completed`(usage) |
 | 전송/이어하기 | `codex exec resume <id> "<prompt>" --json` / `--last`, `codex fork` |
@@ -97,7 +97,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 세션 저장 | `~/.cursor/chats/<workspace-md5>/<chat-uuid>/store.db`(SQLite, **비공개 blob 포맷**)+`meta.json` → **트랜스크립트 읽기 unsupported**. 유일한 대안: lossy 내보내기 `~/.cursor/projects/<dir>/agent-transcripts/*.jsonl`(도구 결과 미포함) |
+| 세션 저장 | `~/.cursor/chats/<workspace-md5>/<chat-uuid>/store.db`(SQLite, **비공개 blob 포맷**)+`meta.json` → 네이티브는 unsupported 유지. 단, v2.5.0부터 헤드리스 실행 스트림을 `~/.asd/transcripts/cursor/<sessionId>.jsonl`에 자동 기록하는 Lossy JSONL Stream Fallback 탑재 (미존재 시 `unsupported` 반환 불변식 유지) |
 | 스트리밍 | `cursor-agent -p "<prompt>" --force --output-format stream-json` |
 | 이벤트 (실측) | `system/init`(session_id) → **`user` 프롬프트 에코(스킵 필수)** → `{"type":"thinking","subtype":"delta","text":...}` 톱레벨 델타 → `{"type":"tool_call","subtype":"started\|completed","call_id":...,"tool_call":{"<family>ToolCall":{"args":...,"result":{"success":...}\|{"error":{"errorMessage":...}}}}}` → `assistant`(블록, `model_call_id` 유무로 플러시 구분) → `result` |
 | 전송/이어하기 | `--resume <chatId>`, `--continue`, `agent ls`(목록), `create-chat`(빈 채팅 ID 선점) |
