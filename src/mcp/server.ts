@@ -893,7 +893,9 @@ export class AsdMcpServer {
     // Renders .asd/PLAN.md (only take foreground on create if no active non-done foreground session exists)
     const existingFgId = getForegroundSessionId(this.projectRoot, paths.planMdPath);
     let forceForeground = false;
-    if (action === "create") {
+    if (Boolean(input.force)) {
+      forceForeground = true;
+    } else if (action === "create" || action === "update") {
       if (!existingFgId || existingFgId === sessionId) {
         forceForeground = true;
       } else {

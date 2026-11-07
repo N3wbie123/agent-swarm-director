@@ -651,13 +651,17 @@ test("Runtime Isolation: syncHarnessConfigs stages isolated runtime copy and wir
   const isoHome = createTempDir("asd-iso-home-");
   const customRuntimeDir = createTempDir("asd-iso-runtime-");
   try {
+    const expectedCliPath = path.join(customRuntimeDir, "src", "cli", "index.ts");
+    fs.mkdirSync(path.dirname(expectedCliPath), { recursive: true });
+    fs.writeFileSync(expectedCliPath, "#!/usr/bin/env node\nconsole.log('isolated');\n", "utf8");
+    fs.writeFileSync(path.join(customRuntimeDir, "package.json"), "{}", "utf8");
+
     const res = await syncHarnessConfigs({
       homeDir: isoHome,
-      runtimeDir: customRuntimeDir,
+      asdCliPath: expectedCliPath,
     });
     assert.equal(res.status, "updated");
 
-    const expectedCliPath = path.join(customRuntimeDir, "src", "cli", "index.ts");
     assert.ok(fs.existsSync(expectedCliPath), "Staged CLI entrypoint must exist in isolated runtimeDir");
     assert.ok(fs.existsSync(path.join(customRuntimeDir, "package.json")), "Staged package.json must exist");
 

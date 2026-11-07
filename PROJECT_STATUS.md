@@ -122,7 +122,7 @@ ASD v2.4.0은 프로젝트 폴더 오염을 막고 멀티 프로젝트·멀티 �
 #### ① [`src/core/types.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts)
 전체 시스템의 상수 배열(`as const`)과 TypeScript 인터페이스를 정의하는 리프(Leaf) 모듈입니다.
 - **주요 상수 및 유니온 타입**:
-  - [`ASD_VERSION`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L11) (`"2.4.0"`): 패키지 및 설정 버전 상수.
+  - [`ASD_VERSION`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L11) (`"2.5.0"`): 패키지 및 설정 버전 상수.
   - [`HARNESS_IDS`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L17-L23) / `HarnessId`: `"claude-code" | "opencode" | "codex" | "antigravity" | "cursor"`.
   - [`AGENT_ROLES`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L31-L37) / `AgentRole`: 5대 핵심 역할 (`"planner" | "architect" | "worker" | "scout" | "critic"`).
   - [`TASK_CATEGORIES`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L42-L48) / `TaskCategory`: `"visual-ui" | "design" | "research" | "writing" | "general"`.

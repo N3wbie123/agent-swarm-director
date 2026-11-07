@@ -1280,6 +1280,7 @@ export async function main(
             const input = {
               ...jsonPayload,
               action,
+              ...(flags.force ? { force: true } : {}),
               ...(options.title ? { title: options.title } : {}),
               ...(parsedTasks ? { tasks: parsedTasks } : {}),
               ...(options.session ? { sessionId: options.session } : {}),
