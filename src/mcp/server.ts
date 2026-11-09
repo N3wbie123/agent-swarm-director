@@ -1,5 +1,5 @@
 /**
- * ASD v2.2 MCP Core Server (src/mcp/server.ts).
+ * ASD v2.5.0 MCP Core Server (src/mcp/server.ts).
  *
  * Implements:
  * 1. StdioRpcServer-based JSON-RPC transport handling MCP protocol:
@@ -386,9 +386,7 @@ export function buildPromptForTask(
   return buildCorePromptForTask(task, upstreamDecisions, upstreamFiles);
 }
 
-function _unusedLegacyPromptLines(lines: string[]): string {
-  return lines.join("\n");
-}
+// Legacy prompt builder delegated to buildCorePromptForTask in session-services.ts
 
 export const MAX_AUTO_CROSS_SCOPE_PER_TASK = 2;
 export const MAX_CROSS_SCOPE_CHAIN_DEPTH = 2;

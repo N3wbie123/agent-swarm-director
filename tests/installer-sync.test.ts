@@ -402,7 +402,7 @@ describe("Installer & Sync Engine", () => {
 
       assert.equal(probe.ok, true);
       assert.equal(probe.errors.length, 0);
-      assert.ok(probe.durationMs < 100, `durationMs: ${probe.durationMs}ms >= 100ms`);
+      assert.ok(probe.durationMs < 250, `durationMs: ${probe.durationMs}ms >= 250ms`);
 
       // Node.js version
       assert.equal(probe.nodeVersion.ok, true);

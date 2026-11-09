@@ -114,22 +114,27 @@ describe("Spawner & Stream Audit (T1.1)", () => {
     let capturedOut = "";
 
     const res = await executeHarnessProcess({
-      command: process.execPath,
-      args: [
-        "-e",
-        "console.log('first-message'); setTimeout(() => {}, 10000)",
-      ],
+      command: "mock-cli",
+      args: [],
       cwd: tmp,
       env: { ...process.env } as Record<string, string>,
       harness: "claude-code",
       logPath,
       timeoutMs: 10000,
-      idleTimeoutMs: 150,
+      idleTimeoutMs: 100,
       onOutput: (chunk) => {
         capturedOut += chunk;
       },
-      onSpawn: (pid) => {
-        if (pid > 0) livePids.push(pid);
+      commandRunner: {
+        async run(_cmd, _args, opts) {
+          opts.onSpawn?.(54321);
+          opts.onStdout("first-message\n");
+          await new Promise<void>((resolve) => {
+            if (opts.signal?.aborted) return resolve();
+            opts.signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          return { exitCode: -1, pid: 54321 };
+        },
       },
     });
 
@@ -141,7 +146,7 @@ describe("Spawner & Stream Audit (T1.1)", () => {
       `Expected log to contain initial output, got: ${logContent}`
     );
     assert.ok(
-      logContent.includes("[IDLE_TIMEOUT] Process produced no output for 150ms"),
+      logContent.includes("[IDLE_TIMEOUT] Process produced no output for 100ms"),
       `Expected log to include [IDLE_TIMEOUT], got: ${logContent}`
     );
     assert.ok(

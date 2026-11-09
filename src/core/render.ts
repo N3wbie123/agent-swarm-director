@@ -1,5 +1,5 @@
 /**
- * ASD v2.2 Markdown Renderer & Parser.
+ * ASD v2.5.0 Markdown Renderer & Parser.
  *
  * Implements:
  * - renderPlanMd: renders .asd/PLAN.md using ARCHITECTURE_PLAN.md inline format
