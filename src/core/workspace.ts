@@ -805,7 +805,9 @@ export function rollbackLightChanges(
 ): void {
   withFileMergeLockSync(projectRoot, "rollbackLightChanges", () => {
     if (options?.files !== undefined) {
-      const targetFiles = options.files.filter((f) => f && f.trim().length > 0);
+      const targetFiles = options.files
+        .map((f) => (f ? f.trim().replaceAll("\\", "/") : ""))
+        .filter((f) => f.length > 0);
       if (targetFiles.length === 0) {
         return;
       }

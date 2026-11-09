@@ -78,7 +78,13 @@ export function redactSecrets(input: string): string {
 
   for (const pattern of quotedPatterns) {
     result = result.replace(pattern, (match, prefix, quote, value) => {
-      if (value === REDACTED) return match;
+      if (
+        value === REDACTED ||
+        isLikelyCodeIdentifierOrType(value) ||
+        String(value).startsWith("${")
+      ) {
+        return match;
+      }
       return `${prefix}${quote}${REDACTED}${quote}`;
     });
   }
@@ -106,14 +112,30 @@ export function redactSecrets(input: string): string {
  * `const token = req.token`, or short test placeholders).
  */
 export function hasLeakedSecrets(content: string): boolean {
-  if (/\b(AKIA|ASIA)[0-9A-Z]{16}\b/.test(content)) return true;
-  if (/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/.test(content)) {
+  const stripped = content
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(?<![:\\])\/\/[^\r\n]*/g, " ");
+
+  if (/\b(AKIA|ASIA)[0-9A-Z]{16}\b/.test(stripped)) return true;
+  if (/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/.test(stripped)) {
     return true;
   }
-  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(content)) return true;
-  if (/\bsk-[A-Za-z0-9_-]{16,}\b/.test(content)) return true;
-  if (/\bghp_[A-Za-z0-9]{20,}\b/.test(content)) return true;
-  if (/\bAIza[0-9A-Za-z_-]{35}\b/.test(content)) return true;
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(stripped)) return true;
+
+  const skMatches = stripped.match(/\bsk-[A-Za-z0-9_-]{16,}\b/g);
+  if (skMatches) {
+    for (const token of skMatches) {
+      const body = token.replace(/^sk-(?:proj-|ant-(?:api\d+-)?)?/, "");
+      const hasDigitOrUpper = /[0-9A-Z]/.test(body);
+      const hasLongContiguousRun = /[A-Za-z0-9]{14,}/.test(body);
+      if (hasDigitOrUpper || hasLongContiguousRun) {
+        return true;
+      }
+    }
+  }
+
+  if (/\bghp_[A-Za-z0-9]{20,}\b/.test(stripped)) return true;
+  if (/\bAIza[0-9A-Za-z_-]{35}\b/.test(stripped)) return true;
 
   return false;
 }
