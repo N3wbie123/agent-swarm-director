@@ -95,7 +95,11 @@ export async function runSubagentControlAction(options: {
   // 1. Action: kill
   if (options.action === "kill") {
     if (target.pid && target.pid > 0) {
-      killProcessTree(target.pid);
+      try {
+        killProcessTree(target.pid);
+      } catch {
+        // Ignore errors if process already exited or ESRCH
+      }
     }
     try {
       if (fs.existsSync(metaPath)) {

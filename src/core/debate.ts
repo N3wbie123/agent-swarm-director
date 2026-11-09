@@ -1081,6 +1081,10 @@ export async function runDebateBroker(
   const db =
     options.db ?? openProjectDb(options.projectRoot, options.homeDir);
 
+  let debateCreated = false;
+  let debateFinalized = false;
+  const spawnedDebateSubIds: string[] = [];
+
   try {
     // Ensure parent session row exists to satisfy SQLite foreign keys
     const defaultMemo = options.topic.trim().slice(0, 40);
@@ -1105,6 +1109,7 @@ export async function runDebateBroker(
       topic: options.topic,
       status: "round1",
     });
+    debateCreated = true;
 
     options.onProgress?.(
       `[Debate ${debateId}] Initialized debate for topic: "${options.topic}"`
@@ -1156,7 +1161,6 @@ export async function runDebateBroker(
     const effectiveIdleTimeoutMs =
       options.timeoutMs !== undefined ? undefined : DEFAULT_IDLE_TIMEOUT_MS;
     const logTaskId = options.taskId || debateId;
-    const spawnedDebateSubIds: string[] = [];
 
     const round1Promises = reviewers.map(async (reviewer, index) => {
       const subSessionId = `${options.sessionId}-deb-${debateId}-r1-${index + 1}`;
@@ -1212,6 +1216,7 @@ export async function runDebateBroker(
             signal: options.signal,
             timeoutMs: effectiveTimeoutMs,
             idleTimeoutMs: effectiveIdleTimeoutMs,
+            closeStdinOnSpawn: true,
           });
         },
       });
@@ -1289,6 +1294,7 @@ export async function runDebateBroker(
 
     // Graceful recovery check: must have at least 1 valid surviving opening
     if (survivingOpenings.length === 0) {
+      debateFinalized = true;
       db.updateDebateVerdict(debateId, "failed", {
         round1BundleJson: JSON.stringify({
           openings: [],
@@ -1337,6 +1343,7 @@ export async function runDebateBroker(
         round2BundleJson: null,
         insightVerdictJson: JSON.stringify(insightVerdict),
       });
+      debateFinalized = true;
 
       options.onProgress?.(
         `[Debate ${debateId}] Round 1 early exit: unanimous non-rejection (${insightVerdict.verdict})`
@@ -1558,6 +1565,7 @@ export async function runDebateBroker(
         round2BundleJson: JSON.stringify(round2Bundle),
         insightVerdictJson: JSON.stringify(insightVerdict),
       });
+      debateFinalized = true;
 
       options.onProgress?.(
         `[Debate ${debateId}] Round 2 Arbiter completed with verdict: ${insightVerdict.verdict}`
@@ -1635,6 +1643,30 @@ export async function runDebateBroker(
       insightVerdict,
     };
   } finally {
+    if (debateCreated && !debateFinalized) {
+      try {
+        db.updateDebateVerdict(debateId, "failed", {
+          round1BundleJson: JSON.stringify({
+            openings: [],
+            error: "Debate aborted or crashed before completion",
+          }),
+        });
+      } catch {
+        // Ignore update failure during abnormal termination
+      }
+      for (const sid of spawnedDebateSubIds) {
+        try {
+          finalizeSubagentArtifacts({
+            projectRoot: options.projectRoot,
+            sessionId: options.sessionId,
+            subSessionId: sid,
+            keep: "tail",
+          });
+        } catch {
+          // Best-effort cleanup
+        }
+      }
+    }
     if (ownsDb) {
       try {
         db.close();

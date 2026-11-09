@@ -22,6 +22,7 @@ export interface SubagentLogRecord {
   allowedFiles?: string[];
   startedAt: number;
   finishedAt?: number;
+  updatedAt?: number;
   prompt: string;
   outputLog: string;
   artifactsPurged: boolean;
@@ -64,6 +65,16 @@ export function scanSubagentLogs(projectRoot: string): SubagentLogRecord[] {
             typeof meta.startedAt === "number" && meta.startedAt > 0
               ? meta.startedAt
               : Math.round(metaStat.birthtimeMs || metaStat.mtimeMs || 0);
+          const finishedAt =
+            typeof meta.finishedAt === "number" ? meta.finishedAt : undefined;
+          const updatedAt =
+            typeof meta.updated_at === "number"
+              ? meta.updated_at
+              : typeof meta.updatedAt === "number"
+                ? meta.updatedAt
+                : typeof meta.finishedAt === "number"
+                  ? meta.finishedAt
+                  : startedAt;
           records.push({
             sessionId: String(meta.parentSessionId ?? meta.mainSessionId ?? sDir.name),
             subSessionId: String(meta.subSessionId ?? subDir.name),
@@ -82,7 +93,8 @@ export function scanSubagentLogs(projectRoot: string): SubagentLogRecord[] {
               ? meta.allowedFiles.map((x) => String(x))
               : [],
             startedAt,
-            finishedAt: typeof meta.finishedAt === "number" ? meta.finishedAt : undefined,
+            finishedAt,
+            updatedAt,
             prompt,
             outputLog,
             artifactsPurged,
@@ -97,7 +109,14 @@ export function scanSubagentLogs(projectRoot: string): SubagentLogRecord[] {
     return [];
   }
 
-  records.sort((a, b) => b.startedAt - a.startedAt);
+  records.sort((a, b) => {
+    const aTime = a.updatedAt ?? a.finishedAt ?? a.startedAt;
+    const bTime = b.updatedAt ?? b.finishedAt ?? b.startedAt;
+    if (bTime !== aTime) {
+      return bTime - aTime;
+    }
+    return b.startedAt - a.startedAt;
+  });
   return records;
 }
 
