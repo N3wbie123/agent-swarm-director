@@ -72,11 +72,14 @@ export interface SpawnSubagentOptions {
   args: string[];
   signal?: AbortSignal;
   timeoutMs?: number;
+  maxDurationMs?: number;
   idleTimeoutMs?: number;
   cwd?: string;
   commandRunner?: CommandRunner;
   dispatchMode?: SubagentDispatchMode;
   ownerPid?: number;
+  stdinPayload?: string;
+  closeStdinOnSpawn?: boolean;
 }
 
 export const DEFAULT_DISPATCH_TIMEOUT_MS =
@@ -177,7 +180,17 @@ export function resolveSpawnCommand(
     } catch {
       // Fall through to cmd.exe wrapper
     }
-    return { command: resolvedPath, args, shell: true };
+    const finalCmd =
+      resolvedPath.includes(" ") && !(resolvedPath.startsWith('"') && resolvedPath.endsWith('"'))
+        ? `"${resolvedPath}"`
+        : resolvedPath;
+    const finalArgs = args.map((arg) => {
+      if (/\s/.test(arg) && !(arg.startsWith('"') && arg.endsWith('"'))) {
+        return `"${arg}"`;
+      }
+      return arg;
+    });
+    return { command: finalCmd, args: finalArgs, shell: true };
   }
 
   return { command: cmd, args, shell: false };
@@ -190,6 +203,12 @@ export function resolveSpawnCommand(
 const defaultCommandRunner: CommandRunner = {
   run(cmd, args, opts) {
     return new Promise((resolve) => {
+      let settled = false;
+      const safeResolve = (result: { exitCode: number; pid: number }) => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
       const resolved = resolveSpawnCommand(cmd, args, opts.env);
       let finalArgs = resolved.args;
       let stdinPayload: string | undefined = opts.stdinPayload;
@@ -237,7 +256,7 @@ const defaultCommandRunner: CommandRunner = {
       // "close" (not "exit"): fires after stdio drained, so no chunk is lost
       // before the runner resolves.
       child.on("close", (code) =>
-        resolve({ exitCode: code ?? -1, pid: child.pid ?? -1 })
+        safeResolve({ exitCode: code ?? -1, pid: child.pid ?? -1 })
       );
       child.on("error", (err) => {
         const totalArgChars = finalArgs.reduce((acc, a) => acc + a.length, 0);
@@ -246,9 +265,9 @@ const defaultCommandRunner: CommandRunner = {
             ? ` (arg length: ${totalArgChars} chars — may exceed OS command-line limit)`
             : "";
         opts.onStderr(
-          `[asd:spawn-error] Failed to spawn '${resolved.command}': ${err.message}${argHint}\n`
+          `[SPAWN_ERROR] [asd:spawn-error] Failed to spawn '${resolved.command}': ${err.message}${argHint}\n`
         );
-        resolve({ exitCode: -1, pid: child.pid ?? -1 });
+        safeResolve({ exitCode: -1, pid: child.pid ?? -1 });
       });
     });
   },
@@ -364,6 +383,7 @@ export interface ExecuteHarnessProcessOptions {
   logPath: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  maxDurationMs?: number;
   idleTimeoutMs?: number;
   commandRunner?: CommandRunner;
   stdinPayload?: string;
@@ -408,6 +428,10 @@ export function executeHarnessProcess(
   logStream.on("error", () => {});
 
   const runner = options.commandRunner ?? defaultCommandRunner;
+  const effectiveTimeoutMs =
+    options.timeoutMs !== undefined && options.maxDurationMs !== undefined
+      ? Math.min(options.timeoutMs, options.maxDurationMs)
+      : (options.timeoutMs ?? options.maxDurationMs);
 
   return new Promise<ExecuteHarnessProcessResult>((resolve) => {
     let pid = 0;
@@ -426,7 +450,7 @@ export function executeHarnessProcess(
       if (options.signal) options.signal.removeEventListener("abort", onAbort);
       if (!detectedHarnessSessionId && sessionDetectBuffer.length > 0) {
         const extracted = extractHarnessSessionIdFromOutput(
-          sessionDetectBuffer,
+          sessionDetectBuffer.replace(/\r$/, ""),
           options.harness
         );
         if (extracted) {
@@ -463,15 +487,26 @@ export function executeHarnessProcess(
       finish(-1, "failed");
     };
 
-    const onTimeout = (): void => {
+    const onHardTimeout = (): void => {
       timedOut = true;
+      handleChunk(
+        `[TIMEOUT] Process exceeded timeout (${effectiveTimeoutMs}ms)\n`
+      );
+      onAbort();
+    };
+
+    const onIdleTimeout = (): void => {
+      timedOut = true;
+      handleChunk(
+        `[IDLE_TIMEOUT] Process produced no output for ${options.idleTimeoutMs}ms\n`
+      );
       onAbort();
     };
 
     const resetIdleTimer = (): void => {
       if (options.idleTimeoutMs === undefined || settled) return;
       if (idleTimer !== undefined) clearTimeout(idleTimer);
-      idleTimer = setTimeout(onTimeout, options.idleTimeoutMs);
+      idleTimer = setTimeout(onIdleTimeout, options.idleTimeoutMs);
       idleTimer.unref?.();
     };
 
@@ -479,8 +514,8 @@ export function executeHarnessProcess(
       options.signal.addEventListener("abort", onAbort, { once: true });
       if (options.signal.aborted && !settled) onAbort();
     }
-    if (options.timeoutMs !== undefined) {
-      timer = setTimeout(onTimeout, options.timeoutMs);
+    if (effectiveTimeoutMs !== undefined) {
+      timer = setTimeout(onHardTimeout, effectiveTimeoutMs);
       timer.unref?.();
     }
     resetIdleTimer();
@@ -497,7 +532,7 @@ export function executeHarnessProcess(
           sessionDetectBuffer += chunk;
           let nlIdx = sessionDetectBuffer.indexOf("\n");
           while (nlIdx !== -1) {
-            const line = sessionDetectBuffer.slice(0, nlIdx);
+            const line = sessionDetectBuffer.slice(0, nlIdx).replace(/\r$/, "");
             sessionDetectBuffer = sessionDetectBuffer.slice(nlIdx + 1);
             if (!detectedHarnessSessionId) {
               const extracted = extractHarnessSessionIdFromOutput(
@@ -613,8 +648,11 @@ export function spawnSubagent(
     logPath,
     signal: options.signal,
     timeoutMs: options.timeoutMs,
+    maxDurationMs: options.maxDurationMs,
     idleTimeoutMs: options.idleTimeoutMs,
     commandRunner: options.commandRunner,
+    stdinPayload: options.stdinPayload,
+    closeStdinOnSpawn: options.closeStdinOnSpawn ?? true,
     onSpawn: (pid) => {
       meta = { ...meta, pid };
       writeMeta();

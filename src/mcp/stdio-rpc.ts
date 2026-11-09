@@ -68,11 +68,12 @@ export class StdioRpcServer {
     this.writeFrame({ jsonrpc: "2.0", method: "notifications/progress", params });
   }
 
-  private onData = (chunk: string): void => {
+  private onData = (chunk: string | Buffer): void => {
     // CRLF-safe line framing: split on /\r?\n/, keep the trailing partial
     // line in the buffer so frames split across arbitrary chunk boundaries
     // (including a \r...\n split) reassemble correctly.
-    this.lineBuffer += chunk;
+    const str = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    this.lineBuffer += str;
     const parts = this.lineBuffer.split(/\r?\n/);
     this.lineBuffer = parts.pop() ?? "";
     for (const line of parts) this.handleLine(line);
@@ -83,7 +84,7 @@ export class StdioRpcServer {
   };
 
   private handleLine(line: string): void {
-    const trimmed = line.trim();
+    const trimmed = line.replace(/\r$/, "").trim();
     if (trimmed === "") return;
 
     let message: unknown;

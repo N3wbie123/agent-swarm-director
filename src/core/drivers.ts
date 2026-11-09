@@ -17,6 +17,7 @@ import { atomicWriteFileSync, renderProgressBoard } from "./render.ts";
 import {
   buildHeadlessHarnessCommand,
   buildResumeHarnessCommand,
+  buildSpawnSpec,
   isValidAsdSessionId,
   recordCliRecentSession,
 } from "./session-tracker.ts";
@@ -750,7 +751,7 @@ export function createStreamParser(ctx: StreamParserOptions): TypedStatefulStrea
 
       let nlIdx = lineBuffer.indexOf("\n");
       while (nlIdx !== -1) {
-        const line = lineBuffer.slice(0, nlIdx);
+        const line = lineBuffer.slice(0, nlIdx).replace(/\r$/, "");
         lineBuffer = lineBuffer.slice(nlIdx + 1);
         const parsed = processParsedLine(line);
         for (const ev of parsed) {
@@ -764,8 +765,9 @@ export function createStreamParser(ctx: StreamParserOptions): TypedStatefulStrea
 
     flush(): DriverStreamEvent[] {
       const events: DriverStreamEvent[] = [];
-      if (lineBuffer.trim().length > 0) {
-        const parsed = processParsedLine(lineBuffer);
+      const remaining = lineBuffer.replace(/\r$/, "").trim();
+      if (remaining.length > 0) {
+        const parsed = processParsedLine(remaining);
         for (const ev of parsed) {
           events.push(ev);
         }
@@ -1251,6 +1253,16 @@ export function parseDriverStreamLine(
     return events;
   }
 
+  if (lineType === "status" && typeof obj.session_id === "string" && obj.session_id) {
+    events.push({
+      type: "status",
+      harness,
+      harnessSessionId: obj.session_id,
+      timestamp: now,
+    });
+    return events;
+  }
+
   return [];
 }
 
@@ -1263,6 +1275,7 @@ export async function runDriverTurn(input: {
   driverId?: string;
   injectBriefing?: "auto" | "always" | "never";
   timeoutMs?: number;
+  maxDurationMs?: number;
   idleTimeoutMs?: number;
   signal?: AbortSignal;
   onOutput?: (chunk: string) => void;
@@ -1362,28 +1375,15 @@ export async function runDriverTurn(input: {
     const useStreamJson =
       input.streamJson ?? Boolean(input.onEvent && !input.commandRunner);
 
-    let command: string;
-    let args: string[];
-    if (!driver.harness_session_id) {
-      const built = buildHeadlessHarnessCommand({
-        harness: driver.harness,
-        prompt: effectivePrompt,
-        model: effectiveModel,
-        streaming: useStreamJson,
-      });
-      command = built.command;
-      args = [...built.args];
-    } else {
-      const built = buildResumeHarnessCommand({
-        harness: driver.harness,
-        harnessSessionId: driver.harness_session_id,
-        prompt: effectivePrompt,
-        model: driver.model ?? effectiveModel,
-        streaming: useStreamJson,
-      });
-      command = built.command;
-      args = [...built.args];
-    }
+    const spawnSpec = buildSpawnSpec({
+      harness: driver.harness,
+      prompt: effectivePrompt,
+      model: driver.harness_session_id ? (driver.model ?? effectiveModel) : effectiveModel,
+      streaming: useStreamJson,
+      resumeSessionId: driver.harness_session_id ?? undefined,
+    });
+    const command = spawnSpec.command;
+    const args = spawnSpec.args;
 
     const streamParser = createStreamParser({
       harness: driver.harness,
@@ -1465,8 +1465,11 @@ export async function runDriverTurn(input: {
       logPath,
       signal: input.signal,
       timeoutMs: input.timeoutMs,
+      maxDurationMs: input.maxDurationMs,
       idleTimeoutMs: input.idleTimeoutMs,
       commandRunner: input.commandRunner,
+      stdinPayload: spawnSpec.stdinPayload,
+      closeStdinOnSpawn: spawnSpec.closeStdinOnSpawn ?? true,
       onOutput: handleOutputChunk,
       onSpawn: (pid) => {
         meta = { ...meta, pid };
