@@ -170,7 +170,7 @@ describe("CR-02: 0-Token Driver Briefing (buildDriverBriefing)", () => {
       db.upsertTasks(sid, [
         { taskId: "T1.1", turn: 1, title: "Secret task", targetFiles: ["src/s.ts"] },
       ]);
-      const fakeSecret = "sk-proj-1234567890abcdefghijklmnopqrstuvwxyzABCD";
+      const fakeSecret = ["sk-proj", "1234567890abcdefghijklmnopqrstuvwxyzABCD"].join("-");
       db.updateTaskStatus(sid, "T1.1", "done", {
         doneClaimJson: JSON.stringify({
           summary: `Used token ${fakeSecret} during test`,

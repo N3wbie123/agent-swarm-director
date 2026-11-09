@@ -552,6 +552,13 @@ export class AsdMcpServer {
   start(): void {
     if (this.started) return;
     this.started = true;
+    if (!this.isSubagent()) {
+      try {
+        recoverOrphanedTasks({ db: this.db, projectRoot: this.projectRoot });
+      } catch {
+        // best-effort orphan recovery on server startup
+      }
+    }
     this.rpcServer = new StdioRpcServer({
       handleRequest: (method, params, signal) => this.handleRequest(method, params, signal),
     });
@@ -758,6 +765,15 @@ export class AsdMcpServer {
           foreground: false,
           progressBoard: renderProgressBoard(null, []),
         };
+      }
+      try {
+        recoverOrphanedTasks({
+          db: this.db,
+          projectRoot: this.projectRoot,
+          sessionId: sessionRow.session_id,
+        });
+      } catch {
+        // best-effort orphan recovery on read
       }
       const taskRows = this.db.getSessionTasks(sessionRow.session_id);
       const currentFgId = getForegroundSessionId(this.projectRoot, paths.planMdPath);

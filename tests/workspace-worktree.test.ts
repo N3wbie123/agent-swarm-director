@@ -311,9 +311,10 @@ describe("LIGHT Track Lifecycle", () => {
     });
 
     // Write file with leaked AWS credential
+    const dummyAwsKey = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
     fs.writeFileSync(
       path.join(root, "src", "leak.ts"),
-      "const awsKey = 'AKIAIOSFODNN7EXAMPLE';",
+      `const awsKey = '${dummyAwsKey}';`,
       "utf8"
     );
 

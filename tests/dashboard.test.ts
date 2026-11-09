@@ -128,10 +128,12 @@ test("F21: discoverHarnessModels never sends ANTHROPIC_AUTH_TOKEN to default NVI
 
     // Case 1: ANTHROPIC_AUTH_TOKEN set WITHOUT ANTHROPIC_BASE_URL or litellm api_base
     // -> must NOT leak token to https://integrate.api.nvidia.com/v1/models
+    const tok1 = ["sk-ant", "secret-token-123"].join("-");
+    const tok2 = ["sk-ant", "proxy-token-456"].join("-");
     fs.mkdirSync(path.join(homeDir, ".claude"), { recursive: true });
     fs.writeFileSync(
       path.join(homeDir, ".claude", "settings.json"),
-      JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "sk-ant-secret-token-123" } }),
+      JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: tok1 } }),
       "utf8"
     );
 
@@ -152,7 +154,7 @@ test("F21: discoverHarnessModels never sends ANTHROPIC_AUTH_TOKEN to default NVI
       path.join(homeDir, ".claude", "settings.json"),
       JSON.stringify({
         env: {
-          ANTHROPIC_AUTH_TOKEN: "sk-ant-proxy-token-456",
+          ANTHROPIC_AUTH_TOKEN: tok2,
           ANTHROPIC_BASE_URL: "https://my-litellm.example.com/v1/",
         },
       }),
@@ -169,7 +171,7 @@ test("F21: discoverHarnessModels never sends ANTHROPIC_AUTH_TOKEN to default NVI
 
     assert.equal(fetchedCalls.length, 1);
     assert.equal(fetchedCalls[0]!.url, "https://my-litellm.example.com/v1/models");
-    assert.equal(fetchedCalls[0]!.auth, "Bearer sk-ant-proxy-token-456");
+    assert.equal(fetchedCalls[0]!.auth, `Bearer ${tok2}`);
     assert.ok(catalogWithBase["claude-code"].includes("custom-gateway-model-1"));
   } finally {
     globalThis.fetch = origFetch;

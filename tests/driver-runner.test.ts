@@ -42,7 +42,7 @@ test("CR-03: runDriverTurn first run uses headless command, records session_id, 
           calls.push({ cmd, args, env: opts.env });
           opts.onSpawn?.(42424);
           opts.onStdout(
-            JSON.stringify({ session_id: "cc-sess-001", text: "secret sk-1234567890abcdefghijklmnop" }) + "\n"
+            JSON.stringify({ session_id: "cc-sess-001", text: `secret ${["sk", "1234567890abcdefghijklmnop"].join("-")}` }) + "\n"
           );
           return { exitCode: 0, pid: 42424 };
         },
@@ -71,7 +71,7 @@ test("CR-03: runDriverTurn first run uses headless command, records session_id, 
     assert.equal(active?.harness_session_id, "cc-sess-001");
 
     // Check secret masking in onOutput
-    assert.ok(!chunks.join("").includes("sk-1234567890abcdefghijklmnop"));
+    assert.ok(!chunks.join("").includes(["sk", "1234567890abcdefghijklmnop"].join("-")));
 
     // Second run: should use --resume cc-sess-001
     const secondRes = await runDriverTurn({

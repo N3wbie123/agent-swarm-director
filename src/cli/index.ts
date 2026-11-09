@@ -73,7 +73,7 @@ import {
   linkHarnessSessionToAsdSession,
   recordCliRecentSession,
 } from "../core/session-tracker.ts";
-import { cleanupWorktree, runGit } from "../core/workspace.ts";
+import { cleanupWorktree, recoverOrphanedTasks, runGit } from "../core/workspace.ts";
 import { scanSubagentLogs, type SubagentLogRecord } from "../core/subagent-logs.ts";
 
 // ============================================================================
@@ -693,6 +693,9 @@ export async function main(
       }
 
       case "sync": {
+        if (process.env.ASD_SESSION_ROLE === "subagent") {
+          throw new Error("Subagents cannot invoke orchestration tools");
+        }
         const res = await runAsdSync({
           homeDir,
           force: flags.force,
@@ -737,6 +740,15 @@ export async function main(
             db = openProjectDb(projectRoot, homeDir);
             session = resolveDefaultSession(db, projectRoot, homeDir);
             if (session) {
+              try {
+                recoverOrphanedTasks({
+                  db,
+                  projectRoot,
+                  sessionId: session.session_id,
+                });
+              } catch {
+                // ignore orphan recovery errors during status query
+              }
               tasks = db.getSessionTasks(session.session_id);
             }
           } finally {
@@ -921,6 +933,9 @@ export async function main(
       }
 
       case "clean": {
+        if (process.env.ASD_SESSION_ROLE === "subagent") {
+          throw new Error("Subagents cannot invoke orchestration tools");
+        }
         const res = runAsdClean({
           pop: flags.pop,
           all: flags.all,
@@ -966,6 +981,9 @@ export async function main(
       }
 
       case "uninstall": {
+        if (process.env.ASD_SESSION_ROLE === "subagent") {
+          throw new Error("Subagents cannot invoke orchestration tools");
+        }
         const res = await runAsdUninstall({ homeDir });
         if (flags.json) {
           console.log(JSON.stringify(res, null, 2));
@@ -1251,6 +1269,9 @@ export async function main(
           }
 
           if (command === "plan") {
+            if (process.env.ASD_SESSION_ROLE === "subagent") {
+              throw new Error("Subagents cannot invoke orchestration tools");
+            }
             let parsedTasks: unknown[] | undefined = Array.isArray(jsonPayload.tasks)
               ? jsonPayload.tasks
               : undefined;
@@ -1297,6 +1318,9 @@ export async function main(
           }
 
           if (command === "dispatch") {
+            if (process.env.ASD_SESSION_ROLE === "subagent") {
+              throw new Error("Subagents cannot invoke orchestration tools");
+            }
             const taskIdsFromOpt = options.task
               ? options.task.split(",").map((s) => s.trim()).filter(Boolean)
               : undefined;

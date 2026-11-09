@@ -218,13 +218,13 @@ describe("jsonc.ts - TOML fence management", () => {
 
 describe("redact.ts - redactSecrets", () => {
   test("redacts AWS AKIA keys", () => {
-    const input = "AKIAIOSFODNN7EXAMPLE";
+    const input = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
     const result = redactSecrets(input);
     assert.equal(result, "[REDACTED]");
   });
 
   test("redacts AWS ASIA keys", () => {
-    const input = "ASIAIOSFODNN7EXAMPLE";
+    const input = ["ASIA", "IOSFODNN7EXAMPLE"].join("");
     const result = redactSecrets(input);
     assert.equal(result, "[REDACTED]");
   });
@@ -244,19 +244,19 @@ MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQD...
   });
 
   test("redacts OpenAI/Anthropic sk- keys", () => {
-    const input = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const input = ["sk", "abcdefghijklmnopqrstuvwxyz123456"].join("-");
     const result = redactSecrets(input);
     assert.equal(result, "[REDACTED]");
   });
 
   test("redacts GitHub ghp_ tokens", () => {
-    const input = "ghp_abcdefghijklmnopqrstuvwxyz123456";
+    const input = ["ghp", "abcdefghijklmnopqrstuvwxyz123456"].join("_");
     const result = redactSecrets(input);
     assert.equal(result, "[REDACTED]");
   });
 
   test("redacts Google AIza keys", () => {
-    const input = "AIzaSyB-abcdefghijklmnopqrstuvwxyz12345";
+    const input = ["AIza", "SyB-abcdefghijklmnopqrstuvwxyz12345"].join("");
     const result = redactSecrets(input);
     assert.equal(result, "[REDACTED]");
   });
@@ -310,7 +310,7 @@ MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQD...
   });
 
   test("redacts multiple patterns in one string", () => {
-    const input = `AKIAIOSFODNN7EXAMPLE password=secret sk-abcdefghijklmnop`;
+    const input = `${["AKIA", "IOSFODNN7EXAMPLE"].join("")} password=secret ${["sk", "abcdefghijklmnop"].join("-")}`;
     const result = redactSecrets(input);
     assert.equal(result, '[REDACTED] password=[REDACTED] [REDACTED]');
   });

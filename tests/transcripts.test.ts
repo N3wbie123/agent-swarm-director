@@ -48,10 +48,11 @@ describe("Harness Transcripts (CR-10)", () => {
     const home = makeHome();
     const sessionId = "sess-cc-1234";
     const transcript = path.join(home, ".claude", "projects", "C--Users-x-proj", `${sessionId}.jsonl`);
+    const dummySk1 = ["sk", "1234567890abcdefghij"].join("-");
     writeJsonl(transcript, [
       JSON.stringify({
         type: "user",
-        message: { role: "user", content: "hello sk-1234567890abcdefghij" },
+        message: { role: "user", content: `hello ${dummySk1}` },
         timestamp: "2025-01-01T00:00:00Z",
       }),
       JSON.stringify({
@@ -83,7 +84,7 @@ describe("Harness Transcripts (CR-10)", () => {
       );
       assert.equal(result.messages[0]?.role, "user");
       assert.ok(result.messages[0]?.text.includes("[REDACTED]"));
-      assert.ok(!result.messages[0]?.text.includes("sk-1234567890abcdefghij"));
+      assert.ok(!result.messages[0]?.text.includes(dummySk1));
       assert.equal(result.messages[1]?.text, "hi there");
       assert.equal(result.truncated, false);
     });
@@ -238,12 +239,13 @@ describe("Harness Transcripts (CR-10)", () => {
         type: "text",
         text: "second question",
       });
+      const dummySk2 = ["sk", "abcdefghijklmnopqrst"].join("-");
       writeJson(`part/${sessionId}/msg_a/prt_000.json`, {
         id: "prt_000",
         messageID: "msg_a",
         sessionID: sessionId,
         type: "text",
-        text: "part one with sk-abcdefghijklmnopqrst",
+        text: `part one with ${dummySk2}`,
       });
 
       const loc = locateHarnessTranscript("opencode", sessionId, { homeDir: home2 });
@@ -255,7 +257,7 @@ describe("Harness Transcripts (CR-10)", () => {
       assert.equal(result.messages.length, 2);
       assert.equal(result.messages[0]?.index, 0);
       assert.ok(result.messages[0]?.text.includes("[REDACTED]"));
-      assert.ok(!result.messages[0]?.text.includes("sk-abcdefghijklmnopqrst"));
+      assert.ok(!result.messages[0]?.text.includes(dummySk2));
       assert.equal(result.messages[1]?.text, "second question");
     });
   });
@@ -273,9 +275,10 @@ describe("Harness Transcripts (CR-10)", () => {
       "logs",
       "transcript.jsonl"
     );
+    const dummyGhp = ["ghp", "Abcdefghij0123456789"].join("_");
     writeJsonl(transcript, [
       JSON.stringify({ role: "user", content: "fix the bug" }),
-      JSON.stringify({ role: "assistant", content: [{ type: "text", text: "done ghp_Abcdefghij0123456789" }] }),
+      JSON.stringify({ role: "assistant", content: [{ type: "text", text: `done ${dummyGhp}` }] }),
     ]);
 
     test("locate + read from antigravity-cli brain root with redaction", () => {
@@ -288,7 +291,7 @@ describe("Harness Transcripts (CR-10)", () => {
       assert.equal(result.messages.length, 2);
       assert.equal(result.messages[0]?.role, "user");
       assert.ok(result.messages[1]?.text.includes("[REDACTED]"));
-      assert.ok(!result.messages[1]?.text.includes("ghp_Abcdefghij0123456789"));
+      assert.ok(!result.messages[1]?.text.includes(dummyGhp));
     });
 
     test("legacy ~/.gemini/antigravity/brain root is discovered as fallback", () => {

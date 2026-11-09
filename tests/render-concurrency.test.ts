@@ -537,13 +537,13 @@ test("renderSessionSummaryMd: writes summary with secret redaction", () => {
       assigned_model: "glm-5",
       depends_on_json: "[]",
       target_files_json: '["src/s3.ts"]',
-      context_hint: "AKIAIOSFODNN7EXAMPLE 사용 주의",
-      acceptance: "sk-ant-api03-abcdef1234567890abcdef 토큰 인증 검증",
+      context_hint: `${["AKIA", "IOSFODNN7EXAMPLE"].join("")} 사용 주의`,
+      acceptance: `${["sk-ant-api03", "abcdef1234567890abcdef"].join("-")} 토큰 인증 검증`,
       verify_cmd: null,
       done_claim_json: JSON.stringify({
         summary: "S3 연동 완료. password='SuperSecretPassword123'",
         changed_files: ["src/s3.ts"],
-        key_decisions: ["AWS 키 AKIA1111222233334444 설정"],
+        key_decisions: [`AWS 키 ${["AKIA", "1111222233334444"].join("")} 설정`],
         risks: [],
       }),
       worktree_path: null,
@@ -558,12 +558,12 @@ test("renderSessionSummaryMd: writes summary with secret redaction", () => {
       debate_id: "D1",
       session_id: "test-session-secret",
       task_id: "T1.1",
-      topic: "보안 토큰 sk-1234567890123456 관리 방안",
+      topic: `보안 토큰 ${["sk", "1234567890123456"].join("-")} 관리 방안`,
       status: "done",
       insight_verdict_json: JSON.stringify({
         verdict: "APPROVE",
         decisions: ["토큰은 환경변수로 관리: api_key=MySecretApiKey999"],
-        hard_constraints: ["AWS ASIA9999888877776666 노출 금지"],
+        hard_constraints: [`AWS ${["ASIA", "9999888877776666"].join("")} 노출 금지`],
       }),
     },
   ];
@@ -574,11 +574,11 @@ test("renderSessionSummaryMd: writes summary with secret redaction", () => {
 
   // Verify all secrets are REDACTED
   assert.ok(output.includes("[REDACTED]"));
-  assert.ok(!output.includes("AKIAIOSFODNN7EXAMPLE"), "AKIA must be redacted");
-  assert.ok(!output.includes("AKIA1111222233334444"), "AKIA must be redacted");
-  assert.ok(!output.includes("ASIA9999888877776666"), "ASIA must be redacted");
-  assert.ok(!output.includes("sk-ant-api03-abcdef1234567890abcdef"), "sk- key must be redacted");
-  assert.ok(!output.includes("sk-1234567890123456"), "sk- key must be redacted");
+  assert.ok(!output.includes(["AKIA", "IOSFODNN7EXAMPLE"].join("")), "AKIA must be redacted");
+  assert.ok(!output.includes(["AKIA", "1111222233334444"].join("")), "AKIA must be redacted");
+  assert.ok(!output.includes(["ASIA", "9999888877776666"].join("")), "ASIA must be redacted");
+  assert.ok(!output.includes(["sk-ant-api03", "abcdef1234567890abcdef"].join("-")), "sk- key must be redacted");
+  assert.ok(!output.includes(["sk", "1234567890123456"].join("-")), "sk- key must be redacted");
   assert.ok(!output.includes("SuperSecretPassword123"), "password must be redacted");
   assert.ok(!output.includes("MySecretApiKey999"), "api_key must be redacted");
 

@@ -465,11 +465,15 @@ function stripBenignGitExclusions(cmd: string): string {
 function isBlockedGitCommand(cmd: string, isSubagent: boolean): boolean {
   const sanitized = stripBenignGitExclusions(cmd);
   const lower = sanitized.toLowerCase();
+  const unquoted = lower.replace(/['"`]/g, "");
 
   const hasGitPathToken =
     lower.includes(".git/") ||
     lower.includes(".git\\") ||
-    /(?:^|[\s"'`/\\])\.git(?:[/\\]|[\s"'`]|$)/.test(lower);
+    unquoted.includes(".git/") ||
+    unquoted.includes(".git\\") ||
+    /(?:^|[\s"'`=/\\])\.git(?:[/\\]|[\s"'`]|$)/.test(lower) ||
+    /(?:^|[\s=/\\])\.git(?:[/\\]|\s|$)/.test(unquoted);
 
   if (!hasGitPathToken) {
     return false;
@@ -490,8 +494,11 @@ function isBlockedGitCommand(cmd: string, isSubagent: boolean): boolean {
     /(?:>>|(?<![2&])>(?!&))\s*['"]?(?:[^\s'"]*[/\\])?\.git(?:[/\\]|['"\s]|$)/i.test(
       sanitized
     ) ||
-    /(?:^|[\s"'`/\\])\.git[/\\](?:config|hooks|head|index|objects|refs|logs|info|packed-refs)\b/i.test(
+    /(?:^|[\s"'`=/\\])\.git[/\\](?:config|hooks|head|index|objects|refs|logs|info|packed-refs)\b/i.test(
       lower
+    ) ||
+    /(?:^|[\s=/\\])\.git[/\\](?:config|hooks|head|index|objects|refs|logs|info|packed-refs)\b/i.test(
+      unquoted
     );
 
   if (hasDestructiveOrWriteOp) {
@@ -503,8 +510,8 @@ function isBlockedGitCommand(cmd: string, isSubagent: boolean): boolean {
   if (
     !/\basd\b.*\bplan\b/i.test(sanitized) &&
     !/\bgit\s+commit\b/i.test(sanitized) &&
-    /^\s*(?:rm|rmdir|del|erase|mv|move|ls|dir|cat|type|head|tail)\b[^\n;|]*?(?:^|[\s"'`/\\])\.git(?:[/\\]|[\s"'`]|$)/i.test(
-      sanitized
+    /(?:^|[;&|]\s*)(?:rm|rmdir|del|erase|mv|move|ls|dir|cat|type|head|tail)\b[^\n;|]*?(?:^|[\s"'`/\\])\.git(?:[/\\]|[\s"'`]|$)/i.test(
+      unquoted
     )
   ) {
     return true;
@@ -666,10 +673,14 @@ export function evaluatePreToolUse(
     }
 
     if (isSubagent) {
+      const cmdUnquoted = cmdLower.replace(/['"`]/g, "");
       if (
         cmdLower.includes(".asd/") ||
         cmdLower.includes(".asd\\") ||
-        /(?:^|[\s"'`/\\])\.asd(?:[/\\]|[\s"'`]|$)/.test(cmdLower)
+        cmdUnquoted.includes(".asd/") ||
+        cmdUnquoted.includes(".asd\\") ||
+        /(?:^|[\s"'`/\\])\.asd(?:[/\\]|[\s"'`]|$)/.test(cmdLower) ||
+        /(?:^|[\s/\\])\.asd(?:[/\\]|\s|$)/.test(cmdUnquoted)
       ) {
         return {
           allowed: false,
@@ -678,7 +689,9 @@ export function evaluatePreToolUse(
           ),
         };
       }
-      if (/(?:^|[\s"'`=:/\\])\.env(?:\.[a-z0-9._-]+)?(?:[\s"'`;|&><)]|$)/i.test(cmdLower)) {
+      const envFileRegex =
+        /(?:^|[\s"'`=:/\\])\.env(?:\.(?!example\b|sample\b|template\b)[a-z0-9._-]+)?(?:[\s"'`;|&><)]|$)/i;
+      if (envFileRegex.test(cmdLower) || envFileRegex.test(cmdUnquoted)) {
         return {
           allowed: false,
           reason: formatPolicyDenyReason(
