@@ -56,22 +56,7 @@ export {
   getLatestSession,
   type CleanResult,
 } from "./cli/index.ts";
-export { scanSubagentLogs, type SubagentLogRecord } from "./core/subagent-logs.ts";
-
-export {
-  collectDashboardSnapshot,
-  saveSessionMemo,
-  type DashboardSnapshot,
-  type DashboardStateSnapshot,
-} from "./core/session-services.ts";
-export {
-  discoverHarnessModels,
-  getModelsDiskCachePath,
-  type HarnessModelCatalog,
-} from "./core/models.ts";
 export {
   startDashboardServer,
   type DashboardServerHandle,
 } from "./cli/dashboard.ts";
-export { runSubagentControlAction } from "./core/subagent-control.ts";
-export { saveProjectRoutingConfig } from "./core/router.ts";
