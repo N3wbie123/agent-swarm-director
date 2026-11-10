@@ -26,9 +26,9 @@
 import * as child_process from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
+import { resolveHomeDir } from "./config.ts";
 import { redactSecrets } from "./redact.ts";
 import type { HarnessId } from "./types.ts";
 
@@ -990,10 +990,6 @@ function readJsonlWindow(
 // Harness locators
 // ============================================================================
 
-function resolveHome(homeDir?: string): string {
-  return homeDir && homeDir.trim() ? homeDir : os.homedir();
-}
-
 function listFilesRecursive(root: string, filter: (dirent: fs.Dirent) => boolean): string[] {
   let entries: fs.Dirent[];
   try {
@@ -1078,7 +1074,7 @@ export function resolveCursorFallbackTranscriptPath(
   sessionId: string,
   options?: { homeDir?: string }
 ): string {
-  const home = resolveHome(options?.homeDir);
+  const home = resolveHomeDir(options?.homeDir);
   return path.join(home, ".asd", "transcripts", "cursor", `${sessionId}.jsonl`);
 }
 
@@ -1118,7 +1114,7 @@ export function locateHarnessTranscript(
       return { found: true, harness, sessionId, transcriptPath: p };
     }
 
-    const home = resolveHome(options.homeDir);
+    const home = resolveHomeDir(options.homeDir);
 
     if (harness === "cursor") {
       const primaryCandidate = resolveCursorFallbackTranscriptPath(sessionId, options);
