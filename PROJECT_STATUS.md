@@ -36,6 +36,7 @@ asd-multiagent/
 ├── CORE_GUI_BOUNDARY_AUDIT.md   # Core–GUI 경계 감사 (GUI 기능 분리 원칙 및 위반 정리, v2.4.3)
 ├── ORCHESTRATOR_APP_PLAN.md     # 오케스트레이터 TUI/GUI 앱 개발 계획 (하네스 실측 매트릭스 포함)
 ├── HARNESS_INTEGRATION_REFERENCE.md  # 앱팀용 하네스 통합 바이블 (저장소·포맷·실측 이벤트 스키마·함정, v2.5.0)
+├── SDK_SURFACE_CLEANUP_PLAN.md     # SDK 공개 표면 정리 계획 (ASD-Nexus 재작성 시 breaking change 후보·제거 조건)
 ├── presets/
 │   ├── default-routing.jsonc    # 5대 전문 역할 및 카테고리/난이도별 기본 모델 라우팅 + 다중 폴백 체인
 │   └── default-mcp.jsonc        # Gap-filling MCP 서버 카탈로그 (context7, grep_app, websearch)
@@ -53,6 +54,7 @@ asd-multiagent/
 │   │   ├── router.ts            # 4단계 모델 라우팅, 미설치 하네스 필터링, 다양성 리뷰어 선택, 자동 폴백 체인, 프로젝트 라우팅 저장(saveProjectRoutingConfig)
 │   │   ├── spawner.ts           # 서브에이전트 프로세스 스폰, 시크릿 마스킹 로깅, 프로세스 트리 강제 종료, 아티팩트 마감
 │   │   ├── workspace.ts         # Git 베이스라인 보호, LIGHT 체크포인트/롤백, HEAVY 워크트리 및 크로스 프로세스 뮤텍스 병합
+│   │   ├── file-lock.ts         # 크로스 프로세스 권고 파일 락 공용 구현 (merge.lock·cli-recent.lock, PID/경과 기반 stale 회수, 재진입 지원)
 │   │   ├── debate.ts            # 블라인드 교차 모델 적대적 토론 브로커 (Round 1 병렬 비평 + Round 2 심판)
 │   │   ├── policy.ts            # 1ms PreToolUse 경로/명령 가드, ASD_DRIVER_ID 바인딩 및 Stop 훅 3회 무진전 서킷 브레이커
 │   │   ├── render.ts            # .asd/PLAN.md 양방향 파서/렌더러, 전경 세션 제어, 실시간 progressBoard, summary.md 생성
@@ -76,7 +78,7 @@ asd-multiagent/
 │   │   ├── index.ts             # 14개 CLI 서브커맨드 엔트리포인트 (plan, dispatch, verify, debate, resume, sync, ui 등)
 │   │   └── dashboard.ts         # 한국어/영어 지원 Zero-Dependency 실시간 웹 대시보드 (http://127.0.0.1:3847) — v2.4.3부터 데이터 서비스는 core/로 이관, 서버+UI 전용
 │   └── skills/                  # 5대 하네스에 공통 배포되는 슬래시 스킬 템플릿 (asd, asd-plan, asd-run, asd-debug, asd-debate, handoff)
-└── tests/                       # 76개 테스트 스위트, 총 356개 단위/통합 테스트
+└── tests/                       # 97개 테스트 스위트, 총 405개 단위/통합 테스트
 ```
 
 ---
