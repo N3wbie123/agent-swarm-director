@@ -28,6 +28,105 @@ import { appendCursorStreamFallback } from "./transcripts.ts";
 import type { AgentRole, HarnessId, SubagentDispatchMode, SubagentSessionMeta } from "./types.ts";
 
 // ============================================================================
+// Spawn command builder with per-harness stdin offloading
+// ============================================================================
+
+/**
+ * Conservative total command-line argv budget (chars).
+ * Windows CreateProcess limit is ~32,767 chars; we leave headroom for
+ * the executable path, env block, and Node's internal overhead.
+ */
+export const MAX_ARGV_CHARS = 30_000;
+
+/**
+ * Per-harness stdin capability specification.
+ * - stdinSupported: whether the harness can read the prompt from stdin.
+ * - stdinMarker: the argument value that tells the harness "read prompt from stdin"
+ *   (e.g., "-" for codex). If null, the prompt argument is simply omitted.
+ * - promptArgFlag: the flag that precedes the prompt argument (e.g., "-p").
+ *   Used to locate and remove the prompt from argv when offloading to stdin.
+ */
+export interface HarnessStdinSpec {
+  stdinSupported: boolean;
+  stdinMarker: string | null;
+  promptArgFlag: string | null;
+}
+
+/**
+ * Returns the stdin capability spec for a given harness.
+ * Only claude-code and codex support prompt stdin offloading.
+ * antigravity, cursor, and opencode do NOT support reading a simple prompt from stdin.
+ */
+export function getHarnessStdinSpec(harness: HarnessId): HarnessStdinSpec {
+  switch (harness) {
+    case "claude-code":
+      return { stdinSupported: true, stdinMarker: null, promptArgFlag: "-p" };
+    case "codex":
+      return { stdinSupported: true, stdinMarker: "-", promptArgFlag: "exec" };
+    case "antigravity":
+    case "cursor":
+    case "opencode":
+      return { stdinSupported: false, stdinMarker: null, promptArgFlag: null };
+  }
+}
+
+/**
+ * Builds the final spawn command/args, offloading the prompt to stdin when:
+ * - the harness supports stdin, AND
+ * - the total argv length would exceed MAX_ARGV_CHARS.
+ *
+ * For claude-code, preserves existing behavior: also offloads when prompt > 1500 chars
+ * (the original threshold) even if total argv is under budget.
+ *
+ * Returns { command, args, stdinPayload?, closeStdinOnSpawn? }.
+ * If stdin offloading is needed but the harness doesn't support it, throws an Error
+ * with a clear message instead of letting spawn throw ENAMETOOLONG.
+ */
+export function buildSpawnCommand(
+  harness: HarnessId,
+  command: string,
+  args: string[],
+  prompt: string
+): { command: string; args: string[]; stdinPayload?: string; closeStdinOnSpawn?: boolean } {
+  const spec = getHarnessStdinSpec(harness);
+  const totalArgChars = args.reduce((acc, a) => acc + a.length, 0) + command.length;
+  const promptLen = prompt.length;
+
+  const claudeLegacyTrigger = harness === "claude-code" && promptLen > 1500;
+  const argvBudgetExceeded = totalArgChars > MAX_ARGV_CHARS;
+
+  if (!claudeLegacyTrigger && !argvBudgetExceeded) {
+    return { command, args };
+  }
+
+  if (!spec.stdinSupported) {
+    throw new Error(
+      `Harness '${harness}' does not support stdin prompt offloading; ` +
+        `argv length (${totalArgChars} chars) exceeds safe budget (${MAX_ARGV_CHARS} chars). ` +
+        `Reduce prompt size or use a harness that supports stdin (claude-code, codex).`
+    );
+  }
+
+  let newArgs = [...args];
+  let stdinPayload = prompt;
+  let closeStdinOnSpawn = true;
+
+  if (harness === "claude-code") {
+    const pIdx = newArgs.indexOf("-p");
+    if (pIdx !== -1 && pIdx + 1 < newArgs.length) {
+      newArgs.splice(pIdx + 1, 1);
+    }
+  } else if (harness === "codex") {
+    const execIdx = newArgs.indexOf("exec");
+    if (execIdx !== -1 && execIdx + 1 < newArgs.length) {
+      newArgs[execIdx + 1] = "-";
+    }
+  }
+
+  return { command, args: newArgs, stdinPayload, closeStdinOnSpawn };
+}
+
+// ============================================================================
 // CommandRunner contract (mockable for deterministic tests)
 // ============================================================================
 
@@ -240,29 +339,29 @@ const defaultCommandRunner: CommandRunner = {
       let finalArgs = resolved.args;
       let stdinPayload: string | undefined = opts.stdinPayload;
       let closeStdinOnSpawn = opts.closeStdinOnSpawn ?? false;
-      if (cmd === "claude" && stdinPayload === undefined) {
-        // When prompt is very long (>1500 chars) on Windows, pass via stdin to avoid arg truncation or 3s stdin warning
-        const pIdx = finalArgs.indexOf("-p");
-        if (pIdx !== -1 && typeof finalArgs[pIdx + 1] === "string" && finalArgs[pIdx + 1]!.length > 1500) {
-          stdinPayload = finalArgs[pIdx + 1];
-          closeStdinOnSpawn = true;
-          finalArgs = [...finalArgs.slice(0, pIdx + 1), ...finalArgs.slice(pIdx + 2)];
-        }
-        if (!finalArgs.includes("--dangerously-skip-permissions")) {
-          finalArgs = [...finalArgs, "--dangerously-skip-permissions"];
-        }
-      }
       const shouldPipeStdin = stdinPayload !== undefined || closeStdinOnSpawn;
-      const child = child_process.spawn(resolved.command, finalArgs, {
-        cwd: opts.cwd,
-        env: opts.env,
-        stdio: [shouldPipeStdin ? "pipe" : "ignore", "pipe", "pipe"],
-        windowsHide: true,
-        shell: resolved.shell,
-        // POSIX: own process group so process.kill(-pid) reaps the tree.
-        // Windows: do NOT detach — taskkill /T handles the tree.
-        detached: process.platform !== "win32",
-      });
+      let child: child_process.ChildProcess;
+      try {
+        child = child_process.spawn(resolved.command, finalArgs, {
+          cwd: opts.cwd,
+          env: opts.env,
+          stdio: [shouldPipeStdin ? "pipe" : "ignore", "pipe", "pipe"],
+          windowsHide: true,
+          shell: resolved.shell,
+          detached: process.platform !== "win32",
+        });
+      } catch (err) {
+        const totalArgChars = finalArgs.reduce((acc, a) => acc + a.length, 0);
+        const argHint =
+          totalArgChars > 8000
+            ? ` (arg length: ${totalArgChars} chars — may exceed OS command-line limit)`
+            : "";
+        opts.onStderr(
+          `[SPAWN_ERROR] [asd:spawn-error] Failed to spawn '${resolved.command}': ${(err as Error).message}${argHint}\n`
+        );
+        safeResolve({ exitCode: -1, pid: -1 });
+        return;
+      }
       if (child.stdin) {
         try {
           if (stdinPayload !== undefined) {
@@ -280,8 +379,6 @@ const defaultCommandRunner: CommandRunner = {
       child.stderr?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string) => opts.onStdout(chunk));
       child.stderr?.on("data", (chunk: string) => opts.onStderr(chunk));
-      // "close" (not "exit"): fires after stdio drained, so no chunk is lost
-      // before the runner resolves.
       child.on("close", (code) =>
         safeResolve({ exitCode: code ?? -1, pid: child.pid ?? -1 })
       );
@@ -427,6 +524,7 @@ export interface ExecuteHarnessProcessOptions {
     harnessSessionId: string | null;
     timedOut: boolean;
     status: "done" | "failed";
+    errorSummary?: string;
   }) => void;
 }
 
@@ -439,6 +537,7 @@ export interface ExecuteHarnessProcessResult {
   harnessSessionId: string | null;
   timedOut: boolean;
   status: "done" | "failed";
+  errorSummary?: string;
 }
 
 /**
@@ -469,7 +568,11 @@ export function executeHarnessProcess(
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let sessionDetectBuffer = "";
 
-    const finish = (exitCode: number, status: "done" | "failed"): void => {
+    const finish = (
+      exitCode: number,
+      status: "done" | "failed",
+      errorSummary?: string
+    ): void => {
       if (settled) return;
       settled = true;
       if (timer !== undefined) clearTimeout(timer);
@@ -486,6 +589,11 @@ export function executeHarnessProcess(
         }
         sessionDetectBuffer = "";
       }
+      if (errorSummary) {
+        const redacted = redactSecrets(errorSummary);
+        logStream.write(redacted);
+        options.onOutput?.(redacted);
+      }
       const finishedAt = Date.now();
       const durationMs = finishedAt - startedAt;
       const result: ExecuteHarnessProcessResult = {
@@ -497,6 +605,7 @@ export function executeHarnessProcess(
         harnessSessionId: detectedHarnessSessionId,
         timedOut,
         status,
+        errorSummary,
       };
       options.onBeforeStreamEnd?.(result);
       logStream.end(() => {
@@ -607,8 +716,9 @@ export function executeHarnessProcess(
           }
           finish(result.exitCode, result.exitCode === 0 ? "done" : "failed");
         },
-        () => {
-          finish(-1, "failed");
+        (err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          finish(-1, "failed", `[SPAWN_ERROR] Runner rejected: ${msg}\n`);
         }
       );
   });
@@ -698,6 +808,7 @@ export function spawnSubagent(
         startedAt: res.startedAt,
         finishedAt: res.finishedAt,
         durationMs: res.durationMs,
+        errorSummary: res.errorSummary,
       };
       writeMeta();
     },

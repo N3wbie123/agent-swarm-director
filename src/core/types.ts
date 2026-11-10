@@ -162,6 +162,7 @@ export interface SubagentSessionMeta {
   startedAt?: number;
   finishedAt?: number;
   durationMs?: number;
+  errorSummary?: string;
 }
 
 export interface CliRecentSessionEntry {

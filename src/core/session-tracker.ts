@@ -38,6 +38,7 @@ import {
 import { attachDriver, detachDriver, type DriverRow, type DriverSource } from "./drivers.ts";
 import { withFileLockSync } from "./file-lock.ts";
 import { atomicWriteFileSync, setForegroundSession } from "./render.ts";
+import { buildSpawnCommand, MAX_ARGV_CHARS } from "./spawner.ts";
 import type {
   CliRecentSessionEntry,
   HarnessId,
@@ -85,28 +86,16 @@ export function buildSpawnSpec(
       })
     : buildHeadlessHarnessCommand(options);
 
-  const spec: {
-    command: string;
-    args: string[];
-    stdinPayload?: string;
-    closeStdinOnSpawn?: boolean;
-  } = {
-    command: base.command,
-    args: [...base.args],
-  };
+  const spec = buildSpawnCommand(
+    options.harness,
+    base.command,
+    base.args,
+    options.prompt ?? ""
+  );
 
   if (options.harness === "claude-code") {
     if (!spec.args.includes("--dangerously-skip-permissions")) {
       spec.args.push("--dangerously-skip-permissions");
-    }
-    const textPrompt = options.prompt ?? "";
-    if (textPrompt.length > 1500) {
-      spec.stdinPayload = textPrompt;
-      spec.closeStdinOnSpawn = true;
-      const pIdx = spec.args.indexOf("-p");
-      if (pIdx !== -1 && pIdx + 1 < spec.args.length) {
-        spec.args.splice(pIdx + 1, 1);
-      }
     }
   } else if (options.harness === "codex") {
     spec.closeStdinOnSpawn = true;
