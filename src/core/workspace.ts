@@ -25,7 +25,7 @@
 import * as child_process from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ensureGitExclude, ensureProjectInitialized, getGitExcludePath } from "./config.ts";
+import { ensureGitExclude, ensureProjectInitialized, getGitExcludePath, normalizePathForCompare } from "./config.ts";
 import type { SqliteDriver } from "./db.ts";
 import {
   isPidAlive,
@@ -632,12 +632,33 @@ export function rollbackLightChanges(
       if (targetFiles.length === 0) {
         return;
       }
-      runGit(["reset", "HEAD", "--", ...targetFiles], { cwd: projectRoot });
-      const checkoutHeadRes = runGit(["checkout", "HEAD", "--", ...targetFiles], {
+
+      // Boundary validation: reject any file that resolves outside projectRoot
+      const normalizedRoot = normalizePathForCompare(projectRoot);
+      const validatedFiles: string[] = [];
+      for (const f of targetFiles) {
+        const abs = path.resolve(projectRoot, f);
+        const normalizedAbs = normalizePathForCompare(abs);
+        // Check if resolved path is strictly inside projectRoot
+        // Must start with normalizedRoot + "/" or be exactly normalizedRoot (but files can't be the root)
+        if (!normalizedAbs.startsWith(normalizedRoot + "/")) {
+          console.warn(
+            `[ASD] rollbackLightChanges: skipping out-of-bounds file "${f}" (resolves to "${abs}")`
+          );
+          continue;
+        }
+        validatedFiles.push(f);
+      }
+      if (validatedFiles.length === 0) {
+        return;
+      }
+
+      runGit(["reset", "HEAD", "--", ...validatedFiles], { cwd: projectRoot });
+      const checkoutHeadRes = runGit(["checkout", "HEAD", "--", ...validatedFiles], {
         cwd: projectRoot,
       });
       if (checkoutHeadRes.exitCode !== 0) {
-        for (const f of targetFiles) {
+        for (const f of validatedFiles) {
           const resetRes = runGit(["reset", "HEAD", "--", f], { cwd: projectRoot });
           void resetRes;
           const coRes = runGit(["checkout", "HEAD", "--", f], { cwd: projectRoot });
@@ -646,8 +667,8 @@ export function rollbackLightChanges(
           }
         }
       }
-      runGit(["clean", "-fd", "--", ...targetFiles], { cwd: projectRoot });
-      for (const f of targetFiles) {
+      runGit(["clean", "-fd", "--", ...validatedFiles], { cwd: projectRoot });
+      for (const f of validatedFiles) {
         const trackedCheck = runGit(["ls-files", "--error-unmatch", "--", f], {
           cwd: projectRoot,
         });

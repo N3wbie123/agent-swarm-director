@@ -5,7 +5,7 @@
  * 3. syncPlanFromMd reconciles deleted tasks and preserves special failure statuses.
  */
 
-import { test, describe, afterEach } from "node:test";
+import { test, describe, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -146,5 +146,90 @@ describe("Workspace, Secret Redaction & PLAN.md Sync Audit (T2.1)", () => {
     assert.equal(afterOneDelete.length, 1);
     assert.equal(afterOneDelete[0]?.task_id, "T1.1");
     assert.equal(afterOneDelete[0]?.status, "escalated", "escalated status must not be overwritten with generic failed");
+  });
+
+  test("4. rollbackLightChanges rejects path traversal attempts and preserves sibling files", () => {
+    const root = makeTempDir();
+    prepareBaseline(root);
+
+    // Create a sibling file OUTSIDE the project root
+    const outsideDir = path.join(os.tmpdir(), "asd-outside-" + Date.now());
+    fs.mkdirSync(outsideDir, { recursive: true });
+    const outsideFile = path.join(outsideDir, "outside-target.txt");
+    fs.writeFileSync(outsideFile, "secret data\n", "utf8");
+    tmpDirs.push(outsideDir); // ensure cleanup
+
+    // Capture console.warn
+    const warns: string[] = [];
+    const restoreWarn = mock.method(console, "warn", (...args: unknown[]) => {
+      warns.push(args.join(" "));
+    });
+
+    try {
+      // Attempt path traversal - should be rejected
+      rollbackLightChanges(root, {
+        files: ["../outside-target.txt"],
+      });
+
+      // Sibling file must still exist
+      assert.equal(fs.existsSync(outsideFile), true, "sibling file outside root must be preserved");
+
+      // Warning must have been emitted
+      assert.ok(
+        warns.some((w) => w.includes("out-of-bounds") && w.includes("../outside-target.txt")),
+        `expected out-of-bounds warning, got: ${warns.join(" | ")}`
+      );
+    } finally {
+      restoreWarn();
+    }
+  });
+
+  test("5. rollbackLightChanges deletes legit untracked files inside the project root", () => {
+    const root = makeTempDir();
+    prepareBaseline(root);
+
+    // Create an untracked file inside the root
+    const untrackedFile = path.join(root, "new-untracked.txt");
+    fs.writeFileSync(untrackedFile, "untracked content\n", "utf8");
+    assert.equal(fs.existsSync(untrackedFile), true, "precondition: untracked file exists");
+
+    // Roll back with that file in the list
+    rollbackLightChanges(root, {
+      files: ["new-untracked.txt"],
+    });
+
+    // Untracked file must be deleted
+    assert.equal(fs.existsSync(untrackedFile), false, "untracked file inside root must be deleted");
+  });
+
+  test("6. rollbackLightChanges restores tracked files to HEAD", () => {
+    const root = makeTempDir();
+    prepareBaseline(root);
+
+    // Create and commit a tracked file
+    const trackedFile = path.join(root, "tracked.txt");
+    fs.writeFileSync(trackedFile, "original content\n", "utf8");
+    runGit(["add", "."], { cwd: root });
+    runGit(["commit", "-m", "initial commit", "--no-verify"], { cwd: root });
+
+    // Modify the tracked file
+    fs.writeFileSync(trackedFile, "modified content\n", "utf8");
+    assert.equal(
+      fs.readFileSync(trackedFile, "utf8").replace(/\r\n/g, "\n"),
+      "modified content\n",
+      "precondition: file is modified"
+    );
+
+    // Roll back with that file in the list
+    rollbackLightChanges(root, {
+      files: ["tracked.txt"],
+    });
+
+    // File must be restored to HEAD content
+    assert.equal(
+      fs.readFileSync(trackedFile, "utf8").replace(/\r\n/g, "\n"),
+      "original content\n",
+      "tracked file must be restored to HEAD"
+    );
   });
 });
