@@ -28,6 +28,7 @@ import { openProjectDb } from "./db.ts";
 import type { SqliteDriver, SessionRow, TaskRow } from "./db.ts";
 import { redactSecrets } from "./redact.ts";
 import { renderPlanMd, renderProgressBoard } from "./render.ts";
+import { buildHeadlessHarnessCommand } from "./session-tracker.ts";
 import {
   detectAvailableCliHarnesses,
   inferModelFamily,
@@ -182,8 +183,10 @@ export interface DebateBrokerResult extends AsdDebateOutput {
 // ============================================================================
 
 /**
- * Builds standard headless execution commands for the 4 supported harnesses
+ * Builds standard headless execution commands for the supported harnesses
  * without requiring any import from src/adapters/*.
+ * Delegates to the canonical core builder in session-tracker.ts; an unknown
+ * harness id falls back to a no-op node echo that approves instantly.
  */
 export function buildDefaultHarnessCommand(
   harness: HarnessId,
@@ -191,44 +194,15 @@ export function buildDefaultHarnessCommand(
   model: string,
   thinkingEffort?: string | null
 ): { command: string; args: string[] } {
-  switch (harness) {
-    case "claude-code": {
-      const args = ["-p", prompt, "--output-format", "json"];
-      if (model) args.push("--model", model);
-      return { command: "claude", args };
+  return (
+    buildHeadlessHarnessCommand({ harness, prompt, model, thinkingEffort }) ?? {
+      command: "node",
+      args: [
+        "-e",
+        `console.log(JSON.stringify({ verdict: "APPROVE", hard_constraints: [], decisions: [], risks: [] }))`,
+      ],
     }
-    case "opencode": {
-      const args = ["run", prompt, "--format", "json"];
-      if (model) args.push("--model", model);
-      return { command: "opencode", args };
-    }
-    case "codex": {
-      const args = ["exec", prompt, "--json"];
-      if (model) args.push("-m", model);
-      if (thinkingEffort) args.push("-c", `model_reasoning_effort=${thinkingEffort}`);
-      return { command: "codex", args };
-    }
-    case "antigravity": {
-      const args = ["-p", prompt, "--output-format", "json"];
-      if (model) args.push("--model", model);
-      if (thinkingEffort) args.push("--effort", thinkingEffort);
-      return { command: "agy", args };
-    }
-    case "cursor": {
-      const args = ["-p", prompt, "--force", "--output-format", "json"];
-      if (model) args.push("--model", model);
-      return { command: "agent", args };
-    }
-    default: {
-      return {
-        command: "node",
-        args: [
-          "-e",
-          `console.log(JSON.stringify({ verdict: "APPROVE", hard_constraints: [], decisions: [], risks: [] }))`,
-        ],
-      };
-    }
-  }
+  );
 }
 
 // ============================================================================
@@ -237,6 +211,12 @@ export function buildDefaultHarnessCommand(
 
 export function deduplicateStrings(items: string[]): string[] {
   return [...new Set(items.map((s) => s.trim()).filter(Boolean))];
+}
+
+function toStringArray(val: unknown): string[] {
+  if (Array.isArray(val)) return val.map((x) => String(x).trim()).filter(Boolean);
+  if (typeof val === "string" && val.trim().length > 0) return [val.trim()];
+  return [];
 }
 
 /**
@@ -256,11 +236,6 @@ export function synthesizeInsightVerdict(
   }>,
   diversityDegraded = false
 ): InsightVerdict {
-  const toStringArray = (val: unknown): string[] => {
-    if (Array.isArray(val)) return val.map((x) => String(x).trim()).filter(Boolean);
-    if (typeof val === "string" && val.trim().length > 0) return [val.trim()];
-    return [];
-  };
   const verdicts = openings.map((o) => String(o.verdict ?? "APPROVE"));
   return {
     verdict: verdicts.includes("REJECT")
@@ -336,16 +311,6 @@ function tryParseJsonObject(raw: string): ParsedOpening | null {
     ) {
       return null;
     }
-
-    const toStringArray = (val: unknown): string[] => {
-      if (Array.isArray(val)) {
-        return val.map((x) => String(x).trim()).filter(Boolean);
-      }
-      if (typeof val === "string" && val.trim().length > 0) {
-        return [val.trim()];
-      }
-      return [];
-    };
 
     const hardConstraints = toStringArray(
       obj.hard_constraints ?? obj.hardConstraints
