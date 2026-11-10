@@ -22,7 +22,7 @@
 
 import * as child_process from "node:child_process";
 import * as crypto from "node:crypto";
-import { checkForRemoteUpdate, compareSemver } from "../core/config.ts";
+import { checkForRemoteUpdate, compareSemver, resolveHomeDir } from "../core/config.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -174,10 +174,6 @@ const DEFAULT_HARNESS_IDS: readonly HarnessId[] = [
 
 function getAsdRoot(): string {
   return path.resolve(import.meta.dirname, "..", "..");
-}
-
-function resolveHome(optionsHome?: string): string {
-  return optionsHome || process.env.ASD_HOME_DIR || os.homedir();
 }
 
 function ensureDir(dirPath: string): void {
@@ -977,7 +973,7 @@ export function syncRepoVersionStrings(_asdRoot = getAsdRoot()): void {
 export async function syncHarnessConfigs(
   options?: SyncHarnessOptions
 ): Promise<SyncHarnessConfigsResult> {
-  const homeDir = resolveHome(options?.homeDir);
+  const homeDir = resolveHomeDir(options?.homeDir);
   const asdRoot = getAsdRoot();
   const asdCliPath =
     options?.asdCliPath || path.join(asdRoot, "src", "cli", "index.ts");
@@ -1565,7 +1561,7 @@ export function syncAgentModelsIfNeeded(options?: {
     return { updated: false, filesWritten: [] };
   }
 
-  const homeDir = resolveHome(options?.homeDir);
+  const homeDir = resolveHomeDir(options?.homeDir);
   const localRoutingPath = options?.projectRoot
     ? path.join(options.projectRoot, ".asd", "routing.jsonc")
     : null;
@@ -1675,7 +1671,7 @@ export function syncAgentModelsIfNeeded(options?: {
 export async function uninstallHarnessConfigs(
   options?: UninstallHarnessOptions
 ): Promise<UninstallHarnessConfigsResult> {
-  const homeDir = resolveHome(options?.homeDir);
+  const homeDir = resolveHomeDir(options?.homeDir);
 
   const removedFiles: string[] = [];
   const restoredFiles: string[] = [];
@@ -2107,7 +2103,7 @@ export async function doctorProbe(
   const errors: string[] = [];
   const checks: DoctorCheck[] = [];
 
-  const homeDir = resolveHome(options?.homeDir);
+  const homeDir = resolveHomeDir(options?.homeDir);
   const projectRoot = options?.projectRoot || process.cwd();
 
   // 1. Node.js version check (>= 22.13.0)
@@ -2308,7 +2304,7 @@ export async function runAsdUpdate(options?: {
   const asdRoot = options?.asdRootOverride
     ? path.resolve(options.asdRootOverride)
     : getAsdRoot();
-  const homeDir = resolveHome(options?.homeDir);
+  const homeDir = resolveHomeDir(options?.homeDir);
   const previousVersion = ASD_VERSION;
 
   const check = await checkForRemoteUpdate({
