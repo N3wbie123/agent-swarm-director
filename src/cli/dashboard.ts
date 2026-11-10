@@ -24,6 +24,7 @@ import * as http from "node:http";
 import * as path from "node:path";
 
 import {
+  detectSystemLocale,
   discoverHarnessModels,
   getModelsDiskCachePath,
   type HarnessModelCatalog,
@@ -50,16 +51,6 @@ export {
   getModelsDiskCachePath,
   saveSessionMemo,
 };
-
-function detectSystemLocale(): string {
-  try {
-    const resolved = Intl.DateTimeFormat().resolvedOptions().locale;
-    if (resolved) return resolved;
-  } catch {
-    // Ignore
-  }
-  return process.env.LC_ALL || process.env.LANG || "en-US";
-}
 
 function renderDashboardHtml(defaultLocale = detectSystemLocale()): string {
   const defaultLang = defaultLocale.toLowerCase().startsWith("ko") ? "ko" : "en";

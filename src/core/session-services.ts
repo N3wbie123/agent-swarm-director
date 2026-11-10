@@ -18,7 +18,11 @@ import {
   SqliteDriver,
   type TaskRow,
 } from "./db.ts";
-import { discoverHarnessModels, type HarnessModelCatalog } from "./models.ts";
+import {
+  detectSystemLocale,
+  discoverHarnessModels,
+  type HarnessModelCatalog,
+} from "./models.ts";
 import { atomicWriteFileSync } from "./render.ts";
 import { readCliRecentSessions } from "./session-tracker.ts";
 import { scanSubagentLogs, type SubagentLogRecord } from "./subagent-logs.ts";
@@ -474,14 +478,4 @@ export async function collectDashboardSnapshot(options?: {
     worktreeStatuses,
     harnesses,
   };
-}
-
-function detectSystemLocale(): string {
-  try {
-    const resolved = Intl.DateTimeFormat().resolvedOptions().locale;
-    if (resolved) return resolved;
-  } catch {
-    // Ignore
-  }
-  return process.env.LC_ALL || process.env.LANG || "en-US";
 }

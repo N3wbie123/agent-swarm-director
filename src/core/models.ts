@@ -23,7 +23,7 @@ const DEFAULT_MODELS_CACHE_TTL_MS = 10 * 60 * 1000;
 
 const modelCatalogCache = new Map<string, HarnessModelCatalog>();
 
-function detectSystemLocale(): string {
+export function detectSystemLocale(): string {
   try {
     const resolved = Intl.DateTimeFormat().resolvedOptions().locale;
     if (resolved) return resolved;
