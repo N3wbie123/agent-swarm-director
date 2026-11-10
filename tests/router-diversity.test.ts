@@ -223,7 +223,7 @@ test("Tier 4: builder or worker + general or unknown category -> difficulty tier
 
 test("@ag fallback: falls back to first CLI harness in fallbacks when headless unsupported", () => {
   // Scout role default in presets is antigravity / gemini-3-flash-lite
-  // Fallback 1: codex / gpt-5-codex, Fallback 2: opencode / glm-5
+  // Fallback 1: codex / gpt-5-codex, Fallback 2: opencode / z-ai/glm-5.3-flash
   const route = resolveRoute(
     {
       role: "scout",
@@ -303,7 +303,7 @@ test("@ag fallback: respects availableHarnesses constraint during fallback", () 
   );
 
   assert.equal(route.harness, "opencode");
-  assert.equal(route.model, "glm-5");
+  assert.equal(route.model, "z-ai/glm-5.3-flash");
   assert.equal(route.fallbackApplied, true);
 });
 
@@ -327,7 +327,7 @@ test("escalateTaskRoute: Attempt 1 (attempts = 0) returns initial route as pendi
   assert.equal(res.attempts, 0);
   assert.ok(res.route);
   assert.equal(res.harness, "opencode");
-  assert.equal(res.model, "glm-5");
+  assert.equal(res.model, "z-ai/glm-5.3-flash");
 });
 
 test("escalateTaskRoute: Attempt 2 (attempts = 1) keeps same model after rollback retry", () => {
@@ -485,7 +485,7 @@ test("selectDiverseReviewer: arbiter role selects diverse reviewer from claude p
 
 test("resolveFallback: steps through available fallbacks in order", () => {
   const primary = defaultRouting.agents.critic;
-  // Fallbacks: [0] claude-code / claude-opus-4-6, [1] opencode / glm-5
+  // Fallbacks: [0] claude-code / claude-opus-4-6, [1] opencode / z-ai/glm-5.3-flash
 
   const fb1 = resolveFallback(primary, defaultRouting);
   assert.ok(fb1);
@@ -496,7 +496,7 @@ test("resolveFallback: steps through available fallbacks in order", () => {
   const fb2 = resolveFallback(fb1, defaultRouting);
   assert.ok(fb2);
   assert.equal(fb2.harness, "opencode");
-  assert.equal(fb2.model, "glm-5");
+  assert.equal(fb2.model, "z-ai/glm-5.3-flash");
   assert.equal(fb2.fallbacks.length, 0);
 
   const fb3 = resolveFallback(fb2, defaultRouting);
@@ -513,7 +513,7 @@ test("resolveFallback: skips unavailable harnesses based on runtimeCapabilities"
 
   assert.ok(fb);
   assert.equal(fb.harness, "opencode");
-  assert.equal(fb.model, "glm-5");
+  assert.equal(fb.model, "z-ai/glm-5.3-flash");
 });
 
 // ============================================================================

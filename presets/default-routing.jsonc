@@ -29,12 +29,12 @@
       "fallbacks": ["haiku"]
     },
     "opencode": {
-      "scout": "glm-5",
-      "worker": "glm-5",
-      "planner": "glm-5",
-      "architect": "glm-5",
-      "critic": "glm-5",
-      "defaultModel": "glm-5",
+      "scout": "z-ai/glm-5.3-flash",
+      "worker": "z-ai/glm-5.3-flash",
+      "planner": "z-ai/glm-5.3-flash",
+      "architect": "z-ai/glm-5.3-flash",
+      "critic": "z-ai/glm-5.3-flash",
+      "defaultModel": "z-ai/glm-5.3-flash",
       "fallbacks": []
     },
     "codex": {
@@ -53,7 +53,7 @@
       "modelFamily": "claude",
       "fallbacks": [
         { "harness": "codex", "model": "gpt-5-codex", "modelFamily": "gpt" },
-        { "harness": "opencode", "model": "glm-5", "modelFamily": "glm" }
+        { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
     "architect": {
@@ -62,12 +62,12 @@
       "modelFamily": "claude",
       "fallbacks": [
         { "harness": "codex", "model": "gpt-5-codex", "modelFamily": "gpt" },
-        { "harness": "opencode", "model": "glm-5", "modelFamily": "glm" }
+        { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
     "worker": {
       "harness": "opencode",
-      "model": "glm-5",
+      "model": "z-ai/glm-5.3-flash",
       "modelFamily": "glm",
       "fallbacks": [
         { "harness": "codex", "model": "gpt-5-codex", "modelFamily": "gpt" },
@@ -80,7 +80,7 @@
       "modelFamily": "gemini",
       "fallbacks": [
         { "harness": "codex", "model": "gpt-5-codex", "modelFamily": "gpt" },
-        { "harness": "opencode", "model": "glm-5", "modelFamily": "glm" }
+        { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
     "critic": {
@@ -89,7 +89,7 @@
       "modelFamily": "gpt",
       "fallbacks": [
         { "harness": "claude-code", "model": "claude-opus-4-6", "modelFamily": "claude" },
-        { "harness": "opencode", "model": "glm-5", "modelFamily": "glm" }
+        { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     }
   },
@@ -100,7 +100,7 @@
       "modelFamily": "claude",
       "fallbacks": [
         { "harness": "antigravity", "model": "gemini-3-pro", "modelFamily": "gemini" },
-        { "harness": "opencode", "model": "glm-5", "modelFamily": "glm" }
+        { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
     "design": {
@@ -109,7 +109,7 @@
       "modelFamily": "claude",
       "fallbacks": [
         { "harness": "antigravity", "model": "gemini-3-pro", "modelFamily": "gemini" },
-        { "harness": "opencode", "model": "glm-5", "modelFamily": "glm" }
+        { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
     "research": {
@@ -127,12 +127,12 @@
       "modelFamily": "gpt",
       "fallbacks": [
         { "harness": "claude-code", "model": "claude-sonnet-4-6", "modelFamily": "claude" },
-        { "harness": "opencode", "model": "glm-5", "modelFamily": "glm" }
+        { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
     "general": {
       "harness": "opencode",
-      "model": "glm-5",
+      "model": "z-ai/glm-5.3-flash",
       "modelFamily": "glm",
       "fallbacks": [
         { "harness": "codex", "model": "gpt-5-codex", "modelFamily": "gpt" },
@@ -145,12 +145,12 @@
       "modelFamily": "gemini",
       "fallbacks": [
         { "harness": "codex", "model": "gpt-5-codex", "modelFamily": "gpt" },
-        { "harness": "opencode", "model": "glm-5", "modelFamily": "glm" }
+        { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
     "medium": {
       "harness": "opencode",
-      "model": "glm-5",
+      "model": "z-ai/glm-5.3-flash",
       "modelFamily": "glm",
       "fallbacks": [
         { "harness": "codex", "model": "gpt-5-codex", "modelFamily": "gpt" },
@@ -163,7 +163,7 @@
       "modelFamily": "claude",
       "fallbacks": [
         { "harness": "codex", "model": "gpt-5-codex", "modelFamily": "gpt" },
-        { "harness": "opencode", "model": "glm-5", "modelFamily": "glm" }
+        { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     }
   }
