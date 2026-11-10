@@ -480,7 +480,7 @@ test("renderProgressBoard: generates live TODO board with Turn completion, perce
   // 2. Task 1 (Turn 1, @oc/glm-5, 12.4s, commit sha)
   assert.ok(
     board.includes(
-      "- [x] **T1.1** (Turn 1, `@oc/glm-5`, 12.4s): DB 스키마 작성 — 완료 (`a1b2c3d`)"
+      "- [x] **T1.1** (Turn 1, `LIGHT`, 12.4s): DB 스키마 작성 — 완료 (`a1b2c3d`)"
     ),
     `T1.1 line mismatch: ${board}`
   );
@@ -496,7 +496,7 @@ test("renderProgressBoard: generates live TODO board with Turn completion, perce
   // 4. Task 3 (Turn 2, @cc/claude-sonnet-4-6, 대기중)
   assert.ok(
     board.includes(
-      "- [ ] **T2.1** (Turn 2, `@cc/claude-sonnet-4-6`, 대기중): 통합 라우터 연결"
+      "- [ ] **T2.1** (Turn 2, `LIGHT`, 대기중): 통합 라우터 연결"
     ),
     `T2.1 line mismatch: ${board}`
   );

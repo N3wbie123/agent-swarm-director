@@ -893,6 +893,8 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.equal(dispatchResp.results[0]?.taskId, "T1.1");
       assert.equal(dispatchResp.results[0]?.status, "running");
       assert.equal(dispatchResp.results[0]?.harness, "opencode");
+      assert.ok(dispatchResp.progressBoard.includes("(Turn 1, `LIGHT`, 실행중)"), "LIGHT task in progressBoard must display `LIGHT` instead of @harness/model");
+      assert.equal(fs.existsSync(path.join(projectRoot, ".asd", "sessions", "dispatch-light-default", "subagents")), false, "LIGHT claim_only must not create fake subagents/ directory");
     });
 
     test("parallel_spawn automatically steps through same-harness & cross-harness fallbacks on rate-limit or network error", async () => {

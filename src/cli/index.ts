@@ -1338,8 +1338,12 @@ export async function main(
             } else {
               console.log(res.progressBoard);
               for (const r of res.results) {
+                const tag =
+                  options.mode === "claim_only" || !r.harness
+                    ? "LIGHT"
+                    : `@${r.harness}/${r.model}`;
                 console.log(
-                  `- ${r.taskId}: ${r.status} (@${r.harness}/${r.model})${r.error ? ` [Error: ${r.error}]` : ""}`
+                  `- ${r.taskId}: ${r.status} (${tag})${r.error ? ` [Error: ${r.error}]` : ""}`
                 );
               }
             }

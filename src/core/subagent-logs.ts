@@ -54,6 +54,9 @@ export function scanSubagentLogs(projectRoot: string): SubagentLogRecord[] {
         try {
           const metaStat = fs.statSync(metaPath);
           const meta = JSON.parse(fs.readFileSync(metaPath, "utf8")) as Record<string, unknown>;
+          if (meta.dispatchMode === "claim_only" && !meta.worktreePath) {
+            continue;
+          }
           const promptPath = path.join(dirPath, "prompt.md");
           const outputPath = path.join(dirPath, "output.log");
           const hasPrompt = fs.existsSync(promptPath);

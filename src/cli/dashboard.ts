@@ -1266,7 +1266,7 @@ function renderDashboardHtml(defaultLocale = detectSystemLocale()): string {
               <span class="badge st-\${esc(task.status)}">\${esc(statusText)}</span>
             </div>
             <div class="meta-bar" style="margin-top:4px;">
-              Turn \${task.turn} | Track: <strong>\${esc(task.track)}</strong> | Role: <strong>\${esc(task.role)}</strong> | Harness: <strong>\${esc((task.assigned_harness || "-") + "/" + (task.assigned_model || "pending"))}</strong>
+              Turn \${task.turn} | Track: <strong>\${esc(task.track)}</strong> | Role: <strong>\${esc(task.role)}</strong>\${task.track === 'LIGHT' ? '' : ' | Harness: <strong>' + esc((task.assigned_harness || '-') + '/' + (task.assigned_model || 'pending')) + '</strong>'}
               \${task.commit_sha ? ' | Commit: <code>' + esc(task.commit_sha.slice(0, 8)) + '</code>' : ''}
             </div>
             <div class="meta-bar" style="margin-top:4px;"><strong>Target Files:</strong> \${targetBadges}</div>
@@ -1448,7 +1448,7 @@ function renderDashboardHtml(defaultLocale = detectSystemLocale()): string {
         ? \`<div class="meta-bar">\${t.noTasks}</div>\`
         : tasks.map(item => {
             const isSel = selectedTaskId === item.task_id;
-            const modelTag = (item.assigned_harness || "-") + "/" + (item.assigned_model || "pending");
+            const modelTag = item.track === "LIGHT" ? "LIGHT" : (item.assigned_harness || "-") + "/" + (item.assigned_model || "pending");
             const dur = item.duration_ms ? (item.duration_ms / 1000).toFixed(1) + "s" : "";
             const statusText = t.statusMap[item.status] || item.status;
             return \`

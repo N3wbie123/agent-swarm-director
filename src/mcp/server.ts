@@ -1112,55 +1112,62 @@ export class AsdMcpServer {
         if (t.track === "HEAVY") {
           const wt = createTaskWorktree(this.projectRoot, t.turn, t.task_id);
           wtPath = wt.wtPath;
-        }
 
-        const subSessionId = `sub-${t.turn}-${t.task_id}-${t.role}-${route.harness}`;
-        let allowedFiles: string[] = [];
-        try {
-          allowedFiles = JSON.parse(t.target_files_json || "[]");
-        } catch {
-          allowedFiles = [];
-        }
-        if (allowedFiles.length > 0 && !allowedFiles.includes("tests/**")) {
-          allowedFiles = [...allowedFiles, "tests/**", "**/*.test.ts", "**/*.spec.ts"];
-        }
-        const subDir = path.join(this.projectRoot, ".asd", "sessions", sessionId, "subagents", subSessionId);
-        fs.mkdirSync(subDir, { recursive: true });
-        const promptText = buildPromptForTask(t, upCtx.upstreamDecisions, upCtx.upstreamFiles);
-        const startedAt = Date.now();
-        atomicWriteFileSync(path.join(subDir, "prompt.md"), promptText);
-        atomicWriteFileSync(
-          path.join(subDir, "meta.json"),
-          JSON.stringify({
-            subSessionId,
-            parentSessionId: sessionId,
-            roleType: "subagent",
-            role: t.role,
-            harness: route.harness,
-            model: effectiveModel,
-            taskId: t.task_id,
-            pid: process.pid,
-            ownerPid: process.pid,
-            dispatchMode: "claim_only",
-            worktreePath: wtPath ?? null,
-            allowedFiles,
-            status: "running",
-            startedAt,
-          }, null, 2) + "\n"
-        );
-        if (!fs.existsSync(path.join(subDir, "output.log"))) {
+          const subSessionId = `sub-${t.turn}-${t.task_id}-${t.role}-${route.harness}`;
+          let allowedFiles: string[] = [];
+          try {
+            allowedFiles = JSON.parse(t.target_files_json || "[]");
+          } catch {
+            allowedFiles = [];
+          }
+          if (allowedFiles.length > 0 && !allowedFiles.includes("tests/**")) {
+            allowedFiles = [...allowedFiles, "tests/**", "**/*.test.ts", "**/*.spec.ts"];
+          }
+          const subDir = path.join(this.projectRoot, ".asd", "sessions", sessionId, "subagents", subSessionId);
+          fs.mkdirSync(subDir, { recursive: true });
+          const promptText = buildPromptForTask(t, upCtx.upstreamDecisions, upCtx.upstreamFiles);
+          const startedAt = Date.now();
+          atomicWriteFileSync(path.join(subDir, "prompt.md"), promptText);
           atomicWriteFileSync(
-            path.join(subDir, "output.log"),
-            `[claim_only] Task ${t.task_id} claimed by @${route.harness}/${effectiveModel} at ${new Date(startedAt).toISOString()}\n`
+            path.join(subDir, "meta.json"),
+            JSON.stringify({
+              subSessionId,
+              parentSessionId: sessionId,
+              roleType: "subagent",
+              role: t.role,
+              harness: route.harness,
+              model: effectiveModel,
+              taskId: t.task_id,
+              pid: process.pid,
+              ownerPid: process.pid,
+              dispatchMode: "claim_only",
+              worktreePath: wtPath ?? null,
+              allowedFiles,
+              status: "running",
+              startedAt,
+            }, null, 2) + "\n"
           );
-        }
+          if (!fs.existsSync(path.join(subDir, "output.log"))) {
+            atomicWriteFileSync(
+              path.join(subDir, "output.log"),
+              `[claim_only] Task ${t.task_id} claimed by @${route.harness}/${effectiveModel} at ${new Date(startedAt).toISOString()}\n`
+            );
+          }
 
-        this.db.updateTaskStatus(sessionId, t.task_id, "running", {
-          assignedHarness: route.harness,
-          assignedModel: effectiveModel,
-          worktreePath: wtPath,
-          subSessionId,
-        });
+          this.db.updateTaskStatus(sessionId, t.task_id, "running", {
+            assignedHarness: route.harness,
+            assignedModel: effectiveModel,
+            worktreePath: wtPath,
+            subSessionId,
+          });
+        } else {
+          this.db.updateTaskStatus(sessionId, t.task_id, "running", {
+            assignedHarness: null,
+            assignedModel: null,
+            worktreePath: null,
+            subSessionId: null,
+          });
+        }
 
         results.push({
           taskId: t.task_id,
@@ -1226,8 +1233,10 @@ export class AsdMcpServer {
             ? normalizeAntigravityModel(route.model)
             : route.model;
         this.db.updateTaskStatus(sessionId, t.task_id, "running", {
-          assignedHarness: route.harness,
-          assignedModel: effectiveModel,
+          assignedHarness: null,
+          assignedModel: null,
+          worktreePath: null,
+          subSessionId: null,
         });
         return {
           taskId: t.task_id,

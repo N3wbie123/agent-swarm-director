@@ -713,8 +713,12 @@ export function setForegroundSession(input: {
 
 function formatHarnessModel(
   harness: string | null,
-  model: string | null
+  model: string | null,
+  track?: string | null
 ): string {
+  if (track === "LIGHT") {
+    return "`LIGHT`";
+  }
   let prefix = "";
   if (harness === "claude-code") prefix = "@cc";
   else if (harness === "opencode") prefix = "@oc";
@@ -817,7 +821,9 @@ export function renderProgressBoard(
       ("assigned_model" in t
         ? t.assigned_model
         : (t as unknown as { assignedModel?: string }).assignedModel) ?? null;
-    const harnessModelStr = formatHarnessModel(harness, model);
+    const track =
+      ("track" in t && typeof t.track === "string" ? t.track : null) ?? "LIGHT";
+    const harnessModelStr = formatHarnessModel(harness, model, track);
 
     const durationMs =
       ("duration_ms" in t
