@@ -598,9 +598,9 @@ export class AsdMcpServer {
     wrapMcpContent = false
   ): Promise<unknown> {
     // Subagent Isolation Guard:
-    // Reject calls to asd_plan, asd_dispatch, and asd_debate with exact message
+    // Reject calls to asd_plan, asd_dispatch, asd_verify, and asd_debate with exact message
     if (this.isSubagent()) {
-      if (name === "asd_plan" || name === "asd_dispatch" || name === "asd_debate") {
+      if (name === "asd_plan" || name === "asd_dispatch" || name === "asd_verify" || name === "asd_debate") {
         throw new Error("Subagents cannot invoke orchestration tools");
       }
     }

@@ -4,8 +4,8 @@
  * Verifies:
  * 1. Tool list & MCP initialization (tools/list has all 4 tools with accurate schemas).
  * 2. Subagent Shield Guard:
- *    - Rejects asd_plan, asd_dispatch, and asd_debate when ASD_SESSION_ROLE=subagent.
- *    - Allows asd_verify and tools/list for subagents.
+ *    - Rejects asd_plan, asd_dispatch, asd_verify, and asd_debate when ASD_SESSION_ROLE=subagent.
+ *    - Allows tools/list for subagents.
  *    - Bypasses autoSync when role is subagent; runs onMainServerStart when role is main.
  * 3. asd_plan:
  *    - 'create': initializes session, writes main.json, writes PLAN.md, returns progressBoard.
@@ -226,7 +226,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       );
     });
 
-    test("subagents ARE permitted to call asd_verify and tools/list", async () => {
+    test("subagents are blocked from asd_verify; tools/list still allowed", async () => {
       const projectRoot = makeProjectRoot();
       const server = new AsdMcpServer({
         projectRoot,
@@ -239,7 +239,30 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       const listResp = (await server.handleRequest("tools/list", {})) as { tools: unknown[] };
       assert.equal(listResp.tools.length, 4);
 
-      // asd_verify is allowed to reach verify logic (will throw Task not found, NOT subagent rejection)
+      // asd_verify is blocked by the subagent guard
+      await assert.rejects(
+        async () => {
+          await server.handleRequest("asd_verify", {
+            sessionId: "missing",
+            taskId: "T1.1",
+            doneClaim: { summary: "ok", changed_files: [], key_decisions: [], risks: [] },
+          });
+        },
+        { name: "Error", message: "Subagents cannot invoke orchestration tools" }
+      );
+    });
+
+    test("main session asd_verify is not blocked by the subagent guard", async () => {
+      const projectRoot = makeProjectRoot();
+      const server = new AsdMcpServer({
+        projectRoot,
+        sessionRole: "main",
+        autoSync: false,
+      });
+      openServers.push(server);
+
+      // main sessions reach verify logic; a missing session throws "Session not found",
+      // NOT the subagent guard rejection
       await assert.rejects(
         async () => {
           await server.handleRequest("asd_verify", {
