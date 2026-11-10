@@ -36,6 +36,7 @@ import {
   type SessionRow,
 } from "./db.ts";
 import { attachDriver, detachDriver, type DriverRow, type DriverSource } from "./drivers.ts";
+import { withFileLockSync } from "./file-lock.ts";
 import { atomicWriteFileSync, setForegroundSession } from "./render.ts";
 import type {
   CliRecentSessionEntry,
@@ -888,95 +889,6 @@ export function getCliRecentSessionsPath(projectRoot: string): string {
 
 const STALE_CLI_RECENT_LOCK_MAX_AGE_MS = 60_000;
 const DEFAULT_CLI_RECENT_LOCK_TIMEOUT_MS = 10_000;
-const heldCliRecentLockDepth = new Map<string, number>();
-
-function isCliRecentPidAlive(pid: number): boolean {
-  if (!pid || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    return code === "EPERM";
-  }
-}
-
-function isCliRecentLockStale(lockPath: string, now = Date.now()): boolean {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(lockPath, "utf8");
-  } catch {
-    return false;
-  }
-  try {
-    const parsed = JSON.parse(raw) as { pid?: number; acquiredAt?: number };
-    const pid = typeof parsed.pid === "number" ? parsed.pid : -1;
-    const acquiredAt = typeof parsed.acquiredAt === "number" ? parsed.acquiredAt : 0;
-    if (now - acquiredAt > STALE_CLI_RECENT_LOCK_MAX_AGE_MS) return true;
-    if (!isCliRecentPidAlive(pid)) return true;
-    return false;
-  } catch {
-    try {
-      const stat = fs.statSync(lockPath);
-      return now - stat.mtimeMs > 2_000;
-    } catch {
-      return false;
-    }
-  }
-}
-
-function tryOpenCliRecentLockFile(lockPath: string, purpose: string): boolean {
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  let fd: number | undefined;
-  try {
-    fd = fs.openSync(lockPath, "wx");
-    fs.writeFileSync(
-      fd,
-      JSON.stringify({
-        pid: process.pid,
-        acquiredAt: Date.now(),
-        purpose,
-      }) + "\n",
-      "utf8"
-    );
-    return true;
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "EEXIST" || code === "EPERM" || code === "EACCES") {
-      return false;
-    }
-    throw err;
-  } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd);
-      } catch {}
-    }
-  }
-}
-
-function releaseCliRecentLockFile(lockPath: string): void {
-  try {
-    if (!fs.existsSync(lockPath)) return;
-    const raw = fs.readFileSync(lockPath, "utf8");
-    const parsed = JSON.parse(raw) as { pid?: number };
-    if (parsed.pid === process.pid) {
-      fs.unlinkSync(lockPath);
-    }
-  } catch {}
-}
-
-function sleepCliRecentSync(ms: number): void {
-  if (ms <= 0) return;
-  try {
-    const sab = new SharedArrayBuffer(4);
-    const view = new Int32Array(sab);
-    Atomics.wait(view, 0, 0, ms);
-  } catch {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {}
-  }
-}
 
 function withCliRecentFileLockSync<T>(
   projectRoot: string,
@@ -984,50 +896,24 @@ function withCliRecentFileLockSync<T>(
   fn: () => T,
   timeoutMs = DEFAULT_CLI_RECENT_LOCK_TIMEOUT_MS
 ): T {
-  const resolvedRoot = path.resolve(projectRoot);
-  const key = process.platform === "win32" ? resolvedRoot.toLowerCase() : resolvedRoot;
-  const currentDepth = heldCliRecentLockDepth.get(key) ?? 0;
-  if (currentDepth > 0) {
-    heldCliRecentLockDepth.set(key, currentDepth + 1);
-    try {
-      return fn();
-    } finally {
-      heldCliRecentLockDepth.set(key, currentDepth);
-    }
-  }
-
-  const lockPath = path.join(resolvedRoot, ".asd", "sessions", "cli-recent.lock");
-  const start = Date.now();
-  let attempt = 0;
-
-  while (true) {
-    if (tryOpenCliRecentLockFile(lockPath, purpose)) {
-      break;
-    }
-    const now = Date.now();
-    if (isCliRecentLockStale(lockPath, now)) {
-      try {
-        fs.unlinkSync(lockPath);
-      } catch {}
-      continue;
-    }
-    const elapsed = now - start;
-    if (elapsed >= timeoutMs) {
-      throw new Error("CLI_RECENT_LOCK_TIMEOUT");
-    }
-    const backoff = Math.min(250, 20 * Math.pow(1.5, attempt));
-    const waitMs = Math.min(backoff, Math.max(1, timeoutMs - elapsed));
-    attempt++;
-    sleepCliRecentSync(Math.round(waitMs));
-  }
-
-  heldCliRecentLockDepth.set(key, 1);
-  try {
-    return fn();
-  } finally {
-    heldCliRecentLockDepth.delete(key);
-    releaseCliRecentLockFile(lockPath);
-  }
+  return withFileLockSync(
+    {
+      lockPath: path.join(
+        path.resolve(projectRoot),
+        ".asd",
+        "sessions",
+        "cli-recent.lock"
+      ),
+      staleMaxAgeMs: STALE_CLI_RECENT_LOCK_MAX_AGE_MS,
+      timeoutError: "CLI_RECENT_LOCK_TIMEOUT",
+      backoffBaseMs: 20,
+      backoffFactor: 1.5,
+      backoffCapMs: 250,
+    },
+    purpose,
+    timeoutMs,
+    fn
+  );
 }
 
 

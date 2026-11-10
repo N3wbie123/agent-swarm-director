@@ -24,10 +24,15 @@
 
 import * as child_process from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { ensureGitExclude, ensureProjectInitialized, getGitExcludePath } from "./config.ts";
 import type { SqliteDriver } from "./db.ts";
+import {
+  isPidAlive,
+  sleepSync,
+  withFileLockAsync,
+  withFileLockSync,
+} from "./file-lock.ts";
 import { verifyChangedFilesBoundary } from "./policy.ts";
 import { hasLeakedSecrets } from "./redact.ts";
 import { renderPlanMd, renderSessionSummaryMd } from "./render.ts";
@@ -153,129 +158,12 @@ export interface MergeLockOptions {
   timeoutMs?: number;
 }
 
-export interface MergeLockFilePayload {
-  pid: number;
-  hostname: string;
-  acquiredAt: number;
-  purpose: string;
-}
+export type { LockFilePayload as MergeLockFilePayload } from "./file-lock.ts";
 
 const DEFAULT_MERGE_LOCK_TIMEOUT_MS = 120_000;
 const STALE_MERGE_LOCK_MAX_AGE_MS = 10 * 60 * 1000;
-const heldProjectLockDepth = new Map<string, number>();
 
-function normalizeLockKey(projectRoot: string): string {
-  const resolved = path.resolve(projectRoot).replaceAll("\\", "/");
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
-
-export function isPidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  if (pid === process.pid) return true;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "EPERM") return true;
-    return false;
-  }
-}
-
-function isLockFileStale(lockPath: string, now: number): boolean {
-  let raw = "";
-  try {
-    raw = fs.readFileSync(lockPath, "utf8");
-  } catch {
-    return false;
-  }
-
-  if (!raw.trim()) {
-    try {
-      const stat = fs.statSync(lockPath);
-      return now - stat.mtimeMs > 2_000;
-    } catch {
-      return false;
-    }
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<MergeLockFilePayload>;
-    const pid = typeof parsed.pid === "number" ? parsed.pid : -1;
-    const acquiredAt = typeof parsed.acquiredAt === "number" ? parsed.acquiredAt : 0;
-    if (now - acquiredAt > STALE_MERGE_LOCK_MAX_AGE_MS) {
-      return true;
-    }
-    if (!isPidAlive(pid)) {
-      return true;
-    }
-    return false;
-  } catch {
-    try {
-      const stat = fs.statSync(lockPath);
-      return now - stat.mtimeMs > 2_000;
-    } catch {
-      return false;
-    }
-  }
-}
-
-function tryOpenMergeLockFile(lockPath: string, purpose: string): boolean {
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  let fd: number | undefined;
-  try {
-    fd = fs.openSync(lockPath, "wx");
-    const payload: MergeLockFilePayload = {
-      pid: process.pid,
-      hostname: os.hostname(),
-      acquiredAt: Date.now(),
-      purpose,
-    };
-    fs.writeFileSync(fd, JSON.stringify(payload) + "\n", "utf8");
-    return true;
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "EEXIST" || code === "EPERM" || code === "EACCES") {
-      return false;
-    }
-    throw err;
-  } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        // ignore
-      }
-    }
-  }
-}
-
-function releaseMergeLockFile(lockPath: string): void {
-  try {
-    if (!fs.existsSync(lockPath)) return;
-    const raw = fs.readFileSync(lockPath, "utf8");
-    const parsed = JSON.parse(raw) as Partial<MergeLockFilePayload>;
-    if (parsed.pid === process.pid) {
-      fs.unlinkSync(lockPath);
-    }
-  } catch {
-    // ignore
-  }
-}
-
-function sleepSync(ms: number): void {
-  if (ms <= 0) return;
-  try {
-    const sab = new SharedArrayBuffer(4);
-    const view = new Int32Array(sab);
-    Atomics.wait(view, 0, 0, ms);
-  } catch {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-      // busy-wait fallback
-    }
-  }
-}
+export { isPidAlive };
 
 function withFileMergeLockSync<T>(
   projectRoot: string,
@@ -283,51 +171,19 @@ function withFileMergeLockSync<T>(
   fn: () => T,
   timeoutMs = DEFAULT_MERGE_LOCK_TIMEOUT_MS
 ): T {
-  const key = normalizeLockKey(projectRoot);
-  const currentDepth = heldProjectLockDepth.get(key) ?? 0;
-  if (currentDepth > 0) {
-    heldProjectLockDepth.set(key, currentDepth + 1);
-    try {
-      return fn();
-    } finally {
-      heldProjectLockDepth.set(key, currentDepth);
-    }
-  }
-
-  const lockPath = path.join(projectRoot, ".asd", "merge.lock");
-  const start = Date.now();
-  let attempt = 0;
-
-  while (true) {
-    if (tryOpenMergeLockFile(lockPath, purpose)) {
-      break;
-    }
-    const now = Date.now();
-    if (isLockFileStale(lockPath, now)) {
-      try {
-        fs.unlinkSync(lockPath);
-      } catch {
-        // ignore race
-      }
-      continue;
-    }
-    const elapsed = now - start;
-    if (elapsed >= timeoutMs) {
-      throw new Error("MERGE_LOCK_TIMEOUT");
-    }
-    const backoff = Math.min(1000, 200 * Math.pow(2, attempt));
-    const waitMs = Math.min(backoff, Math.max(1, timeoutMs - elapsed));
-    attempt++;
-    sleepSync(waitMs);
-  }
-
-  heldProjectLockDepth.set(key, 1);
-  try {
-    return fn();
-  } finally {
-    heldProjectLockDepth.delete(key);
-    releaseMergeLockFile(lockPath);
-  }
+  return withFileLockSync(
+    {
+      lockPath: path.join(projectRoot, ".asd", "merge.lock"),
+      staleMaxAgeMs: STALE_MERGE_LOCK_MAX_AGE_MS,
+      timeoutError: "MERGE_LOCK_TIMEOUT",
+      backoffBaseMs: 200,
+      backoffFactor: 2,
+      backoffCapMs: 1000,
+    },
+    purpose,
+    timeoutMs,
+    fn
+  );
 }
 
 /**
@@ -342,59 +198,24 @@ export async function withMergeLock<T>(
   fn: () => Promise<T>,
   options?: MergeLockOptions
 ): Promise<T> {
-  return mergeMutex.runExclusive(async () => {
+  return mergeMutex.runExclusive(() => {
     const projectRoot = options?.projectRoot;
     if (!projectRoot) {
-      return await fn();
+      return fn();
     }
-
-    const key = normalizeLockKey(projectRoot);
-    const currentDepth = heldProjectLockDepth.get(key) ?? 0;
-    if (currentDepth > 0) {
-      heldProjectLockDepth.set(key, currentDepth + 1);
-      try {
-        return await fn();
-      } finally {
-        heldProjectLockDepth.set(key, currentDepth);
-      }
-    }
-
-    const purpose = options?.purpose ?? "merge";
-    const timeoutMs = options?.timeoutMs ?? DEFAULT_MERGE_LOCK_TIMEOUT_MS;
-    const lockPath = path.join(projectRoot, ".asd", "merge.lock");
-    const start = Date.now();
-    let attempt = 0;
-
-    while (true) {
-      if (tryOpenMergeLockFile(lockPath, purpose)) {
-        break;
-      }
-      const now = Date.now();
-      if (isLockFileStale(lockPath, now)) {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          // ignore race
-        }
-        continue;
-      }
-      const elapsed = now - start;
-      if (elapsed >= timeoutMs) {
-        throw new Error("MERGE_LOCK_TIMEOUT");
-      }
-      const backoff = Math.min(1000, 200 * Math.pow(2, attempt));
-      const waitMs = Math.min(backoff, Math.max(1, timeoutMs - elapsed));
-      attempt++;
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-    }
-
-    heldProjectLockDepth.set(key, 1);
-    try {
-      return await fn();
-    } finally {
-      heldProjectLockDepth.delete(key);
-      releaseMergeLockFile(lockPath);
-    }
+    return withFileLockAsync(
+      {
+        lockPath: path.join(projectRoot, ".asd", "merge.lock"),
+        staleMaxAgeMs: STALE_MERGE_LOCK_MAX_AGE_MS,
+        timeoutError: "MERGE_LOCK_TIMEOUT",
+        backoffBaseMs: 200,
+        backoffFactor: 2,
+        backoffCapMs: 1000,
+      },
+      options?.purpose ?? "merge",
+      options?.timeoutMs ?? DEFAULT_MERGE_LOCK_TIMEOUT_MS,
+      fn
+    );
   });
 }
 
