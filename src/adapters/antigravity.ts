@@ -10,8 +10,8 @@
  * - Global target paths under `<homeDir>/.gemini/`
  */
 
-import * as child_process from "node:child_process";
 import * as path from "node:path";
+import { probeHeadlessBinary } from "../core/spawner.ts";
 import { AGENT_ROLES, type HarnessAdapter, type HarnessId } from "../core/types.ts";
 import { ASD_SKILLS } from "./claude-code.ts";
 
@@ -20,21 +20,7 @@ import { ASD_SKILLS } from "./claude-code.ts";
  * Never throws — returns false on binary absence, spawn failure, timeout, or lack of print mode.
  */
 export function probeAntigravityHeadless(binaryName = "agy"): boolean {
-  try {
-    const res = child_process.spawnSync(binaryName, ["--help"], {
-      stdio: "pipe",
-      timeout: 2000,
-      windowsHide: true,
-      encoding: "utf8",
-    });
-    if (res.error || res.status !== 0) {
-      return false;
-    }
-    const out = (res.stdout ?? "") + (res.stderr ?? "");
-    return out.includes("--print") || out.includes("-p");
-  } catch {
-    return false;
-  }
+  return probeHeadlessBinary(binaryName);
 }
 
 export class AntigravityAdapter implements HarnessAdapter {

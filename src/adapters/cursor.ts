@@ -9,9 +9,9 @@
  * - Global target paths under `<homeDir>/.cursor/`
  */
 
-import * as child_process from "node:child_process";
 import * as path from "node:path";
 import { resolveBinaryOnPath } from "../core/router.ts";
+import { probeHeadlessBinary } from "../core/spawner.ts";
 import { AGENT_ROLES, type HarnessAdapter, type HarnessId } from "../core/types.ts";
 import { ASD_SKILLS } from "./claude-code.ts";
 
@@ -32,23 +32,9 @@ export function resolveCursorBinaryName(
  * and supports headless `-p` / `--print` execution. Never throws.
  */
 export function probeCursorHeadless(binaryName?: string): boolean {
-  const bin = binaryName ?? resolveCursorBinaryName();
-  try {
-    const res = child_process.spawnSync(bin, ["--help"], {
-      stdio: "pipe",
-      timeout: 2000,
-      windowsHide: true,
-      encoding: "utf8",
-      shell: process.platform === "win32",
-    });
-    if (res.error || res.status !== 0) {
-      return false;
-    }
-    const out = (res.stdout ?? "") + (res.stderr ?? "");
-    return out.includes("--print") || out.includes("-p");
-  } catch {
-    return false;
-  }
+  return probeHeadlessBinary(binaryName ?? resolveCursorBinaryName(), {
+    shell: process.platform === "win32",
+  });
 }
 
 export class CursorAdapter implements HarnessAdapter {

@@ -196,6 +196,33 @@ export function resolveSpawnCommand(
   return { command: cmd, args, shell: false };
 }
 
+/**
+ * Probes whether a CLI binary exists and supports headless `-p` / `--print`
+ * execution via its `--help` output. Never throws — returns false on binary
+ * absence, spawn failure, timeout, or missing print mode.
+ */
+export function probeHeadlessBinary(
+  binaryName: string,
+  opts?: { shell?: boolean; timeoutMs?: number }
+): boolean {
+  try {
+    const res = child_process.spawnSync(binaryName, ["--help"], {
+      stdio: "pipe",
+      timeout: opts?.timeoutMs ?? 2000,
+      windowsHide: true,
+      encoding: "utf8",
+      shell: opts?.shell ?? false,
+    });
+    if (res.error || res.status !== 0) {
+      return false;
+    }
+    const out = (res.stdout ?? "") + (res.stderr ?? "");
+    return out.includes("--print") || out.includes("-p");
+  } catch {
+    return false;
+  }
+}
+
 // ============================================================================
 // Default runner: real child_process.spawn
 // ============================================================================
