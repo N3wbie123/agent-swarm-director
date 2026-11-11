@@ -137,6 +137,33 @@ export interface MainSessionMeta {
   memo?: string;
 }
 
+export type DriverSource = "cli-asd" | "hook" | "mcp" | "migrated" | "user" | string;
+export type DriverDetachReason = "switched" | "user" | "timeout" | "process_exit" | "demoted" | string;
+
+export interface DriverRow {
+  driver_id: string;
+  session_id: string;
+  harness: string;
+  model: string | null;
+  harness_session_id: string | null;
+  source: DriverSource;
+  attached_at: number;
+  detached_at: number | null;
+  detach_reason: DriverDetachReason | null;
+  briefing_injected: number;
+}
+
+export interface MainSessionDriverMeta {
+  driverId: string;
+  harness: string;
+  model: string | null;
+  harnessSessionId: string | null;
+  source: DriverSource;
+  attachedAt: number;
+  detachedAt: number | null;
+  detachReason: DriverDetachReason | null;
+}
+
 export type SubagentDispatchMode =
   | "parallel_spawn"
   | "claim_only"
@@ -251,6 +278,10 @@ export interface RoutingConfig {
 export interface AsdPlanInput {
   action: "create" | "get" | "update" | "sync_from_md";
   sessionId?: string;
+  title?: string;
+  projectRoot?: string;
+  track?: TaskTrack;
+  goal?: string;
   force?: boolean;
   mainHarness?: HarnessId;
   mainModel?: string;
@@ -295,6 +326,7 @@ export interface AsdPlanOutput {
   }>;
   planMdPath: string;
   progressBoard: string;
+  foreground?: boolean;
 }
 
 export interface AsdDispatchInput {

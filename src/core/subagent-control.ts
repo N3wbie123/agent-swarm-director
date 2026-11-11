@@ -248,7 +248,6 @@ export async function runSubagentControlAction(options: {
             model: nextModel,
             modelFamily: inferModelFamily(nextModel, nextHarness),
             fallbacks: roleRoute?.fallbacks ?? [],
-            tier: 2,
           },
           routingCfg
         );

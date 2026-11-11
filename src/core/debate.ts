@@ -705,7 +705,7 @@ export function resolveHarnessDebateModel(
 
   // 1. Role-specific entry in agents table
   const canonicalRole = normalizeAgentRole(role);
-  collectFromEntry(agentsMap?.[canonicalRole] ?? agentsMap?.[role]);
+  collectFromEntry((canonicalRole ? agentsMap?.[canonicalRole] : undefined) ?? agentsMap?.[role]);
 
   // 2. Other roles in agents table + high/medium/general categories
   for (const r of DEFAULT_DEBATE_ROLE_CYCLE) {
@@ -800,7 +800,7 @@ export function resolveDebateReviewers(options: {
       if (remainder.includes("@")) {
         const atIdx = remainder.indexOf("@");
         const rolePart = remainder.slice(0, atIdx).trim();
-        if (rolePart) role = normalizeAgentRole(rolePart);
+        if (rolePart) role = normalizeAgentRole(rolePart) ?? role;
         remainder = remainder.slice(atIdx + 1).trim();
       }
       const sepIdx = remainder.indexOf(":");
@@ -924,7 +924,7 @@ export function resolveDebateReviewers(options: {
 
     // If user explicitly requested roles from routing.jsonc (e.g. --roles critic,architect,worker),
     // try the role's configured route/fallbacks in routing.jsonc first (preferring unused harness:model pairs)
-    if (isExplicitRoleOrCountSelection && agentsMap?.[canonicalRole]) {
+    if (isExplicitRoleOrCountSelection && canonicalRole && agentsMap?.[canonicalRole]) {
       const entry = agentsMap[canonicalRole]!;
       const candidates = [
         {
@@ -933,7 +933,7 @@ export function resolveDebateReviewers(options: {
           modelFamily:
             entry.modelFamily ?? inferModelFamily(entry.model, entry.harness),
         },
-        ...(entry.fallbacks ?? []).map((fb) => ({
+        ...((entry.fallbacks as Array<{ harness: HarnessId; model: string; modelFamily?: string }>) ?? []).map((fb) => ({
           harness: fb.harness,
           model: fb.model,
           modelFamily:

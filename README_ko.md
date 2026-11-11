@@ -159,7 +159,7 @@ node --no-warnings src/cli/index.ts ui
 | `asd migrate [--clean-legacy] [--json]` | `node --no-warnings src/cli/index.ts migrate [--clean-legacy] [--json]` | 구버전 프로젝트 해시별 분산 `core.db` 데이터베이스를 자동 백업 후 최신 공유 DB(`~/.asd/state/core.db`)로 안전하게 자동 통합합니다 (`--clean-legacy` 지원). |
 | `asd logs [taskId] [--json]` | `node --no-warnings src/cli/index.ts logs [taskId] [--json]` | 가장 최근 서브에이전트 실행 로그를 자동 출력하거나, `T1.1`처럼 작업 번호를 지정해 해당 작업의 서브에이전트 로그를 조회합니다. |
 | `asd ui [--port <num>]` | `node --no-warnings src/cli/index.ts ui [--port <num>]` | 한국어/영어를 지원하는 경량 로컬 웹 대시보드(`http://127.0.0.1:3847`)를 실행합니다 (`~/.asd/state/models-cache.json` 디스크 캐시로 즉시 기동). |
-| — | — | **원칙:** `asd ui` 웹 대시보드는 기능 동결 — 새로운 UI 기능은 GUI 리포(asd-gui)에 구현합니다. Core는 CLI + 코어 관리 + 최소 SDK만 유지합니다 (CORE_GUI_BOUNDARY_AUDIT.md 참조). |
+| — | — | **원칙:** `asd ui` 웹 대시보드는 기능 동결 — 새로운 UI 기능은 GUI 리포(asd-gui)에 구현합니다. Core는 CLI + 코어 관리 + 최소 SDK만 유지합니다 (docs/CORE_GUI_BOUNDARY_AUDIT.md 참조). |
 | `asd doctor [--json]` | `node --no-warnings src/cli/index.ts doctor [--json]` | Node 버전, SQLite WAL, Git 저장소, 5대 하네스 CLI 바이너리 경로 및 Headless 지원 여부, `PreToolUse` 보안 차단 여부를 100ms 이내에 점검합니다. |
 | `asd clean [--pop] [--all] [--purge-orphans]` | `node --no-warnings src/cli/index.ts clean [--pop] [--all] [--purge-orphans]` | 잔여 `.asd/wt/*` 워크트리와 `asd/*` 브랜치를 정리하고, `--pop` 옵션 사용 시 자동 스태시 복원 또는 `--purge-orphans`로 고아 세션을 정리합니다. |
 | `asd uninstall` | `node --no-warnings src/cli/index.ts uninstall` | ASD가 주입한 글로벌 훅, TOML 펜스 블록, 스킬, 에이전트, `PATH` 심(shim), `_asdManaged` MCP 항목만 외과적으로 제거하고 사용자의 기존 설정을 100% 보존합니다. |

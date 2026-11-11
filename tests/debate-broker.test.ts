@@ -26,7 +26,7 @@ import {
 } from "../src/core/debate.ts";
 import { openProjectDb, SqliteDriver } from "../src/core/db.ts";
 import type { CommandRunner, CommandRunnerRunOptions } from "../src/core/spawner.ts";
-import type { SubagentSessionMeta } from "../src/core/types.ts";
+import type { RoutingConfig, SubagentSessionMeta } from "../src/core/types.ts";
 
 const tmpDirs: string[] = [];
 const openDrivers: SqliteDriver[] = [];
@@ -702,7 +702,7 @@ Hope this helps!
         topic: "Unconfigured preset model fallback",
         proposal: "Retry without --model if exitCode !== 0",
         reviewerRoutes: [
-          { harness: "opencode", model: "glm-5", role: "analyst" },
+          { harness: "opencode", model: "glm-5", role: "critic" },
         ],
         commandRunner: mockRunner,
         db,
@@ -808,7 +808,8 @@ Hope this helps!
       const db = openProjectDb(projectRoot);
       openDrivers.push(db);
 
-      const routingConfig = {
+      const routingConfig: RoutingConfig = {
+        _asdVersion: "2.5.0",
         agents: {
           critic: {
             harness: "opencode" as const,

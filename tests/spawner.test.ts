@@ -156,7 +156,7 @@ describe("spawner.ts", () => {
       projectRoot,
       mainSessionId: "main-abort",
       subSessionId: "sub-abort",
-      role: "builder",
+      role: "worker",
       harness: "claude-code",
       model: "opus",
       taskId: "T2",
@@ -215,7 +215,7 @@ describe("spawner.ts", () => {
     const projectRoot = makeProjectRoot();
     let capturedCmd = "";
     let capturedArgs: string[] = [];
-    let capturedEnv: Record<string, string> | undefined;
+    let capturedEnv: any;
     let metaDuringRun: SubagentSessionMeta | undefined;
 
     const mockRunner: CommandRunner = {

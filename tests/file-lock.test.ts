@@ -241,7 +241,7 @@ describe("file-lock.ts - withFileLockSync", () => {
     // Pre-create a stale lock (acquiredAt far in the past)
     writeLockFile(lockPath, { acquiredAt: Date.now() - 1_000, pid: 999999 });
 
-    let capturedPayload: LockFilePayload | null = null;
+    let capturedPayload: any = null;
     const result = withFileLockSync(config, "test", 1_000, () => {
       capturedPayload = readLockFile(lockPath);
       return "acquired-stale";
@@ -305,7 +305,7 @@ describe("file-lock.ts - withFileLockSync", () => {
       lastHeartbeatAt: now - 200, // heartbeat stale (200ms > 60ms)
     });
 
-    let capturedPayload: LockFilePayload | null = null;
+    let capturedPayload: any = null;
     const result = withFileLockSync(config, "test", 1_000, () => {
       capturedPayload = readLockFile(lockPath);
       return "acquired-stale-heartbeat";
@@ -314,7 +314,7 @@ describe("file-lock.ts - withFileLockSync", () => {
     assert.equal(result, "acquired-stale-heartbeat");
     assert.ok(capturedPayload);
     assert.equal(capturedPayload.pid, process.pid);
-    assert.notEqual(capturedPayload.nonce, "foreign-"); // new nonce generated
+    assert.notEqual(capturedPayload.nonce, 'foreign-'); // new nonce generated
     assert.equal(fs.existsSync(lockPath), false);
   });
 
@@ -507,7 +507,7 @@ describe("file-lock.ts - withFileLockAsync", () => {
       lastHeartbeatAt: now - 200,
     });
 
-    let capturedPayload: LockFilePayload | null = null;
+    let capturedPayload: any = null;
     const result = await withFileLockAsync(config, "test", 1_000, async () => {
       capturedPayload = readLockFile(lockPath);
       return "async-acquired-stale-heartbeat";
@@ -604,17 +604,17 @@ describe("file-lock.ts - nonce verification on release", () => {
       heartbeatStaleFactor: 3,
     };
 
-    let capturedPayload: LockFilePayload | null = null;
+    let capturedPayload: any = null;
     withFileLockSync(config, "test", 1_000, () => {
       capturedPayload = readLockFile(lockPath);
       return "done";
     });
 
     assert.ok(capturedPayload);
-    assert.ok(typeof capturedPayload.nonce === "string" && capturedPayload.nonce.length > 0);
-    assert.ok(typeof capturedPayload.lastHeartbeatAt === "number" && capturedPayload.lastHeartbeatAt > 0);
+    assert.ok(typeof capturedPayload.nonce === 'string' && capturedPayload.nonce.length > 0);
+    assert.ok(typeof capturedPayload.lastHeartbeatAt === 'number' && capturedPayload.lastHeartbeatAt > 0);
     assert.equal(capturedPayload.pid, process.pid);
     assert.equal(capturedPayload.hostname, os.hostname());
-    assert.equal(capturedPayload.purpose, "test");
+    assert.equal(capturedPayload.purpose, 'test');
   });
 });

@@ -12,7 +12,7 @@
 
 | 이유 | 설명 |
 |---|---|
-| 경계 원칙 유지 | Core는 "CLI(`asd`) + 코어 관리 + 최소 SDK"만 유지하기로 v2.4.3에서 확정 (`CORE_GUI_BOUNDARY_AUDIT.md`). TUI를 Core에 넣으면 방금 정리한 경계를 다시 깬다. |
+| 경계 원칙 유지 | Core는 "CLI(`asd`) + 코어 관리 + 최소 SDK"만 유지하기로 v2.4.3에서 확정 (`docs/CORE_GUI_BOUNDARY_AUDIT.md`). TUI를 Core에 넣으면 방금 정리한 경계를 다시 깬다. |
 | Zero-dependency 불변식 | Core는 `dependencies: {}`를 CI 수준에서 강제 가능해야 한다. TUI 프레임워크(Ink/React 등) 의존성은 이 불변식을 깬다. |
 | 릴리즈 독립성 | 하네스 어댑터/SDK는 자주 바뀌고, 앱은 패키징(exe) 주기가 별도다. npm GitHub 의존성(`agent-swarm-director`)으로 연결된 분리 모델은 asd-gui에서 이미 검증됨. |
 
@@ -25,8 +25,8 @@
 | **본 문서** (`HARNESS_INTEGRATION_REFERENCE.md`) | 하네스별 저장소·포맷·실측 이벤트 스키마·함정 — 통합 바이블 |
 | `EXTERNAL_SDK_REFERENCE.md` | SDK 함수 시그니처, `core.db` 스키마, CLI 서브커맨드, `asd ui` HTTP API |
 | `PROJECT_STATUS.md` | Core 전체 아키텍처 + 파일별 레퍼런스 |
-| `ORCHESTRATOR_APP_PLAN.md` | 앱 아키텍처 계획(코어 서버 + TUI/GUI 클라이언트), 하네스 스트리밍 실측 매트릭스(부록 C) |
-| `CORE_GUI_BOUNDARY_AUDIT.md` | Core–GUI 경계 원칙과 위반 판정 사례 — 앱이 Core에 요구하지 말아야 할 것의 기준 |
+| `docs/ORCHESTRATOR_APP_PLAN.md` | 앱 아키텍처 계획(코어 서버 + TUI/GUI 클라이언트), 하네스 스트리밍 실측 매트릭스(부록 C) |
+| `docs/CORE_GUI_BOUNDARY_AUDIT.md` | Core–GUI 경계 원칙과 위반 판정 사례 — 앱이 Core에 요구하지 말아야 할 것의 기준 |
 | `ROUTING_GUIDE.md` | 모델 라우팅 설정(하네스·모델 선택 UI 구현 시) |
 | (asd-gui 기반 시) asd-gui의 `src/shared/protocol.ts`, `GUI_ARCHITECTURE.md` | 기존 REST/WS 계약과 ADR |
 

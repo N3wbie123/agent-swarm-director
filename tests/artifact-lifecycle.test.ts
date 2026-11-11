@@ -64,7 +64,7 @@ describe("CR-09: Subagent Artifact Lifecycle (finalizeSubagentArtifacts & Prompt
     const runner: CommandRunner = {
       async run(_cmd, args, opts) {
         capturedRetryArgs = args;
-        fs.writeFileSync(path.join(opts.cwd, "hello.ts"), `export const t = ${Date.now()};\n`, "utf8");
+        fs.writeFileSync(path.join(opts.cwd ?? root, "hello.ts"), `export const t = ${Date.now()};\n`, "utf8");
         opts.onStdout('{"session_id":"sid-cr09"}\n');
         return { exitCode: 0, pid: 1234 };
       },

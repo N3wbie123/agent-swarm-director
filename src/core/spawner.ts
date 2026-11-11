@@ -170,7 +170,7 @@ export function buildSpawnCommand(
 
 export interface CommandRunnerRunOptions {
   cwd?: string;
-  env: Record<string, string>;
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>;
   signal?: AbortSignal;
   stdinPayload?: string;
   closeStdinOnSpawn?: boolean;
@@ -540,7 +540,7 @@ export interface ExecuteHarnessProcessOptions {
   command: string;
   args: string[];
   cwd?: string;
-  env: Record<string, string>;
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>;
   harness: HarnessId;
   initialHarnessSessionId?: string | null;
   logPath: string;

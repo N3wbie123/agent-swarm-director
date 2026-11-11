@@ -1061,17 +1061,17 @@ describe("I4: MCP extKeys mutation - mutateBeforeMerge must not add phantom keys
     });
 
     // user-existing should be preserved (exists in current config)
-    assert.ok(result["user-existing"], "user-existing should be preserved");
-    assert.equal(result["user-existing"].command, "user-bin");
+    assert.ok((result as Record<string, any>)["user-existing"], "user-existing should be preserved");
+    assert.equal((result as Record<string, any>)["user-existing"].command, "user-bin");
 
     // from-other-config should be skipped (exists in externalExistingKeys from other config file)
-    assert.equal(result["from-other-config"], undefined, "from-other-config should be skipped (exists in other config)");
+    assert.equal((result as Record<string, any>)["from-other-config"], undefined, "from-other-config should be skipped (exists in other config)");
 
     // context7 and websearch should be injected (ASD-managed, not in externalExistingKeys)
-    assert.ok(result["context7"], "context7 should be injected");
-    assert.equal(result["context7"]._asdManaged, true);
-    assert.ok(result["websearch"], "websearch should be injected");
-    assert.equal(result["websearch"]._asdManaged, true);
+    assert.ok((result as Record<string, any>)["context7"], "context7 should be injected");
+    assert.equal((result as Record<string, any>)["context7"]._asdManaged, true);
+    assert.ok((result as Record<string, any>)["websearch"], "websearch should be injected");
+    assert.equal((result as Record<string, any>)["websearch"]._asdManaged, true);
 
     // asd-core should not be injected
     assert.equal(result["asd-core"], undefined);

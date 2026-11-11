@@ -70,7 +70,7 @@ export function syncSessionDriversToMainJson(
   }
 
   const effectiveHarness =
-    active?.harness ?? ((sessionRow.main_harness as HarnessId) || "claude-code");
+    (active?.harness ?? (sessionRow.main_harness || "claude-code")) as HarnessId;
   const effectiveModel = active ? active.model : (sessionRow.main_model ?? null);
   const effectiveSid = active
     ? active.harness_session_id
@@ -239,7 +239,7 @@ export function setDriverHarnessSessionId(
   syncSessionDriversToMainJson(db, input.projectRoot, updated.session_id);
   recordCliRecentSession(input.projectRoot, {
     harnessSessionId: sid,
-    harness: updated.harness,
+    harness: updated.harness as HarnessId,
     model: updated.model ?? null,
     asdSessionId: updated.session_id,
   });
@@ -404,7 +404,7 @@ export function buildDriverBriefing(input: {
     input.sessionId,
     "summary.md"
   );
-  const fallbackSummaryPath = paths.summaryMdPath;
+  const fallbackSummaryPath = path.join(paths.localViewDir, "summary.md");
   const summaryPath = fs.existsSync(sessionSummaryPath)
     ? sessionSummaryPath
     : fs.existsSync(fallbackSummaryPath)
@@ -1417,16 +1417,17 @@ export async function runDriverTurn(input: {
       effectivePrompt = `${briefing}\n\n---\n\n${input.prompt}`;
     }
 
+    const harnessId = driver.harness as HarnessId;
     const effectiveModel =
       driver.model && driver.model.trim().length > 0
         ? driver.model.trim()
-        : getDefaultModelForHarness(driver.harness);
+        : getDefaultModelForHarness(harnessId);
 
     const useStreamJson =
       input.streamJson ?? Boolean(input.onEvent && !input.commandRunner);
 
     const spawnSpec = buildSpawnSpec({
-      harness: driver.harness,
+      harness: harnessId,
       prompt: effectivePrompt,
       model: driver.harness_session_id ? (driver.model ?? effectiveModel) : effectiveModel,
       streaming: useStreamJson,
@@ -1436,7 +1437,7 @@ export async function runDriverTurn(input: {
     const args = spawnSpec.args;
 
     const streamParser = createStreamParser({
-      harness: driver.harness,
+      harness: harnessId,
       sessionId: input.sessionId,
     });
     const handleOutputChunk = (chunk: string): void => {
@@ -1510,7 +1511,7 @@ export async function runDriverTurn(input: {
       args,
       cwd: projectRoot,
       env,
-      harness: driver.harness,
+      harness: harnessId,
       initialHarnessSessionId: currentSid,
       logPath,
       signal: input.signal,

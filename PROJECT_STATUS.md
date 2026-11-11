@@ -33,10 +33,11 @@ asd-multiagent/
 ├── PROJECT_STATUS.md            # 전체 아키텍처 및 파일별·주요 함수별 상세 레퍼런스 (본 문서)
 ├── EXTERNAL_SDK_REFERENCE.md    # 외부 연동(asd-gui 등)을 위한 SDK API 및 단일 DB 전환 레퍼런스
 ├── PATCH_NOTES.md / _ko.md      # 영문/국문 버전별 패치 노트
-├── CORE_GUI_BOUNDARY_AUDIT.md   # Core–GUI 경계 감사 (GUI 기능 분리 원칙 및 위반 정리, v2.4.3)
-├── ORCHESTRATOR_APP_PLAN.md     # 오케스트레이터 TUI/GUI 앱 개발 계획 (하네스 실측 매트릭스 포함)
 ├── HARNESS_INTEGRATION_REFERENCE.md  # 앱팀용 하네스 통합 바이블 (저장소·포맷·실측 이벤트 스키마·함정, v2.5.0)
-├── SDK_SURFACE_CLEANUP_PLAN.md     # SDK 공개 표면 정리 계획 (ASD-Nexus 재작성 시 breaking change 후보·제거 조건)
+├── docs/
+│   ├── CORE_GUI_BOUNDARY_AUDIT.md   # Core–GUI 경계 감사 (GUI 기능 분리 원칙 및 위반 정리, v2.4.3)
+│   ├── ORCHESTRATOR_APP_PLAN.md     # 오케스트레이터 TUI/GUI 앱 개발 계획 (하네스 실측 매트릭스 포함)
+│   └── SDK_SURFACE_CLEANUP_PLAN.md  # SDK 공개 표면 정리 계획 (ASD-Nexus 재작성 시 breaking change 후보·제거 조건)
 ├── presets/
 │   ├── default-routing.jsonc    # 5대 전문 역할 및 카테고리/난이도별 기본 모델 라우팅 + 다중 폴백 체인
 │   └── default-mcp.jsonc        # Gap-filling MCP 서버 카탈로그 (context7, grep_app, websearch)
@@ -297,4 +298,4 @@ Git 작업 트리 보호, `LIGHT` 체크포인트 커밋/롤백, `HEAVY` 워크�
 3. **Node.js 네이티브 TypeScript 실행 시 JSDoc 주석 주의**:
    - 하네스 `PreToolUse` 훅이 `node --no-warnings src/cli/index.ts hook pre-tool-use`를 직접 실행하므로, `src/` 내부 파일의 `/** ... */` 블록 주석 안에 경로 글로브 `/*` 또는 `*/`(예: `projects/*/*.jsonl`)를 적으면 주석이 조기 종료되어 구문 에러가 발생할 수 있습니다. 주석 내 경로 예시에는 `projects/<dir>/*.jsonl` 형태를 사용합니다.
 4. **Core–GUI 경계 원칙 (v2.4.3)**:
-   - Core는 **CLI + 코어 관리(계획, `asd ui` 대시보드, git worktree 등) + 최소 SDK/API**만 유지하며, 모든 UI·서버·렌더링은 GUI 리포(`asd-gui`) 소속입니다. `asd ui`는 기능 동결(확장 금지)이며, 신규 UI 기능은 GUI 리포에 구현합니다. 경계 위반 정리 및 판정 근거는 [`CORE_GUI_BOUNDARY_AUDIT.md`](./CORE_GUI_BOUNDARY_AUDIT.md)를 참조하세요.
+   - Core는 **CLI + 코어 관리(계획, `asd ui` 대시보드, git worktree 등) + 최소 SDK/API**만 유지하며, 모든 UI·서버·렌더링은 GUI 리포(`asd-gui`) 소속입니다. `asd ui`는 기능 동결(확장 금지)이며, 신규 UI 기능은 GUI 리포에 구현합니다. 경계 위반 정리 및 판정 근거는 [`docs/CORE_GUI_BOUNDARY_AUDIT.md`](./docs/CORE_GUI_BOUNDARY_AUDIT.md)를 참조하세요.

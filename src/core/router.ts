@@ -1303,7 +1303,7 @@ export function selectDiverseReviewer(
 
 import { atomicWriteFileSync } from "./render.ts";
 import { resolveAsdPaths } from "./config.ts";
-import { getCoreInstallerHooks, type RoutingConfig } from "./types.ts";
+import { getCoreInstallerHooks } from "./types.ts";
 
 export function saveProjectRoutingConfig(options: {
   projectRoot: string;

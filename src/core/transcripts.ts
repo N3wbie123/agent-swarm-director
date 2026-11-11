@@ -106,6 +106,8 @@ export interface ReadTranscriptOptions extends LocateTranscriptOptions {
   before?: number;
   /** JSONL read cap in bytes. Default 20MB. (Exposed for tests.) */
   maxReadBytes?: number;
+  /** Merge contiguous tool results into preceding assistant tool_use message. */
+  mergeToolResults?: boolean;
 }
 
 export interface TranscriptLocation {

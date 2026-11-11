@@ -26,6 +26,11 @@
     "asd": "./src/cli/index.ts"
   },
   "scripts": {
-    "test": "node --no-warnings scripts/run-tests.mjs"
+    "test": "node --no-warnings scripts/run-tests.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
   }
 }

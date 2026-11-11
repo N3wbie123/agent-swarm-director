@@ -127,7 +127,6 @@ test("CR-12: recoverOrphanedTasks ignores claim_only tasks and applies 24h TTL t
       sessionId,
       projectRoot: root,
       mainHarness: "claude-code",
-      track: "LIGHT",
       goal: "Test claim_only and legacy TTL",
     });
 
@@ -138,7 +137,6 @@ test("CR-12: recoverOrphanedTasks ignores claim_only tasks and applies 24h TTL t
         turn: 1,
         title: "Claim only task",
         role: "worker",
-        track: "LIGHT",
         targetFiles: ["a.ts"],
         dependsOn: [],
       },
@@ -147,7 +145,6 @@ test("CR-12: recoverOrphanedTasks ignores claim_only tasks and applies 24h TTL t
         turn: 1,
         title: "Legacy recent task",
         role: "worker",
-        track: "LIGHT",
         targetFiles: ["b.ts"],
         dependsOn: [],
       },
@@ -156,7 +153,6 @@ test("CR-12: recoverOrphanedTasks ignores claim_only tasks and applies 24h TTL t
         turn: 1,
         title: "Legacy expired task",
         role: "worker",
-        track: "LIGHT",
         targetFiles: ["c.ts"],
         dependsOn: [],
       },
@@ -215,7 +211,7 @@ test("CR-12: recoverOrphanedTasks ignores claim_only tasks and applies 24h TTL t
 
     const recovered = recoverOrphanedTasks({ db, projectRoot: root, sessionId, now });
     assert.equal(recovered.length, 1);
-    assert.equal(recovered[0].taskId, "T1.3");
+    assert.equal(recovered[0]!.taskId, "T1.3");
     assert.equal(db.getTask(sessionId, "T1.1")!.status, "running");
     assert.equal(db.getTask(sessionId, "T1.2")!.status, "running");
     assert.equal(db.getTask(sessionId, "T1.3")!.status, "failed");
@@ -241,11 +237,12 @@ test("CR-12: concurrent handleDispatch calls claim and execute each task at most
         async run(_cmd, _args, opts) {
           spawnCount++;
           await new Promise((r) => setTimeout(r, 25));
-          const baseName = path.basename(opts.cwd);
+          const cwd = opts.cwd ?? root;
+          const baseName = path.basename(cwd);
           const taskId = baseName.includes("-") ? baseName.split("-").slice(1).join("-") : "T1.1";
-          fs.writeFileSync(path.join(opts.cwd, `${taskId}.txt`), "done\n", "utf8");
+          fs.writeFileSync(path.join(cwd, `${taskId}.txt`), "done\n", "utf8");
           opts.onStdout?.("ok\n");
-          return { exitCode: 0 };
+          return { exitCode: 0, pid: 1234 };
         },
       },
     });
@@ -308,7 +305,7 @@ test("F07: handleDispatch automatically recovers dead parallel_spawn tasks and r
       commandRunner: {
         async run(_cmd, _args, opts) {
           spawnCount++;
-          fs.writeFileSync(path.join(opts.cwd, "recovered.txt"), "recovered work\n", "utf8");
+          fs.writeFileSync(path.join(opts.cwd ?? root, "recovered.txt"), "recovered work\n", "utf8");
           opts.onStdout?.("ok\n");
           return { exitCode: 0, pid: 77777 };
         },

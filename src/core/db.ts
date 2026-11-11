@@ -108,6 +108,8 @@ export interface SessionInput {
   mainPid?: number | null;
   baseSha?: string | null;
   memo?: string | null;
+  track?: TaskTrack;
+  goal?: string;
   driverSource?: DriverSource;
 }
 
@@ -159,13 +161,13 @@ export interface TaskInput {
 }
 
 export interface TaskStatusExtra {
-  assignedHarness?: string;
-  assignedModel?: string;
-  commitSha?: string;
-  subSessionId?: string;
-  worktreePath?: string;
-  doneClaimJson?: string;
-  durationMs?: number;
+  assignedHarness?: string | null;
+  assignedModel?: string | null;
+  commitSha?: string | null;
+  subSessionId?: string | null;
+  worktreePath?: string | null;
+  doneClaimJson?: string | null;
+  durationMs?: number | null;
 }
 
 export interface DebateRow {
@@ -191,9 +193,9 @@ export interface DebateInput {
 }
 
 export interface DebateBundles {
-  round1BundleJson?: string;
-  round2BundleJson?: string;
-  insightVerdictJson?: string;
+  round1BundleJson?: string | null;
+  round2BundleJson?: string | null;
+  insightVerdictJson?: string | null;
 }
 
 // ============================================================================

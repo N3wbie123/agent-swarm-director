@@ -67,7 +67,6 @@ describe("HC-3: Git Commit Idempotency (baseSha..HEAD)", () => {
         sessionId,
         projectRoot: root,
         mainHarness: "claude-code",
-        track: "LIGHT",
       });
 
       // Commit T1.1 directly to main
@@ -81,7 +80,6 @@ describe("HC-3: Git Commit Idempotency (baseSha..HEAD)", () => {
           turn: 1,
           title: "Done task",
           role: "worker",
-          track: "LIGHT",
           targetFiles: ["work.txt"],
           dependsOn: [],
         },
@@ -133,7 +131,6 @@ describe("HC-4: Worktree Auto-Promotion vs Escalation", () => {
         sessionId,
         projectRoot: root,
         mainHarness: "claude-code",
-        track: "HEAVY",
       });
 
       const wt = createTaskWorktree(root, 1, "T1.1");
@@ -145,7 +142,6 @@ describe("HC-4: Worktree Auto-Promotion vs Escalation", () => {
           turn: 1,
           title: "Completed feature",
           role: "worker",
-          track: "HEAVY",
           targetFiles: ["feature.txt"],
           dependsOn: [],
           verifyCmd: 'node -e "process.exit(0)"',
@@ -202,7 +198,6 @@ describe("HC-4: Worktree Auto-Promotion vs Escalation", () => {
         sessionId,
         projectRoot: root,
         mainHarness: "claude-code",
-        track: "HEAVY",
       });
 
       const wt = createTaskWorktree(root, 1, "T1.1");
@@ -214,7 +209,6 @@ describe("HC-4: Worktree Auto-Promotion vs Escalation", () => {
           turn: 1,
           title: "Failing test feature",
           role: "worker",
-          track: "HEAVY",
           targetFiles: ["feature.txt"],
           dependsOn: [],
           verifyCmd: 'node -e "process.exit(1)"', // Verification FAILS

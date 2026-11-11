@@ -28,7 +28,7 @@ test("CR-03: runDriverTurn first run uses headless command, records session_id, 
       mainModel: "claude-sonnet-4-6",
     });
 
-    const calls: Array<{ cmd: string; args: string[]; env: Record<string, string> }> = [];
+    const calls: Array<{ cmd: string; args: string[]; env: any }> = [];
     const chunks: string[] = [];
 
     const firstRes = await runDriverTurn({
@@ -52,11 +52,11 @@ test("CR-03: runDriverTurn first run uses headless command, records session_id, 
     assert.equal(firstRes.exitCode, 0);
     assert.equal(firstRes.harnessSessionId, "cc-sess-001");
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].cmd, "claude");
-    assert.ok(!calls[0].args.includes("--resume"), "First run should not use --resume");
-    assert.equal(calls[0].env.ASD_SESSION_ROLE, "driver");
-    assert.equal(calls[0].env.ASD_MAIN_SESSION_ID, sessionId);
-    assert.equal(calls[0].env.ASD_DRIVER_ID, firstRes.driverId);
+    assert.equal(calls[0]!.cmd, "claude");
+    assert.ok(!calls[0]!.args.includes("--resume"), "First run should not use --resume");
+    assert.equal(calls[0]!.env.ASD_SESSION_ROLE, "driver");
+    assert.equal(calls[0]!.env.ASD_MAIN_SESSION_ID, sessionId);
+    assert.equal(calls[0]!.env.ASD_DRIVER_ID, firstRes.driverId);
 
     // Check output.log deleted and meta.json exists with status=done
     assert.ok(fs.existsSync(firstRes.metaPath));
@@ -90,8 +90,8 @@ test("CR-03: runDriverTurn first run uses headless command, records session_id, 
 
     assert.equal(secondRes.exitCode, 0);
     assert.equal(calls.length, 2);
-    assert.ok(calls[1].args.includes("--resume"), "Second run must use --resume");
-    assert.ok(calls[1].args.includes("cc-sess-001"));
+    assert.ok(calls[1]!.args.includes("--resume"), "Second run must use --resume");
+    assert.ok(calls[1]!.args.includes("cc-sess-001"));
 
     db.close();
   } finally {
@@ -139,7 +139,7 @@ test("CR-03: runDriverTurn injects briefing once when switching to a new driver 
     });
 
     assert.equal(receivedArgs.length, 1);
-    const firstJoined = receivedArgs[0].join(" ");
+    const firstJoined = receivedArgs[0]!.join(" ");
     assert.ok(firstJoined.includes("# ASD Session Briefing"), "First turn of switched driver must include briefing");
     assert.ok(firstJoined.includes("Continue work in codex"));
 
@@ -158,7 +158,7 @@ test("CR-03: runDriverTurn injects briefing once when switching to a new driver 
     });
 
     assert.equal(receivedArgs.length, 2);
-    const secondJoined = receivedArgs[1].join(" ");
+    const secondJoined = receivedArgs[1]!.join(" ");
     assert.ok(!secondJoined.includes("# ASD Session Briefing"), "Second turn must not re-inject briefing");
     assert.ok(secondJoined.includes("Next prompt without briefing"));
 
@@ -361,8 +361,8 @@ test("F16: runDriverTurn recovers full session_id when JSON line is split across
     });
 
     assert.equal(resumeArgs.length, 1);
-    assert.ok(resumeArgs[0].includes("--resume"));
-    assert.ok(resumeArgs[0].includes(fullUuid));
+    assert.ok(resumeArgs[0]!.includes("--resume"));
+    assert.ok(resumeArgs[0]!.includes(fullUuid));
 
     db.close();
   } finally {

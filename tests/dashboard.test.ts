@@ -232,7 +232,7 @@ test("F22: collectDashboardSnapshot throttles syncLocalTranscripts across rapid 
       transcriptSyncThrottleMs: 60_000,
     });
     assert.equal(
-      secondSnap.cliRecentSessions.some((s) => s.harnessSessionId === "sess-after-first-poll"),
+      secondSnap.cliRecentSessions?.some((s) => s.harnessSessionId === "sess-after-first-poll"),
       false,
       "Second poll within throttle window must skip full transcript directory scan"
     );
@@ -246,7 +246,7 @@ test("F22: collectDashboardSnapshot throttles syncLocalTranscripts across rapid 
       transcriptSyncThrottleMs: 60_000,
     });
     assert.equal(
-      thirdSnap.cliRecentSessions.some((s) => s.harnessSessionId === "sess-after-first-poll"),
+      thirdSnap.cliRecentSessions?.some((s) => s.harnessSessionId === "sess-after-first-poll"),
       true,
       "Poll after throttle window expiry must sync local transcripts"
     );

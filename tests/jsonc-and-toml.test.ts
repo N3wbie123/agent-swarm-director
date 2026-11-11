@@ -266,7 +266,7 @@ describe("jsonc.ts - TOML fence management", () => {
       // Verify no raw backslashes remain in the path portion
       const notifyMatch = result.match(/notify = \[([^\]]+)\]/);
       assert.ok(notifyMatch, "notify array should exist");
-      const notifyContent = notifyMatch[1];
+      const notifyContent = notifyMatch[1] ?? "";
       // The path should have forward slashes, not backslashes
       assert.ok(notifyContent.includes("C://Users"), "Backslashes should be normalized to forward slashes");
       assert.ok(!notifyContent.includes("\\\\"), "No raw backslashes should remain");

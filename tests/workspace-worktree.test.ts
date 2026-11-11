@@ -805,7 +805,7 @@ describe("CR-08: Committed Worktree Diff & Merge Conflict Approval Boundary Chec
           taskId: "T1.1",
           db,
         });
-        assert.equal(approveRes.ok, true, approveRes.error);
+        assert.equal(approveRes.ok, true, String(approveRes.error || ""));
         assert.equal(approveRes.status, "done");
         assert.equal(db.getTask(sid, "T1.1")!.status, "done");
         assert.match(fs.readFileSync(sharedPath, "utf8"), /300/);

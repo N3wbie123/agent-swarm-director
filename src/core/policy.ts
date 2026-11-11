@@ -589,7 +589,7 @@ function hasShellRedirection(cmd: string): boolean {
   if (shellInvocationMatch) {
     const quotedScript = shellInvocationMatch[2];
     // Check for redirection inside the quoted script (quote-aware not needed here - the whole string is the script)
-    if (hasRedirectionInScript(quotedScript)) {
+    if (quotedScript && hasRedirectionInScript(quotedScript)) {
       return true;
     }
   }
@@ -600,7 +600,7 @@ function hasShellRedirection(cmd: string): boolean {
   let inDoubleQuote = false;
   let prevChar = "";
   for (let i = 0; i < cmd.length; i++) {
-    const ch = cmd[i];
+    const ch = cmd[i] ?? "";
     const nextChar = cmd[i + 1] ?? "";
 
     // Handle quote toggling (ignore escaped quotes)
@@ -647,7 +647,7 @@ function hasRedirectionInScript(script: string): boolean {
   let inDoubleQuote = false;
   let prevChar = "";
   for (let i = 0; i < script.length; i++) {
-    const ch = script[i];
+    const ch = script[i] ?? "";
     const nextChar = script[i + 1] ?? "";
     if (ch === "'" && prevChar !== "\\") inSingleQuote = !inSingleQuote;
     else if (ch === '"' && prevChar !== "\\") inDoubleQuote = !inDoubleQuote;
@@ -793,7 +793,7 @@ function isBlockedGitCommand(cmd: string, isSubagent: boolean): boolean {
   let gitDirNonProtected = false;
   if (gitDirMatch) {
     const gitDirPath = gitDirMatch[1];
-    if (isProtectedGitPath(gitDirPath)) {
+    if (gitDirPath && isProtectedGitPath(gitDirPath)) {
       return true;
     }
     gitDirNonProtected = true;
@@ -804,7 +804,7 @@ function isBlockedGitCommand(cmd: string, isSubagent: boolean): boolean {
   let gitCNonProtected = false;
   if (gitCMatch) {
     const gitCPath = gitCMatch[1];
-    if (isProtectedGitPath(gitCPath)) {
+    if (gitCPath && isProtectedGitPath(gitCPath)) {
       return true;
     }
     gitCNonProtected = true;

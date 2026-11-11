@@ -28,7 +28,7 @@ test("CR-04: normal conversation hook without ASD_DRIVER_ID records cli-recent.j
   const root = makeTempProject();
   try {
     const db = openProjectDb(root);
-    const sessionId = "asd-20261101-120400-hk01";
+    const sessionId = "asd-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7) + "-hk01";
     db.createOrGetSession({
       sessionId,
       projectRoot: root,
@@ -65,8 +65,8 @@ test("CR-04: normal conversation hook without ASD_DRIVER_ID records cli-recent.j
 
     const drivers = listDrivers(dbAfter, sessionId);
     assert.equal(drivers.length, 1);
-    assert.equal(drivers[0].harness, "claude-code");
-    assert.equal(drivers[0].harness_session_id, "orig-cc-sid");
+    assert.equal(drivers[0]!.harness, "claude-code");
+    assert.equal(drivers[0]!.harness_session_id, "orig-cc-sid");
     dbAfter.close();
 
     const recent = readCliRecentSessions(root);
@@ -82,7 +82,7 @@ test("CR-04: hook with ASD_DRIVER_ID binds harness_session_id to that driver whe
   const root = makeTempProject();
   try {
     const db = openProjectDb(root);
-    const sessionId = "asd-20261101-120401-hk02";
+    const sessionId = "asd-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7) + "-hk02";
     db.createOrGetSession({
       sessionId,
       projectRoot: root,
@@ -133,7 +133,7 @@ test("CR-04: MCP handlePlan create/update switches driver when called from anoth
   const root = makeTempProject();
   try {
     const db = openProjectDb(root);
-    const sessionId = "asd-20261101-120402-hk03";
+    const sessionId = "asd-20261101-" + Date.now() + "-hk03";
     const server = new AsdMcpServer({ db, projectRoot: root, autoSync: false });
 
     await server.handlePlan({
@@ -154,8 +154,8 @@ test("CR-04: MCP handlePlan create/update switches driver when called from anoth
 
     let drivers = listDrivers(db, sessionId);
     assert.equal(drivers.length, 1);
-    assert.equal(drivers[0].harness, "claude-code");
-    assert.equal(drivers[0].harness_session_id, "cc-initial-sid");
+    assert.equal(drivers[0]!.harness, "claude-code");
+    assert.equal(drivers[0]!.harness_session_id, "cc-initial-sid");
 
     // Write an 11-minute-old cli-recent entry for opencode
     const now = Date.now();
@@ -215,7 +215,7 @@ test("T1.3: Codex notify (thread-id / thread_id via argv and stdin) and Cursor h
   const root = makeTempProject("asd-codex-cursor-fixtures-");
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "asd-fixture-home-"));
   try {
-    const env = {
+    const env: Record<string, string | undefined> = {
       ...process.env,
       ASD_HOME_DIR: tmpHome,
     };

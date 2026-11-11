@@ -149,7 +149,7 @@ function removeTrailingCommas(text: string): string {
     if (ch === ",") {
       let j = i + 1;
       // Skip whitespace
-      while (j < len && /\s/.test(text[j])) {
+      while (j < len && /\s/.test(text[j]!)) {
         j++;
       }
       if (j < len && (text[j] === "]" || text[j] === "}")) {
@@ -229,7 +229,7 @@ export function removeTomlFence(existingToml: string): string {
 export function escapeTomlBasicString(input: string): string {
   let result = "";
   for (let i = 0; i < input.length; i++) {
-    const ch = input[i];
+    const ch = input[i]!;
     const code = ch.charCodeAt(0);
     switch (ch) {
       case "\\":

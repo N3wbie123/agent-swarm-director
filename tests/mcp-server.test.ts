@@ -811,7 +811,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
           opts.onSpawn?.(9999);
 
           // Simulate worker modifying target file in its cwd
-          const targetFile = path.join(opts.cwd, "hello.ts");
+          const targetFile = path.join(opts.cwd ?? projectRoot, "hello.ts");
           fs.writeFileSync(targetFile, "export const hello = 'world';\n", "utf8");
 
           opts.onStdout("Task completed successfully\n");
@@ -981,7 +981,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
             return { exitCode: 1, pid: 8888 };
           }
 
-          fs.writeFileSync(path.join(opts.cwd, "fallback-ok.ts"), "export const ok = true;\n", "utf8");
+          fs.writeFileSync(path.join(opts.cwd ?? projectRoot, "fallback-ok.ts"), "export const ok = true;\n", "utf8");
           opts.onStdout("Done with qwen-2.5-coder\n");
           return { exitCode: 0, pid: 8888 };
         },
@@ -1563,10 +1563,11 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       const mockRunner: CommandRunner = {
         async run(_cmd, _args, opts) {
           opts.onSpawn?.(7777);
-          const loginPath = path.join(opts.cwd, "src", "ui", "LoginForm.tsx");
-          const authPath = path.join(opts.cwd, "src", "api", "auth.ts");
+          const testCwd = opts.cwd ?? projectRoot;
+          const loginPath = path.join(testCwd, "src", "ui", "LoginForm.tsx");
+          const authPath = path.join(testCwd, "src", "api", "auth.ts");
 
-          if (opts.cwd.includes("T1.1")) {
+          if ((opts.cwd ?? "").includes("T1.1")) {
             fs.mkdirSync(path.dirname(loginPath), { recursive: true });
             fs.writeFileSync(loginPath, "export const LoginForm = () => 'login';\n", "utf8");
             const reportBlock = [
@@ -1602,7 +1603,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
               "```",
             ].join("\n");
             opts.onStdout(reportBlock + "\n");
-          } else if (opts.cwd.includes("T1.2")) {
+          } else if ((opts.cwd ?? "").includes("T1.2")) {
             fs.mkdirSync(path.dirname(authPath), { recursive: true });
             fs.writeFileSync(authPath, "export interface AuthResponse { token: string; }\n", "utf8");
             opts.onStdout("Completed T1.2 backend auth.ts\n");

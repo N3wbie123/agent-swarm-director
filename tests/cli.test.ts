@@ -905,9 +905,9 @@ describe("ASD CLI (src/cli/index.ts)", () => {
             availableModels: Record<string, string[]>;
           };
           assert.equal(refreshJson.ok, true);
-          assert.ok(refreshJson.availableModels.codex.includes("gpt-6-luna"));
+          assert.ok(refreshJson.availableModels.codex?.includes("gpt-6-luna"));
           // Verify no hardcoded fake models are injected when unconfigured
-          assert.equal(refreshJson.availableModels.codex.includes("gpt-5.4"), false);
+          assert.equal(refreshJson.availableModels.codex?.includes("gpt-5.4"), false);
           assert.ok(htmlText.includes("buildSearchableModelPickerHtml"));
           assert.ok(htmlText.includes("filterModelPicker"));
           assert.ok(htmlText.includes("renderSelectedItemMetaCard"));

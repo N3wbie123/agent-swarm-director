@@ -160,6 +160,7 @@ const VALUE_OPTIONS = new Set([
   "--count",
   "--cmd",
   "--verify-cmd",
+  "--project",
   "--project-root",
   "--projectRoot",
   "--port",
@@ -318,11 +319,12 @@ export function parseCliArgs(args: string[]): CliArgs {
       }
     } else if (arg === "--cmd" || arg.startsWith("--cmd=") || arg === "--verify-cmd" || arg.startsWith("--verify-cmd=")) {
       options.cmd = readOptVal(arg, arg.startsWith("--verify-cmd") ? "--verify-cmd" : "--cmd", next);
-    } else if (arg === "--project-root" || arg === "--projectRoot") {
+    } else if (arg === "--project-root" || arg === "--projectRoot" || arg === "--project") {
       options.projectRoot = next();
     } else if (
       arg.startsWith("--project-root=") ||
-      arg.startsWith("--projectRoot=")
+      arg.startsWith("--projectRoot=") ||
+      arg.startsWith("--project=")
     ) {
       const idx = arg.indexOf("=");
       options.projectRoot = arg.substring(idx + 1);
@@ -631,7 +633,7 @@ export function runAsdClean(options?: {
             for (const l of lines) {
               if (l.includes(stashSha) || l.includes("asd-auto-stash")) {
                 const match = l.match(/^(stash@\{\d+\})/);
-                if (match) {
+                if (match && match[1]) {
                   popTarget = match[1];
                   break;
                 }
