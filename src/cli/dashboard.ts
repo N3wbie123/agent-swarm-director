@@ -20,6 +20,7 @@
  *   primary model dropdowns, and 4-option subagent controller.
  */
 
+import * as crypto from "node:crypto";
 import * as http from "node:http";
 import * as path from "node:path";
 
@@ -52,7 +53,10 @@ export {
   saveSessionMemo,
 };
 
-function renderDashboardHtml(defaultLocale = detectSystemLocale()): string {
+function renderDashboardHtml(
+  defaultLocale = detectSystemLocale(),
+  csrfToken = ""
+): string {
   const defaultLang = defaultLocale.toLowerCase().startsWith("ko") ? "ko" : "en";
   return `<!DOCTYPE html>
 <html lang="${defaultLang}">
@@ -506,6 +510,7 @@ function renderDashboardHtml(defaultLocale = detectSystemLocale()): string {
         <div class="model-grid-2x2" id="modelsGrid2x2"></div>
       </div>
     </div>
+  </div>
 
   <div class="container">
     <nav>
@@ -858,13 +863,15 @@ function renderDashboardHtml(defaultLocale = detectSystemLocale()): string {
       render(latestState);
     }
 
+    const ASD_CSRF_TOKEN = "${csrfToken}";
+
     function esc(s) {
       return String(s ?? "")
-        .replace(/&/g, "&")
-        .replace(/</g, "<")
-        .replace(/>/g, ">")
-        .replace(/"/g, """)
-        .replace(/'/g, "'");
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
     }
 
     function openModelsModal() {
@@ -909,7 +916,10 @@ function renderDashboardHtml(defaultLocale = detectSystemLocale()): string {
 
     async function refreshModelCatalogOnly() {
       try {
-        const res = await fetch("/api/models/refresh", { method: "POST" });
+        const res = await fetch("/api/models/refresh", {
+          method: "POST",
+          headers: { "X-ASD-CSRF-Token": ASD_CSRF_TOKEN }
+        });
         if (res.ok) {
           const data = await res.json();
           if (data && data.availableModels) {
@@ -1090,7 +1100,10 @@ function renderDashboardHtml(defaultLocale = detectSystemLocale()): string {
 
       const res = await fetch("/api/routing", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-ASD-CSRF-Token": ASD_CSRF_TOKEN
+        },
         body: JSON.stringify({ action: "save", routingConfig: nextCfg })
       });
       if (res.ok) {
@@ -1104,7 +1117,10 @@ function renderDashboardHtml(defaultLocale = detectSystemLocale()): string {
       const t = I18N[currentLang];
       const res = await fetch("/api/routing", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-ASD-CSRF-Token": ASD_CSRF_TOKEN
+        },
         body: JSON.stringify({ action: "reset" })
       });
       if (res.ok) {
@@ -1146,7 +1162,10 @@ function renderDashboardHtml(defaultLocale = detectSystemLocale()): string {
       try {
         const res = await fetch("/api/subagent-action", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "X-ASD-CSRF-Token": ASD_CSRF_TOKEN
+          },
           body: JSON.stringify(payload)
         });
         const data = await res.json();
@@ -1211,7 +1230,10 @@ function renderDashboardHtml(defaultLocale = detectSystemLocale()): string {
       try {
         const res = await fetch("/api/session-memo", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "X-ASD-CSRF-Token": ASD_CSRF_TOKEN
+          },
           body: JSON.stringify({ sessionId, memo: nextMemo })
         });
         if (res.ok) {
@@ -1606,7 +1628,26 @@ export interface DashboardServerHandle {
   server: http.Server;
   url: string;
   port: number;
+  csrfToken: string;
   close: () => Promise<void>;
+}
+
+function normalizeHostName(rawHost: string): string {
+  const trimmed = rawHost.trim().toLowerCase();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("[")) {
+    const endBracket = trimmed.indexOf("]");
+    return endBracket !== -1 ? trimmed.slice(0, endBracket + 1) : trimmed;
+  }
+  const colonIdx = trimmed.indexOf(":");
+  return colonIdx !== -1 ? trimmed.slice(0, colonIdx) : trimmed;
+}
+
+function constantTimeTokenMatch(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 function readRequestBody(req: http.IncomingMessage): Promise<string> {
@@ -1635,16 +1676,149 @@ export async function startDashboardServer(options?: {
   const projectRoot = path.resolve(options?.projectRoot || process.cwd());
   const homeDir = options?.homeDir;
   const commandRunner = options?.commandRunner;
+  const csrfToken = crypto.randomBytes(24).toString("hex");
+  const allowedHostnames = new Set<string>([
+    "127.0.0.1",
+    "localhost",
+    "[::1]",
+    "::1",
+    normalizeHostName(host),
+  ]);
+  let boundPort = requestedPort;
+
+  const commonSecurityHeaders: Record<string, string> = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Cross-Origin-Resource-Policy": "same-origin",
+  };
 
   const server = http.createServer(async (req, res) => {
     try {
+      // 1. DNS-Rebinding defense: enforce strict loopback/bound Host header allowlist
+      const rawHostHeader = String(req.headers.host ?? "").trim();
+      const reqHostname = normalizeHostName(rawHostHeader);
+      if (!reqHostname || !allowedHostnames.has(reqHostname)) {
+        res.writeHead(403, {
+          ...commonSecurityHeaders,
+          "Content-Type": "application/json; charset=utf-8",
+        });
+        res.end(JSON.stringify({ error: "Forbidden: invalid Host header" }));
+        return;
+      }
+
+      // 2. Cross-Origin & CSRF defense on state-mutating POST endpoints
+      if (req.method === "POST") {
+        const secFetchSite = String(req.headers["sec-fetch-site"] ?? "")
+          .trim()
+          .toLowerCase();
+        if (
+          secFetchSite &&
+          secFetchSite !== "same-origin" &&
+          secFetchSite !== "none"
+        ) {
+          res.writeHead(403, {
+            ...commonSecurityHeaders,
+            "Content-Type": "application/json; charset=utf-8",
+          });
+          res.end(
+            JSON.stringify({ error: "Forbidden: cross-site request blocked" })
+          );
+          return;
+        }
+
+        const originHeader =
+          typeof req.headers.origin === "string"
+            ? req.headers.origin.trim()
+            : "";
+        if (originHeader) {
+          if (originHeader.toLowerCase() === "null") {
+            res.writeHead(403, {
+              ...commonSecurityHeaders,
+              "Content-Type": "application/json; charset=utf-8",
+            });
+            res.end(JSON.stringify({ error: "Forbidden: null Origin blocked" }));
+            return;
+          }
+          let parsedOrigin: URL;
+          try {
+            parsedOrigin = new URL(originHeader);
+          } catch {
+            res.writeHead(403, {
+              ...commonSecurityHeaders,
+              "Content-Type": "application/json; charset=utf-8",
+            });
+            res.end(JSON.stringify({ error: "Forbidden: invalid Origin" }));
+            return;
+          }
+          const originHost = normalizeHostName(parsedOrigin.host);
+          const originPort = parsedOrigin.port
+            ? Number.parseInt(parsedOrigin.port, 10)
+            : parsedOrigin.protocol === "https:"
+              ? 443
+              : 80;
+          if (
+            parsedOrigin.protocol !== "http:" ||
+            !allowedHostnames.has(originHost) ||
+            (boundPort > 0 && originPort !== boundPort)
+          ) {
+            res.writeHead(403, {
+              ...commonSecurityHeaders,
+              "Content-Type": "application/json; charset=utf-8",
+            });
+            res.end(
+              JSON.stringify({ error: "Forbidden: cross-origin POST blocked" })
+            );
+            return;
+          }
+        }
+
+        const providedCsrf =
+          typeof req.headers["x-asd-csrf-token"] === "string"
+            ? req.headers["x-asd-csrf-token"].trim()
+            : "";
+        const isBrowserContext = Boolean(originHeader || secFetchSite);
+        if (
+          (isBrowserContext && !providedCsrf) ||
+          (providedCsrf && !constantTimeTokenMatch(providedCsrf, csrfToken))
+        ) {
+          res.writeHead(403, {
+            ...commonSecurityHeaders,
+            "Content-Type": "application/json; charset=utf-8",
+          });
+          res.end(
+            JSON.stringify({
+              error: "Forbidden: missing or invalid X-ASD-CSRF-Token",
+            })
+          );
+          return;
+        }
+
+        const urlPathname = new URL(req.url || "/", `http://${host}`).pathname;
+        if (urlPathname !== "/api/models/refresh") {
+          const contentType = String(req.headers["content-type"] ?? "").toLowerCase();
+          if (!contentType.includes("application/json")) {
+            res.writeHead(415, {
+              ...commonSecurityHeaders,
+              "Content-Type": "application/json; charset=utf-8",
+            });
+            res.end(
+              JSON.stringify({
+                error: "Unsupported Media Type: expected application/json",
+              })
+            );
+            return;
+          }
+        }
+      }
+
       const urlObj = new URL(req.url || "/", `http://${host}`);
       if (req.method === "GET" && urlObj.pathname === "/api/state") {
         const snapshot = await collectDashboardSnapshot({ projectRoot, homeDir });
         const body = JSON.stringify(snapshot);
         res.writeHead(200, {
+          ...commonSecurityHeaders,
           "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store",
         });
         res.end(body);
         return;
@@ -1657,8 +1831,8 @@ export async function startDashboardServer(options?: {
           forceRefresh: false,
         });
         res.writeHead(200, {
+          ...commonSecurityHeaders,
           "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store",
         });
         res.end(JSON.stringify({ ok: true, availableModels }));
         return;
@@ -1671,8 +1845,8 @@ export async function startDashboardServer(options?: {
           forceRefresh: true,
         });
         res.writeHead(200, {
+          ...commonSecurityHeaders,
           "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store",
         });
         res.end(JSON.stringify({ ok: true, availableModels }));
         return;
@@ -1682,7 +1856,10 @@ export async function startDashboardServer(options?: {
         const rawBody = await readRequestBody(req);
         const parsed = JSON.parse(rawBody || "{}") as { sessionId?: string; memo?: string };
         if (!parsed.sessionId) {
-          res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+          res.writeHead(400, {
+            ...commonSecurityHeaders,
+            "Content-Type": "application/json; charset=utf-8",
+          });
           res.end(JSON.stringify({ error: "Missing sessionId" }));
           return;
         }
@@ -1693,8 +1870,8 @@ export async function startDashboardServer(options?: {
           memo: String(parsed.memo ?? ""),
         });
         res.writeHead(200, {
+          ...commonSecurityHeaders,
           "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store",
         });
         res.end(JSON.stringify(saved));
         return;
@@ -1713,8 +1890,8 @@ export async function startDashboardServer(options?: {
           routingConfig: parsed.routingConfig,
         });
         res.writeHead(200, {
+          ...commonSecurityHeaders,
           "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store",
         });
         res.end(JSON.stringify(result));
         return;
@@ -1731,7 +1908,10 @@ export async function startDashboardServer(options?: {
           waitForCompletion?: boolean;
         };
         if (!parsed.subSessionId || !parsed.action) {
-          res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+          res.writeHead(400, {
+            ...commonSecurityHeaders,
+            "Content-Type": "application/json; charset=utf-8",
+          });
           res.end(JSON.stringify({ error: "Missing subSessionId or action" }));
           return;
         }
@@ -1747,28 +1927,34 @@ export async function startDashboardServer(options?: {
           waitForCompletion: parsed.waitForCompletion,
         });
         res.writeHead(200, {
+          ...commonSecurityHeaders,
           "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store",
         });
         res.end(JSON.stringify(result));
         return;
       }
 
       if (req.method === "GET" && (urlObj.pathname === "/" || urlObj.pathname === "/index.html")) {
-        const html = renderDashboardHtml();
+        const html = renderDashboardHtml(undefined, csrfToken);
         res.writeHead(200, {
+          ...commonSecurityHeaders,
           "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-store",
         });
         res.end(html);
         return;
       }
 
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.writeHead(404, {
+        ...commonSecurityHeaders,
+        "Content-Type": "text/plain; charset=utf-8",
+      });
       res.end("Not Found");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+      res.writeHead(500, {
+        ...commonSecurityHeaders,
+        "Content-Type": "application/json; charset=utf-8",
+      });
       res.end(JSON.stringify({ error: msg }));
     }
   });
@@ -1780,12 +1966,14 @@ export async function startDashboardServer(options?: {
 
   const addr = server.address();
   const actualPort = typeof addr === "object" && addr ? addr.port : requestedPort;
+  boundPort = actualPort;
   const url = `http://${host}:${actualPort}`;
 
   return {
     server,
     url,
     port: actualPort,
+    csrfToken,
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => resolve());

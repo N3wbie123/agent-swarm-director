@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -11,6 +12,7 @@ import {
   collectDashboardSnapshot,
   resetDashboardTranscriptSyncThrottle,
 } from "../src/core/session-services.ts";
+import { startDashboardServer } from "../src/cli/dashboard.ts";
 
 function makeTempDir(prefix = "asd-dashboard-test-"): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -249,6 +251,132 @@ test("F22: collectDashboardSnapshot throttles syncLocalTranscripts across rapid 
       "Poll after throttle window expiry must sync local transcripts"
     );
   } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+    fs.rmSync(projDir, { recursive: true, force: true });
+  }
+});
+
+function rawHttpRequest(opts: {
+  port: number;
+  method: string;
+  path: string;
+  headers?: Record<string, string>;
+  body?: string;
+}): Promise<{ statusCode: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port: opts.port,
+        method: opts.method,
+        path: opts.path,
+        headers: opts.headers,
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += String(chunk)));
+        res.on("end", () =>
+          resolve({ statusCode: res.statusCode ?? 0, body: data })
+        );
+      }
+    );
+    req.on("error", reject);
+    if (opts.body !== undefined) req.write(opts.body);
+    req.end();
+  });
+}
+
+test("Dashboard HTML & Security: closes #modelsModalBackdrop, escapes XSS entities, and blocks DNS-rebinding / cross-origin / CSRF attacks", async () => {
+  const homeDir = makeTempDir("asd-ui-html-home-");
+  const projDir = makeTempDir("asd-ui-html-proj-");
+  const handle = await startDashboardServer({
+    port: 0,
+    projectRoot: projDir,
+    homeDir,
+  });
+  try {
+    const res = await fetch(handle.url);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+
+    const bodyBeforeScript = html.slice(html.indexOf("<body>"), html.indexOf("<script>"));
+    const openDivs = (bodyBeforeScript.match(/<div\b/g) ?? []).length;
+    const closeDivs = (bodyBeforeScript.match(/<\/div>/g) ?? []).length;
+    assert.equal(openDivs, closeDivs, "All static <div> tags before <script> must be balanced");
+
+    const backdropSegment = bodyBeforeScript.slice(
+      bodyBeforeScript.indexOf('<div class="modal-backdrop"'),
+      bodyBeforeScript.indexOf('<div class="container">')
+    );
+    const backdropOpens = (backdropSegment.match(/<div\b/g) ?? []).length;
+    const backdropCloses = (backdropSegment.match(/<\/div>/g) ?? []).length;
+    assert.equal(
+      backdropOpens,
+      backdropCloses,
+      "#modelsModalBackdrop must close completely before <div class=\"container\">"
+    );
+
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch?.[1], "Inline <script> block must exist");
+    assert.doesNotThrow(() => new Function(scriptMatch[1]!), "Inline <script> must parse without SyntaxError");
+    assert.ok(scriptMatch[1]!.includes('.replace(/"/g, "&quot;")'), "esc() must escape double quotes as &quot;");
+    assert.ok(scriptMatch[1]!.includes(handle.csrfToken), "Rendered HTML must embed server CSRF token");
+
+    // 1. Forged Host header (DNS rebinding) rejected with 403
+    const rebindRes = await rawHttpRequest({
+      port: handle.port,
+      method: "GET",
+      path: "/api/state",
+      headers: { Host: `evil.rebind.attacker.example:${handle.port}` },
+    });
+    assert.equal(rebindRes.statusCode, 403);
+
+    // 2. Cross-origin POST (Origin: https://evil.example) rejected with 403
+    const crossOriginRes = await rawHttpRequest({
+      port: handle.port,
+      method: "POST",
+      path: "/api/routing",
+      headers: {
+        Host: `127.0.0.1:${handle.port}`,
+        Origin: "https://evil.example",
+        "Content-Type": "text/plain",
+      },
+      body: JSON.stringify({ action: "reset" }),
+    });
+    assert.equal(crossOriginRes.statusCode, 403);
+
+    // 3. Same-origin browser POST WITHOUT X-ASD-CSRF-Token rejected with 403
+    const missingCsrfRes = await rawHttpRequest({
+      port: handle.port,
+      method: "POST",
+      path: "/api/routing",
+      headers: {
+        Host: `127.0.0.1:${handle.port}`,
+        Origin: handle.url,
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action: "reset" }),
+    });
+    assert.equal(missingCsrfRes.statusCode, 403);
+
+    // 4. Same-origin browser POST WITH valid X-ASD-CSRF-Token succeeds (200)
+    const validCsrfRes = await rawHttpRequest({
+      port: handle.port,
+      method: "POST",
+      path: "/api/routing",
+      headers: {
+        Host: `127.0.0.1:${handle.port}`,
+        Origin: handle.url,
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+        "X-ASD-CSRF-Token": handle.csrfToken,
+      },
+      body: JSON.stringify({ action: "reset" }),
+    });
+    assert.equal(validCsrfRes.statusCode, 200);
+  } finally {
+    await handle.close();
     fs.rmSync(homeDir, { recursive: true, force: true });
     fs.rmSync(projDir, { recursive: true, force: true });
   }
