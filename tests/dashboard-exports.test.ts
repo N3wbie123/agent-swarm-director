@@ -16,7 +16,6 @@ import {
   rejectPendingTask,
   rejectTaskWorktree,
   saveSessionMemo,
-  startDashboardServer,
 } from "../src/index.ts";
 
 function makeTempDir(prefix = "asd-dash-exports-"): string {
@@ -98,7 +97,6 @@ test("T2.1: public API exports across src/index.ts, models.ts, session-services.
   assert.equal(typeof saveSessionMemo, "function");
   assert.equal(typeof discoverHarnessModels, "function");
   assert.equal(typeof getModelsDiskCachePath, "function");
-  assert.equal(typeof startDashboardServer, "function");
   assert.equal(typeof getWorktreeDiff, "function");
   assert.equal(typeof approvePendingTask, "function");
   assert.equal(typeof rejectPendingTask, "function");

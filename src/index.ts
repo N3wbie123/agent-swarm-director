@@ -56,7 +56,3 @@ export {
   getLatestSession,
   type CleanResult,
 } from "./cli/index.ts";
-export {
-  startDashboardServer,
-  type DashboardServerHandle,
-} from "./cli/dashboard.ts";

@@ -26,7 +26,7 @@
 | # | 위치 | 항목 | 판정 | 권고 조치 |
 |---|---|---|---|---|
 | W1 | `src/cli/dashboard.ts:247/617/687/843/1461` | GUI가 import하는 **데이터 서비스 5종이 프레젠테이션 파일에 구현**됨 | ⚠️ 경계 위반 (레이어링) | `src/core/` 서비스 파일로 이관, dashboard.ts는 서버+HTML만 유지 |
-| W2 | `src/index.ts:52-58` | 공개 SDK 표면에 dashboard 서버·서비스 혼재, GUI가 쓰지 않는 항목(`startDashboardServer`) 포함 | ⚠️ 표면 과다 | 최소 SDK 화이트리스트화 |
+| W2 | `src/index.ts` | 공개 SDK 표면에 dashboard 서버·서비스 혼재, GUI가 쓰지 않는 항목(`startDashboardServer`) 포함 | ✅ 완료 (이 변경, T4.2) | 루트 export 제거, `startDashboardServer`는 서브패스 `./cli/dashboard.ts` 전용 |
 | W3 | `src/core/drivers.ts:423-424/482/588` | GUI 전용 동기 SDK의 주석·프롬프트 텍스트가 경계를 흐림 | 🔵 표기 문제 (동작 아님) | 주석 정리 + 프롬프트 내 GUI 문구 파라미터화 |
 | W4 | (역방향) `asd-gui/src/server/core-api.ts:239` | `buildInteractiveResumeHarnessCommand`를 GUI가 자체 구현 — Core 어댑터의 `buildInteractiveResumeCommand`와 중복 | 🔵 역방향 위반 | GUI 구현 삭제, Core 구현 직접 사용 (실행 결과: 어댑터 버그 발견으로 상위 함수 re-export 채택 — §5) |
 
@@ -51,11 +51,9 @@
 
 ### W2. `src/index.ts` 공개 SDK 표면 과다
 
-**증거**: `src/index.ts:52-58`이 `collectDashboardSnapshot, discoverHarnessModels, getModelsDiskCachePath, saveSessionMemo, saveProjectRoutingConfig, runSubagentControlAction, startDashboardServer`를 `./cli/dashboard.ts` 경유로 export.
+**상태 (이 변경, T4.2 — 완료)**: `startDashboardServer` 및 `type DashboardServerHandle` 루트 export를 `src/index.ts`에서 제거함. 대시보드 서버는 서브패스 `./cli/dashboard.ts`(`agent-swarm-director/cli/dashboard.ts`)로만 접근 가능하며, 루트 SDK 엔트리에서는 비노출. `package.json` `./cli/*` → `./src/cli/*.ts` 매핑이 `dashboard.ts`를 커버하므로 서브패스 import는 유효함.
 
-**문제**: `startDashboardServer`는 GUI가 절대 쓰지 않음(asd-gui는 자체 서버 보유) — asd ui 전용 구현이 공개 SDK에 노출. 또한 dashboard 서비스가 cli 레이어 경유로 노출되어 "SDK = core에서 온다"는 원칙이 깨짐.
-
-**권고**: 공개 표면을 화이트리스트로 재정의 — ①코어 관리(plan/dispatch/verify/worktree/세션), ②최소 SDK(runDriverTurn, readHarnessTranscript, discoverProjectCliSessions, 모델·메모·라우팅·서브에이전트 서비스), `startDashboardServer`는 `./cli/dashboard.ts` 서브패스로만 노출(또는 비노출).
+**근거**: `startDashboardServer`는 GUI가 절대 쓰지 않음(asd-gui는 자체 서버 보유) — asd ui 전용 구현이 공개 SDK에 노출되지 않음. 나머지 대시보드 데이터 서비스(`collectDashboardSnapshot` 등)는 이미 `src/core/`로 이관되어 core 경유로 재노출됨(W1 완료).
 
 ### W3. `drivers.ts`의 GUI 전용 SDK 표기 문제
 

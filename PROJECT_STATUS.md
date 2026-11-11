@@ -115,7 +115,7 @@ ASD v2.4.0은 프로젝트 폴더 오염을 막고 멀티 프로젝트·멀티 �
 
 ### 4.1 공개 SDK 엔트리포인트 — [`src/index.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/index.ts)
 외부 애플리케이션(`asd-gui` 등)이 `import { ... } from "agent-swarm-director"` 한 줄로 코어 전체 기능을 재사용할 수 있도록 모든 모듈을 re-export합니다.
-- `src/core/*` 전체 모듈, `src/adapters/*` 5대 어댑터 및 인스톨러, `src/mcp/server.ts` 오케스트레이션 핸들러(`handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate`), `src/cli/index.ts` 헬퍼(`getAdapter`, `getLatestSession`, `runAsdLogs`, `runAsdClean`), 그리고 대시보드 데이터 서비스(`collectDashboardSnapshot`, `discoverHarnessModels`, `getModelsDiskCachePath`, `saveSessionMemo`, `saveProjectRoutingConfig`, `runSubagentControlAction`, `scanSubagentLogs`)를 공개합니다. `startDashboardServer`는 v2.4.3부터 루트 엔트리에서 제외되었으며 서브패스 `agent-swarm-director/cli/dashboard.ts`로만 접근합니다.
+- `src/core/*` 전체 모듈, `src/adapters/*` 5대 어댑터 및 인스톨러, `src/mcp/server.ts` 오케스트레이션 핸들러(`handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate`), `src/cli/index.ts` 헬퍼(`getAdapter`, `getLatestSession`, `runAsdLogs`, `runAsdClean`), 그리고 대시보드 데이터 서비스(`collectDashboardSnapshot`, `discoverHarnessModels`, `getModelsDiskCachePath`, `saveSessionMemo`, `saveProjectRoutingConfig`, `runSubagentControlAction`, `scanSubagentLogs`)를 공개합니다. `startDashboardServer`는 루트 엔트리에서 제외되었으며(이 변경, T4.2) 서브패스 `agent-swarm-director/cli/dashboard.ts`로만 접근합니다.
 
 ---
 

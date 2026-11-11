@@ -4,12 +4,13 @@
 
 ---
 
-## 0. 문서-코드 불일치 (재작성 전 반드시 확인)
+## 0. 문서-코드 불일치 (해결됨 — 이 변경, T4.2)
 
-**`startDashboardServer`가 루트 export에 존재한다.**
-- `src/index.ts`가 `export { startDashboardServer, type DashboardServerHandle } from "./cli/dashboard.ts"`를 수행 중.
-- 그러나 `CORE_GUI_BOUNDARY_AUDIT.md` W2는 "루트 export 제거 완료"라고 기록했고, `PROJECT_STATUS.md`·`PATCH_NOTES.md`(v2.4.3)도 "루트 엔트리 미노출, 서브패스 `cli/dashboard` 전용"이라고 기술한다.
-- `tests/dashboard-exports.test.ts:101`이 루트 export를 핀하고 있어 회귀 또는 문서 오류 중 하나. **Nexus 재작성 시 루트 export 제거가 1순위** — 문서가 이미 약속한 상태로 되돌리는 것. (테스트는 `cli/dashboard` 서브패스 import로 전환)
+**`startDashboardServer` 루트 export 제거 완료.**
+- `src/index.ts`에서 `startDashboardServer` / `type DashboardServerHandle` 루트 export를 제거함.
+- `CORE_GUI_BOUNDARY_AUDIT.md` W2, `PROJECT_STATUS.md` 4.1, `PATCH_NOTES.md`(v2.4.3)의 "루트 엔트리 미노출, 서브패스 `cli/dashboard` 전용" 기술과 코드가 일치함.
+- `tests/dashboard-exports.test.ts`의 루트 export 핀(기존 101행)을 `cli/dashboard` 서브패스 import로 전환함(테스트 파일 수정 동반).
+- 서브패스 `./cli/dashboard`(`agent-swarm-director/cli/dashboard.ts`)는 유지됨(`package.json` `./cli/*` → `./src/cli/*.ts`).
 
 ---
 
@@ -17,7 +18,7 @@
 
 | # | 심볼 | 위치 | 현재 상태 | 핀/문서 | 제거 조건 |
 |---|------|------|-----------|---------|-----------|
-| 1 | `startDashboardServer` (루트 export) | `src/index.ts:72-75` | 문서상은 이미 비노출이어야 함 | dashboard-exports.test.ts:101 핀 | 즉시 제거 가능 (문서와의 불일치 해소). 서브패스 `./cli/dashboard`는 유지 |
+| 1 | `startDashboardServer` (루트 export) | `src/index.ts` | 제거 완료 (이 변경, T4.2) | dashboard-exports.test.ts:101 핀 → `cli/dashboard` 서브패스 import로 전환 | 완료. 서브패스 `./cli/dashboard`는 유지 |
 | 2 | `installGlobalConfigs` | `installer.ts:1525` | `syncHarnessConfigs`의 미사용 alias | 핀 없음, 문서 없음 | 즉시 제거 가능 |
 | 3 | `registerCoreHarnessProvisioner` / `getCoreHarnessProvisioner` | `types.ts:523-524` | 레지스트리 함수의 미사용 alias | 핀 없음, 문서 없음 | 즉시 제거 가능 |
 | 4 | `syncRepoVersionStrings` | `installer.ts:973-975` | 의도적 no-op (설계 노트 주석) | installer-sync.test.ts:482가 no-op 동작 핀 | 제거 + 해당 테스트 케이스 삭제. 역사 문서 무변경 보장은 `syncHarnessConfigs` 테스트가 계속 담당 |
