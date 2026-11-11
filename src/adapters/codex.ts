@@ -3,8 +3,10 @@
  *
  * Implements HarnessAdapter for OpenAI's Codex CLI:
  * - Headless CLI execution via `codex exec "<prompt>" --json -m <model>`
- *   (plus `-c model_reasoning_effort=<level>` when configured)
- * - PreToolUse hook denial via exit code 2 / stderr & stdout JSON
+ *   (plus `-c model_reasoning_effort=<level>` and `--sandbox` flags when configured)
+ * - Note: Codex CLI natively supports the `notify` turn-completion (`Stop`) hook in
+ *   `config.toml` and CLI `--sandbox` enforcement, rather than an interactive `PreToolUse` hook.
+ * - `formatPreToolUseDeny` is provided for direct `asd hook pre-tool-use --harness codex` invocations.
  * - Stop hook block via stdout JSON `{"decision":"block","reason":"..."}`
  * - Global target paths under `<homeDir>/.codex/` with TOML fence merging
  */
@@ -16,6 +18,12 @@ import { ASD_SKILLS } from "./claude-code.ts";
 export class CodexAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = "codex";
   readonly supportsHeadlessSpawn: boolean = true;
+  readonly hookCapabilities = {
+    sessionStart: false,
+    preToolUse: false,
+    stop: true,
+    sandboxFlag: true,
+  } as const;
 
   buildHeadlessCommand(
     prompt: string,

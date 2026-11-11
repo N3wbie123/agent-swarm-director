@@ -68,6 +68,7 @@ import {
 } from "./cursor.ts";
 import {
   OpencodeAdapter,
+  generateOpencodeGuardPlugin,
   opencodeAdapter,
 } from "./opencode.ts";
 
@@ -134,7 +135,16 @@ export interface DoctorProbeResult {
   gitRepo: { ok: boolean; isRepo: boolean; message?: string };
   harnesses: Record<
     HarnessId,
-    { installed: boolean; headlessSupported: boolean; binary?: string; resolvedPath?: string | null }
+    {
+      installed: boolean;
+      headlessSupported: boolean;
+      binary?: string;
+      resolvedPath?: string | null;
+      hookCoverage?: {
+        preToolUse: "native-hook" | "plugin-hook" | "sandbox-only";
+        stop: "native-hook" | "plugin-hook";
+      };
+    }
   >;
   policyProbe: { ok: boolean; gitBlocked: boolean; envBlocked: boolean; message?: string };
   errors: string[];
@@ -433,6 +443,7 @@ export function generateAgentContent(
         })()
       : opts?.model;
 
+  const isReadOnlyRole = role === "scout" || role === "critic";
   const frontmatterLines = [
     `---`,
     `name: asd-${role}`,
@@ -440,6 +451,15 @@ export function generateAgentContent(
   ];
   if (opts?.harnessId === "opencode") {
     frontmatterLines.push(`mode: subagent`);
+    if (isReadOnlyRole) {
+      frontmatterLines.push(`tools:`);
+      frontmatterLines.push(`  write: false`);
+      frontmatterLines.push(`  edit: false`);
+      frontmatterLines.push(`  patch: false`);
+    }
+  }
+  if (opts?.harnessId === "claude-code" && isReadOnlyRole) {
+    frontmatterLines.push(`disallowedTools: Write, Edit, MultiEdit, NotebookEdit`);
   }
   if (effectiveModel) {
     frontmatterLines.push(`model: ${effectiveModel}`);
@@ -447,6 +467,13 @@ export function generateAgentContent(
   if (opts?.harnessId === "antigravity") {
     frontmatterLines.push(`mainAgent: false`);
     frontmatterLines.push(`subagent: true`);
+    if (isReadOnlyRole) {
+      frontmatterLines.push(`tools: [read_file, search_web]`);
+    } else {
+      frontmatterLines.push(
+        `tools: [read_file, edit_file, write_file, run_command, manage_task, search_web]`
+      );
+    }
   }
   frontmatterLines.push(`---`);
   const protectedAsdRuleBlock = [
@@ -498,7 +525,7 @@ export function generateAllAgentsMarkdown(
 ): string {
   let md = `# ASD Multi-Agent Roster (v${ASD_VERSION})
 
-This document defines the 10 standard specialist agent roles in ASD v${ASD_VERSION} and the delegation rules for \`LIGHT\` vs \`HEAVY\` execution modes.
+This document defines the 5 standard specialist agent roles in ASD v${ASD_VERSION} and the delegation rules for \`LIGHT\` vs \`HEAVY\` execution modes.
 
 ## Execution Mode & Subagent Delegation Rules
 
@@ -641,11 +668,18 @@ function bootstrapGlobalPresets(homeDir: string): { routingPath: string; mcpPath
   return { routingPath, mcpPath };
 }
 
-function computeConfigHash(homeDir: string, projectRoot?: string): string {
+function computeConfigHash(
+  homeDir: string,
+  projectRoot?: string,
+  asdCliPath?: string
+): string {
   const { routingPath, mcpPath } = bootstrapGlobalPresets(homeDir);
 
   const hash = crypto.createHash("sha256");
   hash.update(ASD_VERSION);
+  if (asdCliPath) {
+    hash.update(asdCliPath.replaceAll("\\", "/"));
+  }
 
   let parsedRouting: RoutingConfig | null = null;
   const localRoutingPath = projectRoot
@@ -1078,7 +1112,7 @@ export async function syncHarnessConfigs(
     options?.asdCliPath || path.join(asdRoot, "src", "cli", "index.ts");
 
   // 1. Bootstrap presets, load catalog & native capabilities, and compute config hash
-  const configHash = computeConfigHash(homeDir, options?.projectRoot);
+  const configHash = computeConfigHash(homeDir, options?.projectRoot, asdCliPath);
   const lastSync = loadLastSync(homeDir);
   const nativeCapabilitiesMap = loadHarnessNativeCapabilities();
   const catalogMcpServers = loadCatalogMcpServers(homeDir, asdRoot);
@@ -1234,6 +1268,11 @@ export async function syncHarnessConfigs(
         const agentsMdPath = path.join(opencodeDir, "AGENTS.md");
         safeWriteText(agentsMdPath, generateAllAgentsMarkdown(routingConfig, "opencode"));
         written.push(agentsMdPath);
+
+        // ASD Policy Guard Plugin (PreToolUse + Stop hooks)
+        const opencodePluginPath = path.join(opencodeDir, "plugin", "asd-guard.js");
+        safeWriteText(opencodePluginPath, generateOpencodeGuardPlugin(asdCliPath));
+        written.push(opencodePluginPath);
 
         // opencode.json & opencode.jsonc
         const opencodeJsoncPath = path.join(opencodeDir, "opencode.jsonc");
@@ -1428,7 +1467,7 @@ export async function syncHarnessConfigs(
           SessionStart: [
             {
               type: "command",
-              command: `node --no-warnings ${posixCliPath} hook session-start --harness antigravity`,
+              command: `node --no-warnings "${posixCliPath}" hook session-start --harness antigravity`,
               timeout: 10,
             },
           ],
@@ -1439,7 +1478,7 @@ export async function syncHarnessConfigs(
               hooks: [
                 {
                   type: "command",
-                  command: `node --no-warnings ${posixCliPath} hook pre-tool-use --harness antigravity`,
+                  command: `node --no-warnings "${posixCliPath}" hook pre-tool-use --harness antigravity`,
                   timeout: 10,
                 },
               ],
@@ -1448,7 +1487,7 @@ export async function syncHarnessConfigs(
           Stop: [
             {
               type: "command",
-              command: `node --no-warnings ${posixCliPath} hook stop --harness antigravity`,
+              command: `node --no-warnings "${posixCliPath}" hook stop --harness antigravity`,
               timeout: 10,
             },
           ],
@@ -1969,6 +2008,8 @@ export async function uninstallHarnessConfigs(
     removeFile(path.join(opencodeDir, "agent", `asd-${role}.md`), "opencode");
   }
   removeDirIfEmpty(path.join(opencodeDir, "agent"));
+  removeFile(path.join(opencodeDir, "plugin", "asd-guard.js"), "opencode");
+  removeDirIfEmpty(path.join(opencodeDir, "plugin"));
   removeFile(path.join(opencodeDir, "AGENTS.md"), "opencode");
 
   cleanupJsonMcpFile(path.join(opencodeDir, "opencode.json"), "opencode", [
@@ -2304,30 +2345,35 @@ export async function doctorProbe(
       headlessSupported: Boolean(claudePath),
       binary: "claude",
       resolvedPath: claudePath,
+      hookCoverage: { preToolUse: "native-hook", stop: "native-hook" },
     },
     opencode: {
       installed: Boolean(opencodePath),
       headlessSupported: Boolean(opencodePath),
       binary: "opencode",
       resolvedPath: opencodePath,
+      hookCoverage: { preToolUse: "plugin-hook", stop: "plugin-hook" },
     },
     codex: {
       installed: Boolean(codexPath),
       headlessSupported: Boolean(codexPath),
       binary: "codex",
       resolvedPath: codexPath,
+      hookCoverage: { preToolUse: "sandbox-only", stop: "native-hook" },
     },
     antigravity: {
       installed: Boolean(agyPath),
       headlessSupported: Boolean(agyPath) && Boolean(antigravityAdapter.supportsHeadlessSpawn),
       binary: "agy",
       resolvedPath: agyPath,
+      hookCoverage: { preToolUse: "native-hook", stop: "native-hook" },
     },
     cursor: {
       installed: Boolean(cursorPath),
       headlessSupported: Boolean(cursorPath) && Boolean(cursorAdapter.supportsHeadlessSpawn),
       binary: cursorBin,
       resolvedPath: cursorPath,
+      hookCoverage: { preToolUse: "native-hook", stop: "native-hook" },
     },
   };
   checks.push({
@@ -2336,6 +2382,12 @@ export async function doctorProbe(
     message: Object.entries(harnesses)
       .map(([k, v]) => `${k}: ${v.installed ? `installed (${v.resolvedPath})` : "not found"}`)
       .join(", "),
+  });
+  checks.push({
+    name: "hook_coverage",
+    ok: true,
+    message:
+      "PreToolUse/Stop coverage: claude-code/antigravity/cursor (native hooks), opencode (plugin/asd-guard.js), codex (notify Stop hook + CLI --sandbox; no native PreToolUse hook)",
   });
 
   // 5. In-memory synthetic PreToolUse security policy probe (.GIT/config, .ENV)

@@ -71,6 +71,61 @@ export function createOpencodeConfig(
   };
 }
 
+/**
+ * Generates an ASD-managed OpenCode plugin (`~/.config/opencode/plugin/asd-guard.js`)
+ * that wires OpenCode's `"tool.execute.before"` and `"session.idle"` events to
+ * `asd hook pre-tool-use` and `asd hook stop`.
+ */
+export function generateOpencodeGuardPlugin(asdCliPath: string): string {
+  const normalizedCliPath = asdCliPath.replaceAll("\\", "/");
+  return `// ASD-MANAGED-OPENCODE-PLUGIN (v${ASD_VERSION})
+import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
+
+const ASD_CLI_PATH = ${JSON.stringify(normalizedCliPath)};
+
+function runAsdHook(hookName, payload) {
+  if (!fs.existsSync(ASD_CLI_PATH)) {
+    return { status: 0, stdout: "", stderr: "" };
+  }
+  return spawnSync(
+    process.execPath,
+    ["--no-warnings", ASD_CLI_PATH, "hook", hookName, "--harness", "opencode"],
+    {
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: 8000,
+    }
+  );
+}
+
+export const AsdPolicyGuardPlugin = async ({ directory } = {}) => ({
+  "tool.execute.before": async (input, output) => {
+    const res = runAsdHook("pre-tool-use", {
+      tool_name: input?.tool ?? "",
+      tool_input: output?.args ?? input?.args ?? {},
+      cwd: directory || process.cwd(),
+      session_id: input?.sessionID,
+    });
+    if (res.status && res.status !== 0) {
+      const reason = (res.stderr || res.stdout || "Blocked by ASD PreToolUse policy").trim();
+      throw new Error(reason);
+    }
+  },
+  event: async ({ event } = {}) => {
+    if (event?.type === "session.idle") {
+      runAsdHook("stop", {
+        session_id: event?.properties?.sessionID,
+        cwd: directory || process.cwd(),
+      });
+    }
+  },
+});
+
+export default AsdPolicyGuardPlugin;
+`;
+}
+
 export class OpencodeAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = "opencode";
   readonly supportsHeadlessSpawn: boolean = true;
@@ -153,6 +208,7 @@ export class OpencodeAdapter implements HarnessAdapter {
     const baseDir = path.join(homeDir, ".config", "opencode");
 
     targets.push(path.join(baseDir, "opencode.json"));
+    targets.push(path.join(baseDir, "plugin", "asd-guard.js"));
     for (const role of AGENT_ROLES) {
       targets.push(path.join(baseDir, "agent", `asd-${role}.md`));
     }

@@ -1077,3 +1077,101 @@ describe("I4: MCP extKeys mutation - mutateBeforeMerge must not add phantom keys
     assert.equal(result["asd-core"], undefined);
   });
 });
+
+// ============================================================================
+// T1.3: Agent Tools Frontmatter, Quoted Antigravity Hooks, OpenCode Guard Plugin & Roster Count
+// ============================================================================
+
+describe("T1.3: Subagent tools frontmatter, quoted hooks, OpenCode plugin, and roster count", () => {
+  test("Antigravity, OpenCode, and Claude Code agent frontmatter declare explicit role-appropriate tool permissions", () => {
+    const agScout = generateAgentContent("scout", { harnessId: "antigravity" });
+    const agCritic = generateAgentContent("critic", { harnessId: "antigravity" });
+    const agWorker = generateAgentContent("worker", { harnessId: "antigravity" });
+    const agPlanner = generateAgentContent("planner", { harnessId: "antigravity" });
+
+    assert.ok(agScout.includes("tools: [read_file, search_web]"), "Antigravity scout must be read-only");
+    assert.ok(agCritic.includes("tools: [read_file, search_web]"), "Antigravity critic must be read-only");
+    assert.ok(
+      agWorker.includes("tools: [read_file, edit_file, write_file, run_command, manage_task, search_web]"),
+      "Antigravity worker must include workspace write/command tools"
+    );
+    assert.ok(
+      agPlanner.includes("tools: [read_file, edit_file, write_file, run_command, manage_task, search_web]"),
+      "Antigravity planner must include workspace write/command tools"
+    );
+
+    const ocScout = generateAgentContent("scout", { harnessId: "opencode" });
+    const ocWorker = generateAgentContent("worker", { harnessId: "opencode" });
+    assert.ok(ocScout.includes("  write: false\n  edit: false\n  patch: false"), "OpenCode scout must disable write/edit/patch");
+    assert.equal(ocWorker.includes("write: false"), false, "OpenCode worker must allow writes");
+
+    const ccScout = generateAgentContent("scout", { harnessId: "claude-code" });
+    assert.ok(
+      ccScout.includes("disallowedTools: Write, Edit, MultiEdit, NotebookEdit"),
+      "Claude Code scout must disallow write tools"
+    );
+
+    const rosterMd = generateAllAgentsMarkdown();
+    assert.ok(
+      rosterMd.includes("defines the 5 standard specialist agent roles"),
+      "AGENTS.md header must state 5 standard specialist agent roles"
+    );
+    assert.equal(rosterMd.includes("10 standard specialist agent roles"), false);
+  });
+
+  test("Antigravity hooks quote CLI paths with spaces, and OpenCode guard plugin syncs & uninstalls cleanly", async () => {
+    const spaceHome = createTempDir("asd-space-home-");
+    const spaceRuntime = createTempDir("asd runtime with spaces ");
+    try {
+      const cliWithSpaces = path.join(spaceRuntime, "src", "cli", "index.ts");
+      fs.mkdirSync(path.dirname(cliWithSpaces), { recursive: true });
+      fs.writeFileSync(cliWithSpaces, "#!/usr/bin/env node\n", "utf8");
+
+      const first = await syncHarnessConfigs({
+        homeDir: spaceHome,
+        asdCliPath: cliWithSpaces,
+        noPath: true,
+      });
+      assert.equal(first.status, "updated");
+
+      const hooksPath = path.join(spaceHome, ".gemini", "config", "hooks.json");
+      const hooks = JSON.parse(fs.readFileSync(hooksPath, "utf8"));
+      const posixCli = cliWithSpaces.replaceAll("\\", "/");
+      const preToolCmd = hooks["asd-session-tracker"].PreToolUse[0].hooks[0].command;
+      const sessionStartCmd = hooks["asd-session-tracker"].SessionStart[0].command;
+      const stopCmd = hooks["asd-session-tracker"].Stop[0].command;
+
+      assert.ok(preToolCmd.includes(`"${posixCli}"`), `Expected quoted CLI path in PreToolUse: ${preToolCmd}`);
+      assert.ok(sessionStartCmd.includes(`"${posixCli}"`), `Expected quoted CLI path in SessionStart: ${sessionStartCmd}`);
+      assert.ok(stopCmd.includes(`"${posixCli}"`), `Expected quoted CLI path in Stop: ${stopCmd}`);
+
+      const ocPluginPath = path.join(spaceHome, ".config", "opencode", "plugin", "asd-guard.js");
+      assert.ok(fs.existsSync(ocPluginPath), "OpenCode asd-guard.js plugin must be installed");
+      const pluginSrc = fs.readFileSync(ocPluginPath, "utf8");
+      assert.ok(pluginSrc.includes("tool.execute.before"), "OpenCode plugin must hook tool.execute.before");
+      assert.ok(pluginSrc.includes(posixCli), "OpenCode plugin must reference configured CLI path");
+
+      // Idempotency check
+      const second = await syncHarnessConfigs({
+        homeDir: spaceHome,
+        asdCliPath: cliWithSpaces,
+        noPath: true,
+      });
+      assert.equal(second.status, "skipped");
+
+      // Doctor hookCoverage check
+      const probe = await doctorProbe({ homeDir: spaceHome, projectRoot: process.cwd() });
+      assert.equal(probe.ok, true);
+      assert.equal(probe.harnesses.opencode.hookCoverage?.preToolUse, "plugin-hook");
+      assert.equal(probe.harnesses.codex.hookCoverage?.preToolUse, "sandbox-only");
+      assert.ok(probe.checks.some((c) => c.name === "hook_coverage" && c.ok));
+
+      // Surgical uninstall removes OpenCode plugin cleanly
+      await uninstallHarnessConfigs({ homeDir: spaceHome });
+      assert.equal(fs.existsSync(ocPluginPath), false, "OpenCode plugin must be removed on uninstall");
+    } finally {
+      removeTempDir(spaceHome);
+      removeTempDir(spaceRuntime);
+    }
+  });
+});
