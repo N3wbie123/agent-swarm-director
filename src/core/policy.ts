@@ -308,18 +308,40 @@ export function checkProtectedPath(relPath: string): ProtectedPathCheckResult {
     };
   }
 
-  // 6. id_rsa, id_rsa.*, id_ed25519*, id_ecdsa*
+  // 6. id_rsa, id_rsa.*, id_ed25519*, id_ecdsa*, id_dsa*
   if (
     basename === "id_rsa" ||
     basename.startsWith("id_rsa.") ||
     basename === "id_ed25519" ||
     basename.startsWith("id_ed25519.") ||
     basename === "id_ecdsa" ||
-    basename.startsWith("id_ecdsa.")
+    basename.startsWith("id_ecdsa.") ||
+    basename === "id_dsa" ||
+    basename.startsWith("id_dsa.")
   ) {
     return {
       protected: true,
       reason: `Protected file: target '${relPath}' is a protected SSH key`,
+    };
+  }
+
+  // 7. *.pfx, *.p12 (PKCS#12 private key/certificate bundles)
+  if (basename.endsWith(".pfx") || basename.endsWith(".p12")) {
+    return {
+      protected: true,
+      reason: `Protected file: target '${relPath}' is a protected PKCS#12 key bundle`,
+    };
+  }
+
+  // 8. Credential rc & OAuth secret files (.npmrc, .netrc, credentials.json)
+  if (
+    basename === ".npmrc" ||
+    basename === ".netrc" ||
+    basename === "credentials.json"
+  ) {
+    return {
+      protected: true,
+      reason: `Protected file: target '${relPath}' is a protected credential configuration file`,
     };
   }
 
@@ -509,10 +531,31 @@ function stripBenignGitExclusions(cmd: string): string {
     .replace(/\bgit@[^\s'"]+\.git\b/gi, " ");
 }
 
+function hasInlineRuntimeFileWrite(s: string): boolean {
+  if (
+    /\b(?:writeFileSync|writeFile|appendFileSync|appendFile|cpSync|copyFileSync|copyFile|unlinkSync|rmSync|rmdirSync|renameSync|createWriteStream)\s*\(/i.test(
+      s
+    )
+  ) {
+    return true;
+  }
+  if (/\[(?:system\.)?io\.file\]\s*::\s*(?:writeall|appendall|copy|delete|move|create)/i.test(s)) {
+    return true;
+  }
+  if (
+    /\b(?:python|python3|py)\b[\s\S]*?(?:\bopen\s*\([^)]*,\s*['"][wa+x]|\.write_(?:text|bytes)\s*\(|\bshutil\.(?:copy|copy2|copyfile|move|rmtree)\b|\bos\.(?:remove|unlink|rename|replace)\b)/i.test(
+      s
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Detects shell redirection operators (>, >>, >&, process substitution >(...))
- * and PowerShell write commands (Set-Content, Add-Content, Out-File, Tee-Object)
- * while respecting quoted strings to avoid false positives like grep ">" file.
+ * and PowerShell/inline-runtime write commands while respecting quoted strings
+ * to avoid false positives like grep ">" file.
  */
 function hasShellRedirection(cmd: string): boolean {
   // Check for >> (append) - simple and rarely appears in quotes legitimately
@@ -525,8 +568,8 @@ function hasShellRedirection(cmd: string): boolean {
     return true;
   }
 
-  // Check for PowerShell write commands (case-insensitive, word boundaries)
-  if (/\b(?:set-content|add-content|out-file|tee-object)\b/i.test(cmd)) {
+  // Check for PowerShell write/create/copy/rename commands (case-insensitive, word boundaries)
+  if (/\b(?:set-content|add-content|out-file|tee-object|new-item|copy-item|rename-item)\b/i.test(cmd)) {
     return true;
   }
 
@@ -535,8 +578,8 @@ function hasShellRedirection(cmd: string): boolean {
     return true;
   }
 
-  // Check for Node.js file write calls
-  if (/\b(?:writeFileSync|writeFile|appendFileSync)\s*\(/i.test(cmd)) {
+  // Check for inline Node.js / Python / .NET file write calls
+  if (hasInlineRuntimeFileWrite(cmd)) {
     return true;
   }
 
@@ -596,9 +639,9 @@ function hasShellRedirection(cmd: string): boolean {
 function hasRedirectionInScript(script: string): boolean {
   if (script.includes(">>")) return true;
   if (/>\(/.test(script)) return true; // process substitution
-  if (/\b(?:set-content|add-content|out-file|tee-object)\b/i.test(script)) return true;
+  if (/\b(?:set-content|add-content|out-file|tee-object|new-item|copy-item|rename-item)\b/i.test(script)) return true;
   if (/\bsed\s+-i\b/i.test(script)) return true;
-  if (/\b(?:writeFileSync|writeFile|appendFileSync)\s*\(/i.test(script)) return true;
+  if (hasInlineRuntimeFileWrite(script)) return true;
   // Simple > detection (excluding 2>&1, >&2, 2>)
   let inSingleQuote = false;
   let inDoubleQuote = false;
@@ -615,6 +658,128 @@ function hasRedirectionInScript(script: string): boolean {
     }
     prevChar = ch;
   }
+  return false;
+}
+
+function stripBenignAsdExclusions(cmd: string): string {
+  return cmd
+    .replace(/--exclude-dir\s*=\s*['"]?[^'"\s]*\.asd[^'"\s]*['"]?/gi, " ")
+    .replace(/--exclude\s*=\s*['"]?[^'"\s]*\.asd[^'"\s]*['"]?/gi, " ")
+    .replace(/(?:-g|--glob)\s*=?[\s'"]*![^'"\s]*\.asd[^'"\s]*['"]?/gi, " ")
+    .replace(/-not\s+-path\s+['"][^'"]*\.asd[^'"]*['"]/gi, " ")
+    .replace(/!\s+-path\s+['"][^'"]*\.asd[^'"]*['"]/gi, " ");
+}
+
+function isOfficialAsdOrCommitMetadataSegment(seg: string): boolean {
+  const trimmed = seg.trim();
+  if (/^\bgit\s+commit\b/i.test(trimmed)) return true;
+  if (
+    /^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:asd\b|(?:node|bun|tsx)\b[^\n;|&]*?(?:src[/\\]cli[/\\]index\.(?:ts|js)|bin[/\\]asd))\s+(?:plan|dispatch|verify|debate|status|clean|logs|sync|doctor|resume|update|ui|dashboard|uninstall|hook|mcp|handoff|migrate)\b/i.test(
+      trimmed
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isBlockedMainAsdCommand(cmd: string): boolean {
+  const sanitized = stripBenignAsdExclusions(cmd);
+  const lower = sanitized.toLowerCase();
+  const unquoted = lower.replace(/['"`]/g, "");
+
+  const hasAsdToken =
+    lower.includes(".asd/") ||
+    lower.includes(".asd\\") ||
+    unquoted.includes(".asd/") ||
+    unquoted.includes(".asd\\") ||
+    /(?:^|[\s"'`=/\\])\.asd(?:[/\\]|[\s"'`]|$)/.test(lower) ||
+    /(?:^|[\s=/\\])\.asd(?:[/\\]|\s|$)/.test(unquoted);
+
+  if (!hasAsdToken) return false;
+
+  // Always block shell output redirection targeting .asd
+  if (
+    /(?:>>|(?<![2&])>(?!&))\s*['"]?(?:[^\s'"]*[/\\])?\.asd(?:[/\\]|['"\s;|]|$)/i.test(
+      sanitized
+    ) ||
+    /(?:>>|(?<![2&])>(?!&))\s*(?:[^\s;|]*[/\\])?\.asd(?:[/\\]|[\s;|]|$)/i.test(
+      unquoted
+    )
+  ) {
+    return true;
+  }
+
+  // Inspect individual shell segments so official `asd <cmd>` or `git commit -m`
+  // with `.asd` in text metadata is allowed, while direct shell mutation/deletion/sqlite3 is denied.
+  const segments = sanitized.split(/\s*(?:&&|\|\||;|\|)\s*/);
+  for (const seg of segments) {
+    if (!seg.trim()) continue;
+    const segLower = seg.toLowerCase();
+    const segUnquoted = segLower.replace(/['"`]/g, "");
+    const segHasAsd =
+      segLower.includes(".asd/") ||
+      segLower.includes(".asd\\") ||
+      segUnquoted.includes(".asd/") ||
+      segUnquoted.includes(".asd\\") ||
+      /(?:^|[\s"'`=/\\])\.asd(?:[/\\]|[\s"'`]|$)/.test(segLower) ||
+      /(?:^|[\s=/\\])\.asd(?:[/\\]|\s|$)/.test(segUnquoted);
+    if (!segHasAsd) continue;
+    if (isOfficialAsdOrCommitMetadataSegment(seg)) continue;
+
+    if (
+      /\b(?:rm|rmdir|del|erase|mv|move|cp|copy|ren|rename|chmod|chown|truncate|sqlite3|remove-item|move-item|copy-item|new-item|rename-item|set-content|add-content|out-file|tee-object|tee)\b/i.test(
+        seg
+      ) ||
+      /\bsed\s+-i\b/i.test(seg) ||
+      hasInlineRuntimeFileWrite(seg)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isBlockedMainEnvCommand(cmd: string): boolean {
+  const envFileRegex =
+    /(?:^|[\s"'`=:/\\])\.env(?:\.(?!example\b|sample\b|template\b)[a-z0-9._-]+)?(?:[\s"'`;|&><)]|$)/i;
+  const lower = cmd.toLowerCase();
+  const unquoted = lower.replace(/['"`]/g, "");
+  if (!envFileRegex.test(lower) && !envFileRegex.test(unquoted)) {
+    return false;
+  }
+
+  // Always block shell redirection targeting .env
+  if (
+    /(?:>>|(?<![2&])>(?!&))\s*['"]?(?:[^\s'"]*[/\\])?\.env(?:\.(?!example\b|sample\b|template\b)[a-z0-9._-]+)?(?:['"\s;|]|$)/i.test(
+      cmd
+    )
+  ) {
+    return true;
+  }
+
+  const segments = cmd.split(/\s*(?:&&|\|\||;|\|)\s*/);
+  for (const seg of segments) {
+    if (!seg.trim()) continue;
+    const segLower = seg.toLowerCase();
+    const segUnquoted = segLower.replace(/['"`]/g, "");
+    if (!envFileRegex.test(segLower) && !envFileRegex.test(segUnquoted)) continue;
+    if (isOfficialAsdOrCommitMetadataSegment(seg)) continue;
+
+    if (
+      /\b(?:cat|type|get-content|gc|head|tail|more|less|source|rm|rmdir|del|erase|mv|move|cp|copy|ren|rename|remove-item|move-item|copy-item|new-item|rename-item|set-content|add-content|out-file|tee-object|tee|truncate)\b/i.test(
+        seg
+      ) ||
+      /(?:^|\s)\.\s+['"]?[^\s'"]*\.env\b/i.test(seg) ||
+      /\bnode\s+--env-file/i.test(seg) ||
+      /\bsed\s+-i\b/i.test(seg) ||
+      hasInlineRuntimeFileWrite(seg)
+    ) {
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -922,16 +1087,39 @@ export function evaluatePreToolUse(
         return {
           allowed: false,
           reason: formatPolicyDenyReason(
-            "Bash command blocked for subagent: output redirection (>, >>, Out-File, Set-Content, tee, process substitution) is forbidden. DO NOT attempt to bypass allowedFiles via shell/bash commands; emit a crossScopeRequests entry in your final asd-report block instead."
+            "Bash command blocked for subagent: output redirection (>, >>, Out-File, Set-Content, New-Item, Copy-Item, tee, inline script write, process substitution) is forbidden. DO NOT attempt to bypass allowedFiles via shell/bash commands; emit a crossScopeRequests entry in your final asd-report block instead."
           ),
         };
       }
-      // Block destructive commands
-      if (/\b(?:rm|rmdir|del|erase|mv|move|remove-item|move-item)\b/i.test(cmd)) {
+      // Block destructive / boundary-escaping file commands (rm, mv, cp, patch, git checkout/restore/apply)
+      if (
+        /\b(?:rm|rmdir|del|erase|mv|move|cp|copy|ren|rename|patch|remove-item|move-item|copy-item|rename-item)\b/i.test(
+          cmd
+        ) ||
+        /\bgit\s+(?:checkout|restore|apply|am|clean|reset|stash)\b/i.test(cmd)
+      ) {
         return {
           allowed: false,
           reason: formatPolicyDenyReason(
-            "Bash command blocked for subagent: destructive command (rm, del, mv, Remove-Item) is forbidden"
+            "Bash command blocked for subagent: destructive or file-mutating shell command (rm, del, mv, cp, patch, git checkout/restore/apply, Remove-Item) is forbidden"
+          ),
+        };
+      }
+    } else {
+      // Main session Bash guard: protect .asd/ from direct shell writes/deletions and protect .env files
+      if (isBlockedMainAsdCommand(cmd)) {
+        return {
+          allowed: false,
+          reason: formatPolicyDenyReason(
+            "Bash command blocked: direct shell mutation/deletion of protected .asd directory is forbidden; use official 'asd' CLI commands instead"
+          ),
+        };
+      }
+      if (isBlockedMainEnvCommand(cmd)) {
+        return {
+          allowed: false,
+          reason: formatPolicyDenyReason(
+            "Bash command blocked: direct shell access/mutation of protected .env file is forbidden"
           ),
         };
       }

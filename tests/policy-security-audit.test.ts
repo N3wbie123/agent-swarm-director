@@ -664,4 +664,91 @@ describe("T2.2 evasion gap closures", () => {
     );
     assert.equal(r4.allowed, true, "GIT_DIR pointing outside project must be allowed");
   });
+
+  test("Main session Bash blocks direct .asd/ mutation and .env access while allowing official asd CLI and read-only inspection", () => {
+    const rootDir = makeTempDir();
+    const mainEnv = { ASD_PROJECT_ROOT: rootDir };
+
+    // Blocked on main session: direct redirection / deletion / sqlite3 / PowerShell write to .asd/
+    for (const cmd of [
+      "echo hacked > .asd/PLAN.md",
+      "rm -rf .asd",
+      "Remove-Item -Recurse -Force .asd",
+      "Set-Content -Path .asd/PLAN.md -Value x",
+      "sqlite3 .asd/core.db 'DELETE FROM sessions'",
+      "asd status && rm -rf .asd",
+    ]) {
+      const res = evaluatePreToolUse({ tool: "bash", command: cmd }, undefined, mainEnv);
+      assert.equal(res.allowed, false, `Expected main-session .asd mutation to be blocked: ${cmd}`);
+    }
+
+    // Blocked on main session: direct .env read/write/delete
+    for (const cmd of [
+      "cat .env",
+      "Get-Content .env.production",
+      "echo SECRET=1 > .env",
+      "rm .env",
+    ]) {
+      const res = evaluatePreToolUse({ tool: "bash", command: cmd }, undefined, mainEnv);
+      assert.equal(res.allowed, false, `Expected main-session .env command to be blocked: ${cmd}`);
+    }
+
+    // Allowed on main session: official asd CLI, git commit metadata, .env.example, read-only .asd/PLAN.md check
+    for (const cmd of [
+      "asd plan create --file plan.json",
+      "node --no-warnings src/cli/index.ts plan update --title 'Protect .asd/ and .env'",
+      "git commit -m 'fix: protect .asd/ and .env in policy'",
+      "cat .asd/PLAN.md",
+      "cat .env.example",
+      "grep -rn 'TODO' --exclude-dir=.asd src/",
+    ]) {
+      const res = evaluatePreToolUse({ tool: "bash", command: cmd }, undefined, mainEnv);
+      assert.equal(res.allowed, true, `Expected benign main-session command to pass: ${cmd}`);
+    }
+  });
+
+  test("Subagent Bash blocks cp/Copy-Item/New-Item/git-checkout/inline-script file write escapes and protects .npmrc/.netrc/.pfx/credentials.json", () => {
+    const rootDir = makeTempDir();
+    const metaPath = path.join(rootDir, "meta.json");
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify({
+        subSessionId: "sub-1",
+        sessionId: "asd-20261109-000000-sec",
+        taskId: "T1.1",
+        role: "worker",
+        harness: "claude-code",
+        model: "sonnet",
+        track: "LIGHT",
+        allowedFiles: ["src/allowed.ts"],
+        startedAt: Date.now(),
+        status: "running",
+      }),
+      "utf8"
+    );
+    const subEnv = {
+      ASD_SESSION_ROLE: "subagent",
+      ASD_SUBAGENT_META: metaPath,
+      ASD_PROJECT_ROOT: rootDir,
+    };
+
+    for (const cmd of [
+      "cp src/allowed.ts src/forbidden.ts",
+      "Copy-Item src/allowed.ts src/forbidden.ts",
+      "New-Item -Path src/forbidden.ts -Value 'x'",
+      "Rename-Item src/allowed.ts src/forbidden.ts",
+      "git checkout -- src/forbidden.ts",
+      "git apply hack.patch",
+      "node -e \"require('fs').cpSync('src/allowed.ts','src/forbidden.ts')\"",
+      "python -c \"open('src/forbidden.ts','w').write('x')\"",
+      "powershell -c \"[System.IO.File]::WriteAllText('src/forbidden.ts','x')\"",
+    ]) {
+      const res = evaluatePreToolUse({ tool: "bash", command: cmd }, undefined, subEnv);
+      assert.equal(res.allowed, false, `Expected subagent escape command to be blocked: ${cmd}`);
+    }
+
+    for (const p of [".npmrc", ".netrc", "certs/cert.pfx", "certs/bundle.p12", "config/credentials.json", ".ssh/id_dsa"]) {
+      assert.equal(checkProtectedPath(p).protected, true, `Expected protected path: ${p}`);
+    }
+  });
 });
