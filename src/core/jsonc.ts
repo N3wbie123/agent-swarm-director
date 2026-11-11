@@ -220,3 +220,41 @@ export function removeTomlFence(existingToml: string): string {
   );
   return existingToml.replace(fenceRegex, "").trimEnd();
 }
+
+/**
+ * Escape a string for TOML basic string (double-quoted) values.
+ * Per TOML spec: backslash, quote, newline, carriage return, tab must be escaped.
+ * Other control characters (U+0000-U+001F except \n, \r, \t) are escaped as \uXXXX.
+ */
+export function escapeTomlBasicString(input: string): string {
+  let result = "";
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    const code = ch.charCodeAt(0);
+    switch (ch) {
+      case "\\":
+        result += "\\\\";
+        break;
+      case '"':
+        result += '\\"';
+        break;
+      case "\n":
+        result += "\\n";
+        break;
+      case "\r":
+        result += "\\r";
+        break;
+      case "\t":
+        result += "\\t";
+        break;
+      default:
+        if (code >= 0x00 && code <= 0x1f) {
+          // Control character: escape as \uXXXX
+          result += "\\u" + code.toString(16).toUpperCase().padStart(4, "0");
+        } else {
+          result += ch;
+        }
+    }
+  }
+  return result;
+}

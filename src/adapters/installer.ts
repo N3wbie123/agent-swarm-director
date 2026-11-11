@@ -27,7 +27,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { parseJsonc, removeTomlFence, upsertTomlFence } from "../core/jsonc.ts";
+import { parseJsonc, removeTomlFence, upsertTomlFence, escapeTomlBasicString } from "../core/jsonc.ts";
 import { evaluatePreToolUse } from "../core/policy.ts";
 import {
   normalizeAntigravityModel,
@@ -786,7 +786,7 @@ export function loadCatalogMcpServers(
   return resolved;
 }
 
-function mergeJsonMcpServersForHarness(options: {
+export function mergeJsonMcpServersForHarness(options: {
   harnessId: "claude-code" | "opencode" | "antigravity" | "cursor";
   existingMcpServers: Record<string, unknown>;
   catalog: Record<string, CatalogMcpEntry>;
@@ -826,6 +826,9 @@ function mergeJsonMcpServersForHarness(options: {
     if (Object.prototype.hasOwnProperty.call(result, serverName)) {
       continue;
     }
+    // 3. External existing keys filter: skip if key exists in externalExistingKeys
+    // (externalExistingKeys is pre-filtered in syncJsonMcpConfigFile to only contain
+    // keys from other user config files or keys that exist in the current config)
     if (externalExistingKeys?.has(serverName) || externalExistingKeys?.has(lowerName)) {
       continue;
     }
@@ -860,7 +863,7 @@ function mergeJsonMcpServersForHarness(options: {
   return result;
 }
 
-function syncJsonMcpConfigFile(options: {
+export function syncJsonMcpConfigFile(options: {
   filePath: string;
   harnessId: "claude-code" | "opencode" | "antigravity" | "cursor";
   catalog: Record<string, CatalogMcpEntry>;
@@ -881,10 +884,25 @@ function syncJsonMcpConfigFile(options: {
   }
   const extKeys = new Set<string>(externalExistingKeys);
   mutateBeforeMerge?.(config, extKeys);
+  // Filter extKeys: only keep keys that were in original externalExistingKeys
+  // or actually exist in the user's current config (mcpServers).
+  // This prevents mutateBeforeMerge from adding phantom keys (e.g., from cfg.mcp)
+  // that would incorrectly suppress ASD-managed server injection.
+  const currentMcpKeys = new Set<string>();
   const existingMcp =
     config.mcpServers && typeof config.mcpServers === "object"
       ? (config.mcpServers as Record<string, unknown>)
       : {};
+  for (const k of Object.keys(existingMcp)) {
+    currentMcpKeys.add(k);
+    currentMcpKeys.add(k.toLowerCase());
+  }
+  const originalExtKeys = new Set<string>(externalExistingKeys);
+  for (const k of extKeys) {
+    if (!originalExtKeys.has(k) && !currentMcpKeys.has(k)) {
+      extKeys.delete(k);
+    }
+  }
   config.mcpServers = mergeJsonMcpServersForHarness({
     harnessId,
     existingMcpServers: existingMcp,
@@ -902,9 +920,9 @@ export function buildCodexManagedTomlBlock(options: {
   asdCliPath?: string;
 }): string {
   const { unmanagedToml, catalog, nativeCapabilities } = options;
-  const resolvedCliPath = (
-    options.asdCliPath || path.join(getAsdRoot(), "src", "cli", "index.ts")
-  ).replaceAll("\\", "/");
+  const resolvedCliPath = escapeTomlBasicString(
+    (options.asdCliPath || path.join(getAsdRoot(), "src", "cli", "index.ts")).replaceAll("\\", "/")
+  );
 
   // Detect any [mcp_servers.<name>] already defined outside ASD fence
   const existingKeys = new Set<string>();
@@ -939,14 +957,15 @@ export function buildCodexManagedTomlBlock(options: {
     if (existingKeys.has(serverName) || existingKeys.has(lowerName)) continue;
 
     if (def.command) {
+      const escapedCommand = escapeTomlBasicString(def.command.replaceAll("\\", "/"));
       const normalizedArgs = (def.args ?? []).map((a) =>
-        `"${a.replaceAll("\\", "/")}"`
+        `"${escapeTomlBasicString(a.replaceAll("\\", "/"))}"`
       );
       blocks.push(
-        `[mcp_servers.${serverName}]\ncommand = "${def.command.replaceAll("\\", "/")}"\nargs = [${normalizedArgs.join(", ")}]`
+        `[mcp_servers.${serverName}]\ncommand = "${escapedCommand}"\nargs = [${normalizedArgs.join(", ")}]`
       );
     } else if (def.url) {
-      blocks.push(`[mcp_servers.${serverName}]\nurl = "${def.url}"`);
+      blocks.push(`[mcp_servers.${serverName}]\nurl = "${escapeTomlBasicString(def.url)}"`);
     }
   }
 

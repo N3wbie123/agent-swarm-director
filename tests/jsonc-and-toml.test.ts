@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { parseJsonc, upsertTomlFence, removeTomlFence } from "../src/core/jsonc.ts";
 import { redactSecrets } from "../src/core/redact.ts";
 import { ASD_VERSION } from "../src/core/types.ts";
+import { buildCodexManagedTomlBlock } from "../src/adapters/installer.ts";
 
 describe("jsonc.ts - parseJsonc", () => {
   test("parses valid JSON without comments", () => {
@@ -213,6 +214,108 @@ describe("jsonc.ts - TOML fence management", () => {
       relocated.indexOf('notify = ["node", "hook.js"]') < relocated.indexOf("[features]"),
       "Legacy fence below [features] must be relocated before [features]"
     );
+  });
+
+  // ============================================================================
+  // I3: TOML fence injection escaping
+  // ============================================================================
+
+  describe("I3: buildCodexManagedTomlBlock TOML escaping", () => {
+    const catalog = {
+      context7: { command: "npx", args: ["-y", "@upstash/context7-mcp"] },
+      websearch: { command: "websearch-bin" },
+    };
+    const nativeCapabilities = new Set<string>();
+
+    test("I3a: asdCliPath with double quote is escaped in notify command (TOML basic string)", () => {
+      // Path containing a double quote - should be escaped as \" in TOML basic string
+      const cliPathWithQuote = '/path/with"quote/src/cli/index.ts';
+      const result = buildCodexManagedTomlBlock({
+        unmanagedToml: "",
+        catalog,
+        nativeCapabilities,
+        asdCliPath: cliPathWithQuote,
+      });
+
+      // The notify line should have the path with escaped quote
+      assert.ok(
+        result.includes('notify = ["node", "--no-warnings", "/path/with\\"quote/src/cli/index.ts", "hook", "stop", "--harness", "codex"]'),
+        `Expected escaped quote in notify command. Got: ${result}`
+      );
+
+      // Verify the emitted TOML is parseable by checking no raw unescaped quote breaks the string
+      assert.ok(!result.includes('/path/with"quote'), "Raw unescaped quote should not appear in output");
+    });
+
+    test("I3b: asdCliPath with backslash is normalized to forward slashes in notify command", () => {
+      // Path containing backslashes (Windows-style) - normalized to forward slashes
+      const cliPathWithBackslash = "C:\\\\Users\\\\name\\\\path\\\\src\\\\cli\\\\index.ts";
+      const result = buildCodexManagedTomlBlock({
+        unmanagedToml: "",
+        catalog,
+        nativeCapabilities,
+        asdCliPath: cliPathWithBackslash,
+      });
+
+      // The notify line should have forward slashes (normalized), not backslashes
+      assert.ok(
+        result.includes('notify = ["node", "--no-warnings", "C://Users//name//path//src//cli//index.ts", "hook", "stop", "--harness", "codex"]'),
+        `Expected normalized forward slashes in notify command. Got: ${result}`
+      );
+
+      // Verify no raw backslashes remain in the path portion
+      const notifyMatch = result.match(/notify = \[([^\]]+)\]/);
+      assert.ok(notifyMatch, "notify array should exist");
+      const notifyContent = notifyMatch[1];
+      // The path should have forward slashes, not backslashes
+      assert.ok(notifyContent.includes("C://Users"), "Backslashes should be normalized to forward slashes");
+      assert.ok(!notifyContent.includes("\\\\"), "No raw backslashes should remain");
+    });
+
+    test("I3c: asdCliPath with newline is escaped as \\n in notify command", () => {
+      // Path containing a newline - should be escaped as \n in TOML basic string
+      const cliPathWithNewline = "/path/with\nnewline/src/cli/index.ts";
+      const result = buildCodexManagedTomlBlock({
+        unmanagedToml: "",
+        catalog,
+        nativeCapabilities,
+        asdCliPath: cliPathWithNewline,
+      });
+
+      // The notify line should have the newline escaped as \n
+      assert.ok(
+        result.includes('notify = ["node", "--no-warnings", "/path/with\\nnewline/src/cli/index.ts", "hook", "stop", "--harness", "codex"]'),
+        `Expected escaped newline in notify command. Got: ${result}`
+      );
+
+      // Verify no raw newline breaks the TOML string
+      assert.ok(!result.includes("/path/with\nnewline"), "Raw newline should not appear in output");
+    });
+
+    test("I3d: def.command with special chars is escaped in mcp_servers table", () => {
+      // MCP server command with special chars
+      const catalogWithSpecialCmd = {
+        "special-cmd": { command: 'cmd"with"quotes', args: ["arg1"] },
+        "special-cmd2": { command: "cmd\\with\\backslashes", args: ["arg2"] },
+      };
+      const result = buildCodexManagedTomlBlock({
+        unmanagedToml: "",
+        catalog: catalogWithSpecialCmd,
+        nativeCapabilities,
+        asdCliPath: "/normal/path/cli/index.ts",
+      });
+
+      // Check command values are escaped (quotes) and backslashes normalized
+      assert.ok(
+        result.includes('command = "cmd\\"with\\"quotes"'),
+        `Expected escaped quotes in command. Got: ${result}`
+      );
+      // Backslashes are normalized to forward slashes
+      assert.ok(
+        result.includes('command = "cmd/with/backslashes"'),
+        `Expected normalized backslashes in command. Got: ${result}`
+      );
+    });
   });
 });
 

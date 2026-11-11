@@ -30,6 +30,8 @@ import {
   syncHarnessConfigs,
   syncRepoVersionStrings,
   uninstallHarnessConfigs,
+  syncJsonMcpConfigFile,
+  mergeJsonMcpServersForHarness,
 } from "../src/adapters/installer.ts";
 import { AGENT_ROLES, ASD_VERSION, type HarnessId } from "../src/core/types.ts";
 import { ASD_SKILLS } from "../src/adapters/claude-code.ts";
@@ -966,5 +968,112 @@ describe("I2: Hash Divergence Detection & Re-merge", () => {
     } finally {
       removeTempDir(i2cHome);
     }
+  });
+});
+
+// ============================================================================
+// I4: MCP extKeys mutation fix
+// ============================================================================
+
+describe("I4: MCP extKeys mutation - mutateBeforeMerge must not add phantom keys", () => {
+  let i4Home: string;
+
+  before(() => {
+    i4Home = createTempDir("asd-i4-home-");
+  });
+
+  after(() => {
+    removeTempDir(i4Home);
+  });
+
+  test("I4a: syncJsonMcpConfigFile - mutateBeforeMerge adds keys to extKeys that don't exist in user config; ASD-managed servers should still be injected", () => {
+    const configPath = path.join(i4Home, "test-mcp.json");
+    const userConfig = {
+      mcpServers: {
+        "user-existing": { command: "user-bin" },
+      },
+    };
+    fs.writeFileSync(configPath, JSON.stringify(userConfig, null, 2), "utf8");
+
+    const catalog = {
+      "asd-core": { command: "asd-core-bin" },
+      "context7": { command: "npx", args: ["-y", "@upstash/context7-mcp"] },
+      "websearch": { command: "websearch-bin" },
+    };
+    const nativeCapabilities = new Set<string>();
+
+    // This simulates the opencode mutateBeforeMerge which adds keys from cfg.mcp to extKeys
+    // The bug: cfg.mcp might have keys that don't exist in the actual user config
+    syncJsonMcpConfigFile({
+      filePath: configPath,
+      harnessId: "opencode",
+      catalog,
+      nativeCapabilities,
+      externalExistingKeys: new Set(["user-existing"]), // Only user-existing is actually in user config
+      mutateBeforeMerge: (cfg, extKeys) => {
+        // This is the buggy behavior: adding keys from cfg.mcp (which may include catalog keys)
+        // to extKeys, even though they don't exist in the user's actual config
+        if (cfg.mcp && typeof cfg.mcp === "object") {
+          for (const k of Object.keys(cfg.mcp as Record<string, unknown>)) {
+            extKeys.add(k); // BUG: adds phantom keys
+          }
+        }
+      },
+    });
+
+    const result = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    
+    // user-existing should be preserved
+    assert.ok(result.mcpServers["user-existing"], "user-existing should be preserved");
+    assert.equal(result.mcpServers["user-existing"].command, "user-bin");
+
+    // ASD-managed servers should be injected despite mutateBeforeMerge adding phantom keys
+    // The bug causes these to be skipped because extKeys now contains them
+    assert.ok(result.mcpServers["context7"], "context7 should be injected (ASD-managed)");
+    assert.equal(result.mcpServers["context7"]._asdManaged, true);
+    assert.ok(result.mcpServers["websearch"], "websearch should be injected (ASD-managed)");
+    assert.equal(result.mcpServers["websearch"]._asdManaged, true);
+
+    // asd-core should not be injected
+    assert.equal(result.mcpServers["asd-core"], undefined);
+  });
+
+  test("I4b: mergeJsonMcpServersForHarness - trusts filtered externalExistingKeys from other config files", () => {
+    const existingMcpServers = {
+      "user-existing": { command: "user-bin" },
+    };
+    const catalog = {
+      "asd-core": { command: "asd-core-bin" },
+      "context7": { command: "npx", args: ["-y", "@upstash/context7-mcp"] },
+      "websearch": { command: "websearch-bin" },
+      "from-other-config": { command: "other-config-bin" }, // Key from another config file (e.g., opencode.jsonc)
+    };
+    const nativeCapabilities = new Set<string>();
+    // externalExistingKeys contains keys from other user config files (filtered by syncJsonMcpConfigFile)
+    const externalExistingKeys = new Set(["user-existing", "from-other-config"]);
+
+    const result = mergeJsonMcpServersForHarness({
+      harnessId: "opencode",
+      existingMcpServers,
+      catalog,
+      nativeCapabilities,
+      externalExistingKeys,
+    });
+
+    // user-existing should be preserved (exists in current config)
+    assert.ok(result["user-existing"], "user-existing should be preserved");
+    assert.equal(result["user-existing"].command, "user-bin");
+
+    // from-other-config should be skipped (exists in externalExistingKeys from other config file)
+    assert.equal(result["from-other-config"], undefined, "from-other-config should be skipped (exists in other config)");
+
+    // context7 and websearch should be injected (ASD-managed, not in externalExistingKeys)
+    assert.ok(result["context7"], "context7 should be injected");
+    assert.equal(result["context7"]._asdManaged, true);
+    assert.ok(result["websearch"], "websearch should be injected");
+    assert.equal(result["websearch"]._asdManaged, true);
+
+    // asd-core should not be injected
+    assert.equal(result["asd-core"], undefined);
   });
 });
