@@ -11,6 +11,7 @@
  */
 
 import assert from "node:assert/strict";
+import * as child_process from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,6 +19,7 @@ import { after, before, describe, test } from "node:test";
 
 import {
   autoSyncIfNeeded,
+  buildAntigravityHookSpec,
   buildCodexManagedTomlBlock,
   doctorProbe,
   generateAgentContent,
@@ -1119,13 +1121,33 @@ describe("T1.3: Subagent tools frontmatter, quoted hooks, OpenCode plugin, and r
     assert.equal(rosterMd.includes("10 standard specialist agent roles"), false);
   });
 
-  test("Antigravity hooks quote CLI paths with spaces, and OpenCode guard plugin syncs & uninstalls cleanly", async () => {
+  test("Antigravity hooks handle CLI paths with spaces safely on Windows (no Go cmd /c quote-escaping) and POSIX, and OpenCode guard plugin syncs & uninstalls cleanly", async () => {
+    // 1. Unit checks for cross-platform Antigravity hook spec generation
+    const noSpaceSpecWin = buildAntigravityHookSpec("C:\\Users\\dev\\asd-runtime\\src\\cli\\index.ts", "win32");
+    assert.equal(noSpaceSpecWin.cliArg, "C:/Users/dev/asd-runtime/src/cli/index.ts");
+    assert.equal(noSpaceSpecWin.launcherSource, null);
+    assert.equal(noSpaceSpecWin.cliArg.includes('"'), false, "Windows hook cliArg must never contain double quotes");
+
+    const spaceSpecWin = buildAntigravityHookSpec("C:\\Program Files\\ASD Runtime\\src\\cli\\index.ts", "win32");
+    assert.equal(spaceSpecWin.cliArg, "./asd-hook.mjs");
+    assert.ok(spaceSpecWin.launcherSource && spaceSpecWin.launcherSource.includes("Program%20Files"));
+    assert.equal(spaceSpecWin.cliArg.includes('"'), false, "Windows space-path hook cliArg must never contain double quotes");
+
+    const spaceSpecPosix = buildAntigravityHookSpec("/Users/dev/ASD Runtime/src/cli/index.ts", "linux");
+    assert.equal(spaceSpecPosix.cliArg, '"/Users/dev/ASD Runtime/src/cli/index.ts"');
+    assert.equal(spaceSpecPosix.launcherSource, null);
+
+    // 2. End-to-end sync & execution check with spaces in CLI path
     const spaceHome = createTempDir("asd-space-home-");
     const spaceRuntime = createTempDir("asd runtime with spaces ");
     try {
       const cliWithSpaces = path.join(spaceRuntime, "src", "cli", "index.ts");
       fs.mkdirSync(path.dirname(cliWithSpaces), { recursive: true });
-      fs.writeFileSync(cliWithSpaces, "#!/usr/bin/env node\n", "utf8");
+      fs.writeFileSync(
+        cliWithSpaces,
+        'export async function main(): Promise<number> { process.stdout.write("{}\\n"); return 0; }\n',
+        "utf8"
+      );
 
       const first = await syncHarnessConfigs({
         homeDir: spaceHome,
@@ -1134,16 +1156,35 @@ describe("T1.3: Subagent tools frontmatter, quoted hooks, OpenCode plugin, and r
       });
       assert.equal(first.status, "updated");
 
-      const hooksPath = path.join(spaceHome, ".gemini", "config", "hooks.json");
+      const geminiConfigDir = path.join(spaceHome, ".gemini", "config");
+      const hooksPath = path.join(geminiConfigDir, "hooks.json");
+      const launcherPath = path.join(geminiConfigDir, "asd-hook.mjs");
       const hooks = JSON.parse(fs.readFileSync(hooksPath, "utf8"));
       const posixCli = cliWithSpaces.replaceAll("\\", "/");
-      const preToolCmd = hooks["asd-session-tracker"].PreToolUse[0].hooks[0].command;
-      const sessionStartCmd = hooks["asd-session-tracker"].SessionStart[0].command;
-      const stopCmd = hooks["asd-session-tracker"].Stop[0].command;
+      const preToolCmd = hooks["asd-session-tracker"].PreToolUse[0].hooks[0].command as string;
+      const sessionStartCmd = hooks["asd-session-tracker"].SessionStart[0].command as string;
+      const stopCmd = hooks["asd-session-tracker"].Stop[0].command as string;
 
-      assert.ok(preToolCmd.includes(`"${posixCli}"`), `Expected quoted CLI path in PreToolUse: ${preToolCmd}`);
-      assert.ok(sessionStartCmd.includes(`"${posixCli}"`), `Expected quoted CLI path in SessionStart: ${sessionStartCmd}`);
-      assert.ok(stopCmd.includes(`"${posixCli}"`), `Expected quoted CLI path in Stop: ${stopCmd}`);
+      if (process.platform === "win32") {
+        assert.equal(preToolCmd.includes('"'), false, `Windows hook command must not contain quotes: ${preToolCmd}`);
+        assert.ok(preToolCmd.includes("./asd-hook.mjs"), `Expected ./asd-hook.mjs in PreToolUse: ${preToolCmd}`);
+        assert.ok(sessionStartCmd.includes("./asd-hook.mjs"), `Expected ./asd-hook.mjs in SessionStart: ${sessionStartCmd}`);
+        assert.ok(stopCmd.includes("./asd-hook.mjs"), `Expected ./asd-hook.mjs in Stop: ${stopCmd}`);
+        assert.ok(fs.existsSync(launcherPath), "asd-hook.mjs launcher must exist on Windows when CLI path has spaces");
+
+        // Reproduce Go exec.Command("cmd", "/c", preToolCmd) with cwd = ~/.gemini/config
+        const execRes = child_process.spawnSync("cmd", ["/c", preToolCmd], {
+          cwd: geminiConfigDir,
+          encoding: "utf8",
+          windowsHide: true,
+        });
+        assert.equal(execRes.status, 0, `cmd /c hook failed: ${execRes.stderr || execRes.stdout}`);
+        assert.equal(execRes.stdout.trim(), "{}");
+      } else {
+        assert.ok(preToolCmd.includes(`"${posixCli}"`), `Expected quoted CLI path in PreToolUse: ${preToolCmd}`);
+        assert.ok(sessionStartCmd.includes(`"${posixCli}"`), `Expected quoted CLI path in SessionStart: ${sessionStartCmd}`);
+        assert.ok(stopCmd.includes(`"${posixCli}"`), `Expected quoted CLI path in Stop: ${stopCmd}`);
+      }
 
       const ocPluginPath = path.join(spaceHome, ".config", "opencode", "plugin", "asd-guard.js");
       assert.ok(fs.existsSync(ocPluginPath), "OpenCode asd-guard.js plugin must be installed");
@@ -1166,8 +1207,9 @@ describe("T1.3: Subagent tools frontmatter, quoted hooks, OpenCode plugin, and r
       assert.equal(probe.harnesses.codex.hookCoverage?.preToolUse, "sandbox-only");
       assert.ok(probe.checks.some((c) => c.name === "hook_coverage" && c.ok));
 
-      // Surgical uninstall removes OpenCode plugin cleanly
+      // Surgical uninstall removes Antigravity launcher and OpenCode plugin cleanly
       await uninstallHarnessConfigs({ homeDir: spaceHome });
+      assert.equal(fs.existsSync(launcherPath), false, "Antigravity asd-hook.mjs launcher must be removed on uninstall");
       assert.equal(fs.existsSync(ocPluginPath), false, "OpenCode plugin must be removed on uninstall");
     } finally {
       removeTempDir(spaceHome);
