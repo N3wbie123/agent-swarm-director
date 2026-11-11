@@ -1216,4 +1216,45 @@ describe("T1.3: Subagent tools frontmatter, quoted hooks, OpenCode plugin, and r
       removeTempDir(spaceRuntime);
     }
   });
+
+  test("Claude Code settings.json and Oh-My-OpenAgent config disable AI Co-authored-by attribution and restore cleanly on uninstall", async () => {
+    const attrHome = createTempDir("asd-no-coauthor-home-");
+    try {
+      const opencodeDir = path.join(attrHome, ".config", "opencode");
+      fs.mkdirSync(opencodeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(opencodeDir, "opencode.jsonc"),
+        '{\n  "plugin": ["oh-my-openagent@latest"]\n}\n',
+        "utf8"
+      );
+
+      await syncHarnessConfigs({ homeDir: attrHome, noPath: true });
+
+      const claudeSettings = JSON.parse(
+        fs.readFileSync(path.join(attrHome, ".claude", "settings.json"), "utf8")
+      );
+      assert.equal(claudeSettings.includeCoAuthoredBy, false);
+      assert.deepEqual(claudeSettings.attribution, { commit: "", pr: "" });
+
+      const omoConfigPath = path.join(opencodeDir, "oh-my-openagent.json");
+      assert.ok(fs.existsSync(omoConfigPath), "oh-my-openagent.json must be created when plugin is configured");
+      const omoCfg = JSON.parse(fs.readFileSync(omoConfigPath, "utf8"));
+      assert.equal(omoCfg.git_master.commit_footer, false);
+      assert.equal(omoCfg.git_master.include_co_authored_by, false);
+
+      await uninstallHarnessConfigs({ homeDir: attrHome });
+      assert.equal(
+        fs.existsSync(path.join(attrHome, ".claude", "settings.json")),
+        false,
+        "Freshly created Claude settings.json must be removed on uninstall"
+      );
+      assert.equal(
+        fs.existsSync(omoConfigPath),
+        false,
+        "ASD-created oh-my-openagent.json must be removed on uninstall"
+      );
+    } finally {
+      removeTempDir(attrHome);
+    }
+  });
 });

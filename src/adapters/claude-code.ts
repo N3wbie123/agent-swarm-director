@@ -151,6 +151,15 @@ export function mergeClaudeSettings(
   ];
 
   base.hooks = hooks;
+
+  // Disable Claude Code Co-Authored-By / commit & PR footer attribution unless explicitly configured by user
+  if (base.includeCoAuthoredBy === undefined) {
+    base.includeCoAuthoredBy = false;
+  }
+  if (base.attribution === undefined) {
+    base.attribution = { commit: "", pr: "" };
+  }
+
   return base;
 }
 

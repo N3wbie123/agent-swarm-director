@@ -723,6 +723,7 @@ function computeConfigHash(
     hash.update(asdCliPath.replaceAll("\\", "/"));
     hash.update(`ag-hook-v2:${buildAntigravityHookSpec(asdCliPath).cliArg}`);
   }
+  hash.update("no-ai-coauthor-v1");
 
   let parsedRouting: RoutingConfig | null = null;
   const localRoutingPath = projectRoot
@@ -1385,6 +1386,46 @@ export async function syncHarnessConfigs(
         });
         written.push(opencodeJsonPath);
 
+        // If Oh-My-OpenAgent / Oh-My-OpenCode plugin is configured, disable Sisyphus git_master Co-authored-by footers
+        const omoConfigPath = path.join(opencodeDir, "oh-my-openagent.json");
+        const opencodeJsoncRaw = fs.existsSync(opencodeJsoncPath)
+          ? fs.readFileSync(opencodeJsoncPath, "utf8")
+          : "";
+        const opencodeJsonRaw = fs.existsSync(opencodeJsonPath)
+          ? fs.readFileSync(opencodeJsonPath, "utf8")
+          : "";
+        const hasOhMyOpenAgent =
+          fs.existsSync(omoConfigPath) ||
+          /oh-my-open(?:agent|code)/i.test(opencodeJsoncRaw) ||
+          /oh-my-open(?:agent|code)/i.test(opencodeJsonRaw);
+        if (hasOhMyOpenAgent) {
+          let omoCfg: Record<string, unknown> = {};
+          if (fs.existsSync(omoConfigPath)) {
+            try {
+              const parsedOmo = parseJsonc(fs.readFileSync(omoConfigPath, "utf8"));
+              if (parsedOmo && typeof parsedOmo === "object" && !Array.isArray(parsedOmo)) {
+                omoCfg = { ...(parsedOmo as Record<string, unknown>) };
+              }
+            } catch {
+              omoCfg = {};
+            }
+          }
+          const existingGitMaster =
+            omoCfg.git_master && typeof omoCfg.git_master === "object" && !Array.isArray(omoCfg.git_master)
+              ? { ...(omoCfg.git_master as Record<string, unknown>) }
+              : {};
+          if (existingGitMaster.commit_footer === undefined) {
+            existingGitMaster.commit_footer = false;
+          }
+          if (existingGitMaster.include_co_authored_by === undefined) {
+            existingGitMaster.include_co_authored_by = false;
+          }
+          omoCfg.git_master = existingGitMaster;
+          backupUserFile(omoConfigPath, JSON.stringify(omoCfg, null, 2) + "\n");
+          safeWriteJson(omoConfigPath, omoCfg);
+          written.push(omoConfigPath);
+        }
+
         break;
       }
 
@@ -1992,6 +2033,35 @@ export async function uninstallHarnessConfigs(
         }
       }
 
+      let preExistingClaudeCfg: Record<string, unknown> | null = null;
+      const claudeSettingsBackup = `${claudeSettings}.asd-backup`;
+      if (fs.existsSync(claudeSettingsBackup)) {
+        try {
+          preExistingClaudeCfg = JSON.parse(
+            fs.readFileSync(claudeSettingsBackup, "utf8")
+          ) as Record<string, unknown>;
+        } catch {
+          preExistingClaudeCfg = null;
+        }
+      }
+      if (
+        (!preExistingClaudeCfg || preExistingClaudeCfg.includeCoAuthoredBy === undefined) &&
+        cfg.includeCoAuthoredBy === false
+      ) {
+        delete cfg.includeCoAuthoredBy;
+      }
+      if (
+        (!preExistingClaudeCfg || preExistingClaudeCfg.attribution === undefined) &&
+        cfg.attribution &&
+        typeof cfg.attribution === "object" &&
+        !Array.isArray(cfg.attribution) &&
+        (cfg.attribution as Record<string, unknown>).commit === "" &&
+        (cfg.attribution as Record<string, unknown>).pr === "" &&
+        Object.keys(cfg.attribution as Record<string, unknown>).length === 2
+      ) {
+        delete cfg.attribution;
+      }
+
       removeBackupFile(claudeSettings);
       if (Object.keys(cfg).length === 0) {
         removeFile(claudeSettings, "claude-code");
@@ -2084,6 +2154,37 @@ export async function uninstallHarnessConfigs(
       restoredFiles.push(opencodeJsoncFile);
       harnessStatus.opencode.restored.push(opencodeJsoncFile);
     }
+  }
+  const omoConfigFile = path.join(opencodeDir, "oh-my-openagent.json");
+  if (fs.existsSync(omoConfigFile)) {
+    if (fs.existsSync(`${omoConfigFile}.asd-backup`)) {
+      const result = smartRestoreUserBackup(omoConfigFile);
+      if (result !== "no-backup") {
+        restoredFiles.push(omoConfigFile);
+        harnessStatus.opencode.restored.push(omoConfigFile);
+      }
+    } else {
+      try {
+        const omoParsed = JSON.parse(fs.readFileSync(omoConfigFile, "utf8")) as Record<string, unknown>;
+        if (omoParsed.git_master && typeof omoParsed.git_master === "object" && !Array.isArray(omoParsed.git_master)) {
+          const gm = omoParsed.git_master as Record<string, unknown>;
+          if (gm.commit_footer === false) delete gm.commit_footer;
+          if (gm.include_co_authored_by === false) delete gm.include_co_authored_by;
+          if (Object.keys(gm).length === 0) delete omoParsed.git_master;
+        }
+        if (Object.keys(omoParsed).length === 0) {
+          removeFile(omoConfigFile, "opencode");
+        } else {
+          safeWriteJson(omoConfigFile, omoParsed);
+          restoredFiles.push(omoConfigFile);
+          harnessStatus.opencode.restored.push(omoConfigFile);
+        }
+      } catch {
+        removeFile(omoConfigFile, "opencode");
+      }
+    }
+  } else {
+    removeBackupFile(omoConfigFile);
   }
 
   // 3. Codex

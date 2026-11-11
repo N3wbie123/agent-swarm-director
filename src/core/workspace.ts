@@ -243,18 +243,138 @@ export function runGit(
 }
 
 /**
+ * Strips AI / sub-harness commit attribution lines (`Co-authored-by:`,
+ * `Generated with [Claude Code]`, `Ultraworked with [Sisyphus]`) so commits
+ * are attributed solely to the repository owner.
+ */
+export function stripAiAttributionTrailers(message: string): string {
+  return message
+    .split(/\r?\n/)
+    .filter(
+      (line) =>
+        !/^\s*co-authored-by\s*:/i.test(line) &&
+        !/generated\s+with\s+\[?claude(?:\s+code)?\]?/i.test(line) &&
+        !/ultraworked\s+with\s+\[?sisyphus\]?/i.test(line)
+    )
+    .join("\n")
+    .trim();
+}
+
+/**
  * Ensures git local config has user.name and user.email set so automated
  * commits and merges never fail with "Author identity unknown" in headless
- * CI or fresh test directories. Does not overwrite existing identities.
+ * CI or fresh test directories. Inherits identity from fallbackRepoRoot when
+ * provided, and does not overwrite existing identities.
  */
-export function ensureGitUserIdentity(cwd: string): void {
+export function ensureGitUserIdentity(
+  cwd: string,
+  fallbackRepoRoot?: string
+): void {
   const nameRes = runGit(["config", "user.name"], { cwd });
   if (!nameRes.stdout.trim()) {
-    runGit(["config", "user.name", "ASD Agent"], { cwd });
+    const fallbackName = fallbackRepoRoot
+      ? runGit(["config", "user.name"], { cwd: fallbackRepoRoot }).stdout.trim()
+      : "";
+    runGit(["config", "user.name", fallbackName || "ASD Agent"], { cwd });
   }
   const emailRes = runGit(["config", "user.email"], { cwd });
   if (!emailRes.stdout.trim()) {
-    runGit(["config", "user.email", "asd@local"], { cwd });
+    const fallbackEmail = fallbackRepoRoot
+      ? runGit(["config", "user.email"], { cwd: fallbackRepoRoot }).stdout.trim()
+      : "";
+    runGit(["config", "user.email", fallbackEmail || "asd@local"], { cwd });
+  }
+}
+
+/**
+ * Rewrites any intermediate subagent commits inside a worktree (`mainHead..HEAD`)
+ * that contain `Co-authored-by:` / AI footers or foreign author/committer identities
+ * so `--no-ff` merges never leak sub-harness contributor attribution into main.
+ */
+function sanitizeWorktreeCommitsForOwner(
+  projectRoot: string,
+  wtPath: string,
+  cleanCommitMessage: string
+): void {
+  const ownerName = runGit(["config", "user.name"], { cwd: projectRoot }).stdout.trim();
+  const ownerEmail = runGit(["config", "user.email"], { cwd: projectRoot }).stdout.trim();
+  const mainHead = runGit(["rev-parse", "HEAD"], { cwd: projectRoot }).stdout.trim();
+  if (!mainHead || !ownerName || !ownerEmail) return;
+
+  const logRes = runGit(
+    ["log", `${mainHead}..HEAD`, "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e"],
+    { cwd: wtPath }
+  );
+  if (logRes.exitCode !== 0 || !logRes.stdout.trim()) return;
+
+  const entries = logRes.stdout
+    .split("\x1e")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (entries.length === 0) return;
+
+  let hasMergeCommit = false;
+  let needsSanitize = false;
+  for (const entry of entries) {
+    const [sha, parents = "", an = "", ae = "", cn = "", ce = "", body = ""] =
+      entry.split("\x1f");
+    void sha;
+    if (parents.trim().split(/\s+/).filter(Boolean).length > 1) {
+      hasMergeCommit = true;
+    }
+    if (
+      an !== ownerName ||
+      ae !== ownerEmail ||
+      cn !== ownerName ||
+      ce !== ownerEmail ||
+      stripAiAttributionTrailers(body) !== body.trim()
+    ) {
+      needsSanitize = true;
+    }
+  }
+
+  if (!needsSanitize) return;
+
+  const authorOverride = [
+    "-c",
+    `user.name=${ownerName}`,
+    "-c",
+    `user.email=${ownerEmail}`,
+  ];
+
+  if (!hasMergeCommit) {
+    const mergeBase = runGit(["merge-base", mainHead, "HEAD"], {
+      cwd: wtPath,
+    }).stdout.trim();
+    if (!mergeBase) return;
+    const resetRes = runGit(["reset", "--soft", mergeBase], { cwd: wtPath });
+    if (resetRes.exitCode === 0) {
+      runGit(
+        [
+          ...authorOverride,
+          "commit",
+          "-m",
+          stripAiAttributionTrailers(cleanCommitMessage),
+          "--no-verify",
+        ],
+        { cwd: wtPath }
+      );
+    }
+  } else {
+    const headBody = runGit(["log", "-1", "--format=%B"], { cwd: wtPath }).stdout;
+    const cleanedHead = stripAiAttributionTrailers(headBody) || stripAiAttributionTrailers(cleanCommitMessage);
+    runGit(
+      [
+        ...authorOverride,
+        "commit",
+        "--amend",
+        "--reset-author",
+        "-m",
+        cleanedHead,
+        "--no-verify",
+      ],
+      { cwd: wtPath }
+    );
   }
 }
 
@@ -878,7 +998,12 @@ export function verifyAndCommitLightTask(
           };
         }
         const commitRes = runGit(
-          ["commit", "-m", `asd(${taskId}): ${title}`, "--no-verify"],
+          [
+            "commit",
+            "-m",
+            `asd(${taskId}): ${stripAiAttributionTrailers(title)}`,
+            "--no-verify",
+          ],
           { cwd: projectRoot }
         );
         if (commitRes.exitCode !== 0) {
@@ -964,7 +1089,7 @@ export function createTaskWorktree(
   }
 
   // Worktree inherits git user identity
-  ensureGitUserIdentity(wtPath);
+  ensureGitUserIdentity(wtPath, projectRoot);
 
   // Link node_modules junction if present in projectRoot
   const rootNm = path.join(projectRoot, "node_modules");
@@ -1224,7 +1349,7 @@ export async function verifyAndMergeHeavyTask(
   const branchName = options.branchName ?? `asd/wt-${turn}-${taskId}`;
   const wtNm = path.join(wtPath, "node_modules");
 
-  ensureGitUserIdentity(wtPath);
+  ensureGitUserIdentity(wtPath, projectRoot);
 
   // 1. Boundary & Secret scan inside worktree (working tree union committed worktree changes)
   const workingChanges = getChangedFiles(wtPath);
@@ -1288,9 +1413,10 @@ export async function verifyAndMergeHeavyTask(
   unlinkNodeModulesJunction(wtNm);
 
   // 5. Commit inside worktree
+  const cleanTaskCommitMsg = `asd(${taskId}): ${stripAiAttributionTrailers(title)}`;
   runGit(["add", "-A"], { cwd: wtPath });
   const commitRes = runGit(
-    ["commit", "-m", `asd(${taskId}): ${title}`, "--no-verify"],
+    ["commit", "-m", cleanTaskCommitMsg, "--no-verify"],
     { cwd: wtPath }
   );
   if (commitRes.exitCode !== 0) {
@@ -1307,6 +1433,9 @@ export async function verifyAndMergeHeavyTask(
       };
     }
   }
+
+  // Strip any sub-harness Co-authored-by trailers or foreign authors committed inside wtPath
+  sanitizeWorktreeCommitsForOwner(projectRoot, wtPath, cleanTaskCommitMsg);
 
   // 6. Mutex-serialized merge into main branch (2-stage: process mutex + .asd/merge.lock)
   return await withMergeLock(
@@ -2126,7 +2255,7 @@ export function recoverOrphanedTasks(input: {
         projectRoot,
         `recoverOrphanedTasks:promote:${t.task_id}`,
         (): { status: "done" | "merge_conflict"; commitSha?: string } => {
-          ensureGitUserIdentity(wtPath);
+          ensureGitUserIdentity(wtPath, projectRoot);
           ensureGitUserIdentity(projectRoot);
           cleanStaleWorktreeLock(wtPath, 0);
           unlinkNodeModulesJunction(path.join(wtPath, "node_modules"));

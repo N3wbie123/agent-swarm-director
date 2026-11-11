@@ -683,6 +683,56 @@ function isOfficialAsdOrCommitMetadataSegment(seg: string): boolean {
   return false;
 }
 
+/**
+ * Detects AI / sub-harness commit attribution (`Co-authored-by:`, `--author=`,
+ * `GIT_AUTHOR_*` / `GIT_COMMITTER_*` overrides, or AI commit footers) inside
+ * `git commit`, `git merge`, or `git cherry-pick` shell segments so sub-harnesses
+ * (such as Claude Code or OpenCode / Oh-My-OpenAgent `sisyphus-dev-ai`) cannot
+ * pollute repository contributor lists.
+ */
+export function hasAiCommitAttribution(cmd: string): boolean {
+  if (!cmd || !/\bgit\b/i.test(cmd)) return false;
+
+  const segments = cmd.split(/\s*(?:&&|\|\||;|\|)\s*/);
+  for (const seg of segments) {
+    const trimmed = seg.trim();
+    if (!trimmed) continue;
+
+    const isGitCommitOrMerge =
+      /(?:^|\s)git(?:\s+-[^\s]+(?:\s+[^\s]+)?)*\s+(?:commit|merge|cherry-pick)\b/i.test(
+        trimmed
+      );
+    if (!isGitCommitOrMerge) continue;
+
+    // 1. Any Co-authored-by trailer injected into git commit / merge message
+    if (/co-authored-by\s*:/i.test(trimmed)) {
+      return true;
+    }
+
+    // 2. --author override or GIT_AUTHOR / GIT_COMMITTER env vars pointing to AI bots
+    if (
+      /--author(?:\s+|=)['"]?[^'"]*?(?:sisyphus|claude|anthropic|opencode|openagent|cursor|copilot|codex|gemini|asd\s*agent|asd@local)/i.test(
+        trimmed
+      ) ||
+      /\bGIT_(?:AUTHOR|COMMITTER)_(?:NAME|EMAIL)\s*=\s*['"]?[^'"\s]*?(?:sisyphus|claude|anthropic|opencode|openagent|cursor|copilot|codex|gemini|asd)/i.test(
+        trimmed
+      )
+    ) {
+      return true;
+    }
+
+    // 3. Standard AI commit footers (Claude Code / Oh-My-OpenAgent Sisyphus)
+    if (
+      /generated\s+with\s+\[?claude(?:\s+code)?\]?/i.test(trimmed) ||
+      /ultraworked\s+with\s+\[?sisyphus\]?/i.test(trimmed)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function isBlockedMainAsdCommand(cmd: string): boolean {
   const sanitized = stripBenignAsdExclusions(cmd);
   const lower = sanitized.toLowerCase();
@@ -1054,6 +1104,16 @@ export function evaluatePreToolUse(
       };
     }
 
+    // Block AI / sub-harness Co-authored-by trailers and --author overrides on both host and subagent
+    if (hasAiCommitAttribution(cmd)) {
+      return {
+        allowed: false,
+        reason: formatPolicyDenyReason(
+          "Bash command blocked: Co-authored-by trailers and AI --author / footer attribution in git commit/merge are forbidden. Re-run git commit without Co-authored-by, AI footers, or --author so commits remain attributed solely to the repository owner."
+        ),
+      };
+    }
+
     if (isSubagent) {
       const cmdUnquoted = cmdLower.replace(/['"`]/g, "");
       if (
@@ -1091,17 +1151,19 @@ export function evaluatePreToolUse(
           ),
         };
       }
-      // Block destructive / boundary-escaping file commands (rm, mv, cp, patch, git checkout/restore/apply)
+      // Block destructive / boundary-escaping file commands and direct subagent git history mutations
       if (
         /\b(?:rm|rmdir|del|erase|mv|move|cp|copy|ren|rename|patch|remove-item|move-item|copy-item|rename-item)\b/i.test(
           cmd
         ) ||
-        /\bgit\s+(?:checkout|restore|apply|am|clean|reset|stash)\b/i.test(cmd)
+        /\bgit(?:\s+-[^\s]+(?:\s+[^\s]+)?)*\s+(?:checkout|restore|apply|am|clean|reset|stash|commit|push|merge|rebase|cherry-pick|tag)\b/i.test(
+          cmd
+        )
       ) {
         return {
           allowed: false,
           reason: formatPolicyDenyReason(
-            "Bash command blocked for subagent: destructive or file-mutating shell command (rm, del, mv, cp, patch, git checkout/restore/apply, Remove-Item) is forbidden"
+            "Bash command blocked for subagent: destructive, file-mutating, or git-history-mutating shell command (rm, del, mv, cp, patch, git commit/push/merge/rebase/checkout/restore/apply, Remove-Item) is forbidden"
           ),
         };
       }

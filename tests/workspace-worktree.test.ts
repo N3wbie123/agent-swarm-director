@@ -1070,4 +1070,48 @@ describe("W4: createTaskWorktree junction creation failure warning", () => {
       console.warn = originalWarn;
     }
   });
+
+  test("verifyAndMergeHeavyTask strips sub-harness Co-authored-by trailers and foreign authors from worktree commits", async () => {
+    const root = makeTmpDir("asd-strip-coauthor-");
+    initGitRepo(root);
+    runGit(["config", "user.name", "N3wbie123"], { cwd: root });
+    runGit(["config", "user.email", "85443999+N3wbie123@users.noreply.github.com"], { cwd: root });
+    prepareBaseline(root);
+
+    const wt = createTaskWorktree(root, 1, "T1.1");
+    fs.mkdirSync(path.join(wt.wtPath, "src"), { recursive: true });
+    fs.writeFileSync(path.join(wt.wtPath, "src", "clean.ts"), "export const ok = 1;\n", "utf8");
+
+    // Simulate a sub-harness committing inside the worktree with foreign author + Co-authored-by trailers
+    runGit(["add", "src/clean.ts"], { cwd: wt.wtPath });
+    runGit(
+      [
+        "-c",
+        "user.name=claude",
+        "-c",
+        "user.email=noreply@anthropic.com",
+        "commit",
+        "-m",
+        "feat: subagent commit\n\nCo-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\nCo-Authored-By: Claude <noreply@anthropic.com>",
+        "--no-verify",
+      ],
+      { cwd: wt.wtPath }
+    );
+
+    const res = await verifyAndMergeHeavyTask({
+      projectRoot: root,
+      turn: 1,
+      taskId: "T1.1",
+      title: "Clean owner attribution",
+      wtPath: wt.wtPath,
+      branchName: wt.branchName,
+      allowedFiles: ["src/clean.ts"],
+      verifyCmd: 'node -e "process.exit(0)"',
+    });
+    assert.equal(res.verified, true);
+
+    const allLog = runGit(["log", "--format=%an|%ae|%cn|%ce|%B"], { cwd: root }).stdout;
+    assert.equal(/sisyphus-dev-ai|noreply@anthropic\.com|co-authored-by/i.test(allLog), false, `Expected zero AI attribution in merged history:\n${allLog}`);
+    assert.ok(allLog.includes("N3wbie123|85443999+N3wbie123@users.noreply.github.com"));
+  });
 });

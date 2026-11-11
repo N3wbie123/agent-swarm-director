@@ -750,5 +750,28 @@ describe("T2.2 evasion gap closures", () => {
     for (const p of [".npmrc", ".netrc", "certs/cert.pfx", "certs/bundle.p12", "config/credentials.json", ".ssh/id_dsa"]) {
       assert.equal(checkProtectedPath(p).protected, true, `Expected protected path: ${p}`);
     }
+
+    // Subagent cannot directly commit/push/merge/rebase
+    for (const gitMut of [
+      "git commit -m 'subagent direct commit'",
+      "git push origin main",
+      "git merge feature",
+    ]) {
+      const res = evaluatePreToolUse({ tool: "bash", command: gitMut }, undefined, subEnv);
+      assert.equal(res.allowed, false, `Expected subagent git history mutation to be blocked: ${gitMut}`);
+    }
+
+    // Main session & subagent block AI Co-authored-by / --author / AI commit footers
+    const mainEnv = { ASD_PROJECT_ROOT: rootDir };
+    for (const aiCommitCmd of [
+      'git commit -m "feat: add x\n\nCo-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>"',
+      'git commit -m "fix: bug\n\nCo-Authored-By: Claude <noreply@anthropic.com>"',
+      'git commit --author="Claude <noreply@anthropic.com>" -m "fix"',
+      'git commit -m "feat: x\n\nGenerated with [Claude Code]"',
+      'git commit -m "feat: x\n\nUltraworked with [Sisyphus]"',
+    ]) {
+      const res = evaluatePreToolUse({ tool: "bash", command: aiCommitCmd }, undefined, mainEnv);
+      assert.equal(res.allowed, false, `Expected AI attribution commit to be blocked: ${aiCommitCmd}`);
+    }
   });
 });
