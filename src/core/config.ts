@@ -320,7 +320,14 @@ function getUpdateCachePath(homeDir?: string): string {
   return path.join(home, ".asd", "state", "update-check.json");
 }
 
+export function isUpdateCheckDisabled(explicitDisable?: boolean): boolean {
+  if (explicitDisable) return true;
+  const raw = (process.env.ASD_NO_UPDATE_CHECK || "").trim();
+  return /^(?:1|true|yes)$/i.test(raw);
+}
+
 export function readCachedUpdateNotice(homeDir?: string): UpdateCheckNotice | null {
+  if (isUpdateCheckDisabled()) return null;
   try {
     const cachePath = getUpdateCachePath(homeDir);
     if (!fs.existsSync(cachePath)) return null;
@@ -348,11 +355,19 @@ export async function checkForRemoteUpdate(options?: {
   force?: boolean;
   timeoutMs?: number;
   remoteUrl?: string;
+  disableUpdateCheck?: boolean;
 }): Promise<{
   currentVersion: string;
   latestVersion: string | null;
   updateAvailable: boolean;
 }> {
+  if (isUpdateCheckDisabled(options?.disableUpdateCheck)) {
+    return {
+      currentVersion: ASD_VERSION,
+      latestVersion: null,
+      updateAvailable: false,
+    };
+  }
   const cached = readCachedUpdateNotice(options?.homeDir);
   if (
     !options?.force &&

@@ -46,10 +46,13 @@ import { getAdapter } from "../adapters/registry.ts";
 import {
   checkForRemoteUpdate,
   formatTerminalUpdateBanner,
+  loadRoutingConfig,
   resolveAsdPaths,
 } from "../core/config.ts";
 import {
+  migrateLegacyDatabases,
   openProjectDb,
+  type MigrateLegacyDbResult,
   type SessionRow,
   type SqliteDriver,
   type TaskRow,
@@ -61,9 +64,11 @@ import {
   type PreToolUsePayload,
   type StopHookPayload,
 } from "../core/policy.ts";
+import { redactSecrets } from "../core/redact.ts";
 import { getForegroundSessionId, renderProgressBoard } from "../core/render.ts";
 import {
   ASD_VERSION,
+  type AgentRole,
   type HarnessId,
 } from "../core/types.ts";
 import {
@@ -88,6 +93,9 @@ export interface CliArgs {
     json?: boolean;
     pop?: boolean;
     all?: boolean;
+    purgeOrphans?: boolean;
+    cleanLegacy?: boolean;
+    noUpdateCheck?: boolean;
     help?: boolean;
     version?: boolean;
     noPath?: boolean;
@@ -100,6 +108,7 @@ export interface CliArgs {
     harness?: string;
     payload?: string;
     file?: string;
+    output?: string;
     projectRoot?: string;
     port?: number;
     session?: string;
@@ -121,12 +130,83 @@ export interface CliArgs {
     count?: number;
   };
   rest: string[];
+  parseError?: string;
+}
+
+const VALUE_OPTIONS = new Set([
+  "--home",
+  "--harness",
+  "--payload",
+  "--file",
+  "--output",
+  "-o",
+  "--session",
+  "--session-id",
+  "--task",
+  "--task-id",
+  "--turn",
+  "--mode",
+  "--action",
+  "--title",
+  "--tasks",
+  "--topic",
+  "--proposal",
+  "--proposal-file",
+  "--summary",
+  "--files",
+  "--harnesses",
+  "--roles",
+  "--models",
+  "--count",
+  "--cmd",
+  "--verify-cmd",
+  "--project-root",
+  "--projectRoot",
+  "--port",
+]);
+
+function parseStrictInt(raw: string | undefined): number | null {
+  if (raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (!/^-?\d+$/.test(trimmed)) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function detectFirstCommandHint(args: string[]): string {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--") {
+      return args[i + 1] || "";
+    }
+    if (VALUE_OPTIONS.has(arg)) {
+      i++;
+      continue;
+    }
+    if (arg === "-p") {
+      const peek = args[i + 1];
+      if (peek && /^\d+$/.test(peek)) {
+        i++;
+      }
+      continue;
+    }
+    if (arg.startsWith("-")) continue;
+    return arg;
+  }
+  return "";
 }
 
 export function parseCliArgs(args: string[]): CliArgs {
   const flags: CliArgs["flags"] = {};
   const options: CliArgs["options"] = {};
   const positional: string[] = [];
+  let parseError: string | undefined;
+
+  const setError = (msg: string) => {
+    if (!parseError) parseError = msg;
+  };
+
+  const firstCommand = detectFirstCommandHint(args);
 
   const readOptVal = (arg: string, prefix: string, nextIdx: () => string | undefined): string | undefined => {
     if (arg === prefix) return nextIdx();
@@ -137,7 +217,10 @@ export function parseCliArgs(args: string[]): CliArgs {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     const next = () => args[++i];
-    if (arg === "--help" || arg === "-h") {
+    if (arg === "--") {
+      positional.push(...args.slice(i + 1));
+      break;
+    } else if (arg === "--help" || arg === "-h") {
       flags.help = true;
     } else if (arg === "--version" || arg === "-v") {
       flags.version = true;
@@ -149,14 +232,36 @@ export function parseCliArgs(args: string[]): CliArgs {
       flags.pop = true;
     } else if (arg === "--all") {
       flags.all = true;
+    } else if (arg === "--purge-orphans") {
+      flags.purgeOrphans = true;
+    } else if (arg === "--clean-legacy") {
+      flags.cleanLegacy = true;
+    } else if (arg === "--no-update-check") {
+      flags.noUpdateCheck = true;
     } else if (arg === "--no-path" || arg === "--noPath") {
       flags.noPath = true;
     } else if (arg === "--from-markdown" || arg === "--from-md") {
       flags.fromMarkdown = true;
     } else if (arg === "--diff") {
       flags.diff = true;
-    } else if (arg === "--print" || arg === "-p") {
+    } else if (arg === "--print") {
       flags.print = true;
+    } else if (arg === "-p" || arg.startsWith("-p=")) {
+      const inlinePort = arg.startsWith("-p=") ? arg.substring(3) : undefined;
+      const isPortCmd = firstCommand === "ui" || firstCommand === "dashboard";
+      const isPrintCmd = firstCommand === "resume" || firstCommand === "handoff";
+      const peek = args[i + 1];
+      if (inlinePort !== undefined || isPortCmd || (!isPrintCmd && peek !== undefined && /^\d+$/.test(peek))) {
+        const rawPort = inlinePort !== undefined ? inlinePort : next();
+        const p = parseStrictInt(rawPort);
+        if (p === null || p < 0 || p > 65535) {
+          setError(`Invalid --port value '${rawPort ?? ""}': expected integer between 0 and 65535.`);
+        } else {
+          options.port = p;
+        }
+      } else {
+        flags.print = true;
+      }
     } else if (arg === "--home" || arg.startsWith("--home=")) {
       options.home = readOptVal(arg, "--home", next);
     } else if (arg === "--harness" || arg.startsWith("--harness=")) {
@@ -165,13 +270,20 @@ export function parseCliArgs(args: string[]): CliArgs {
       options.payload = readOptVal(arg, "--payload", next);
     } else if (arg === "--file" || arg.startsWith("--file=")) {
       options.file = readOptVal(arg, "--file", next);
+    } else if (arg === "--output" || arg.startsWith("--output=") || arg === "-o" || arg.startsWith("-o=")) {
+      options.output = readOptVal(arg, arg.startsWith("-o") ? "-o" : "--output", next);
     } else if (arg === "--session" || arg.startsWith("--session=") || arg === "--session-id" || arg.startsWith("--session-id=")) {
       options.session = readOptVal(arg, arg.startsWith("--session-id") ? "--session-id" : "--session", next);
     } else if (arg === "--task" || arg.startsWith("--task=") || arg === "--task-id" || arg.startsWith("--task-id=")) {
       options.task = readOptVal(arg, arg.startsWith("--task-id") ? "--task-id" : "--task", next);
     } else if (arg === "--turn" || arg.startsWith("--turn=")) {
-      const t = Number.parseInt(readOptVal(arg, "--turn", next) || "", 10);
-      if (Number.isFinite(t)) options.turn = t;
+      const rawTurn = readOptVal(arg, "--turn", next);
+      const t = parseStrictInt(rawTurn);
+      if (t === null || t < 1) {
+        setError(`Invalid --turn value '${rawTurn ?? ""}': expected positive integer (>= 1).`);
+      } else {
+        options.turn = t;
+      }
     } else if (arg === "--mode" || arg.startsWith("--mode=")) {
       options.mode = readOptVal(arg, "--mode", next);
     } else if (arg === "--action" || arg.startsWith("--action=")) {
@@ -197,8 +309,13 @@ export function parseCliArgs(args: string[]): CliArgs {
     } else if (arg === "--models" || arg.startsWith("--models=")) {
       options.models = readOptVal(arg, "--models", next);
     } else if (arg === "--count" || arg.startsWith("--count=")) {
-      const c = Number.parseInt(readOptVal(arg, "--count", next) || "", 10);
-      if (Number.isFinite(c) && c > 0) options.count = c;
+      const rawCount = readOptVal(arg, "--count", next);
+      const c = parseStrictInt(rawCount);
+      if (c === null || c < 1) {
+        setError(`Invalid --count value '${rawCount ?? ""}': expected positive integer (>= 1).`);
+      } else {
+        options.count = c;
+      }
     } else if (arg === "--cmd" || arg.startsWith("--cmd=") || arg === "--verify-cmd" || arg.startsWith("--verify-cmd=")) {
       options.cmd = readOptVal(arg, arg.startsWith("--verify-cmd") ? "--verify-cmd" : "--cmd", next);
     } else if (arg === "--project-root" || arg === "--projectRoot") {
@@ -209,14 +326,16 @@ export function parseCliArgs(args: string[]): CliArgs {
     ) {
       const idx = arg.indexOf("=");
       options.projectRoot = arg.substring(idx + 1);
-    } else if (arg === "--port" || arg === "-p") {
-      const p = Number.parseInt(next() || "", 10);
-      if (Number.isFinite(p)) options.port = p;
-    } else if (arg.startsWith("--port=")) {
-      const p = Number.parseInt(arg.substring("--port=".length), 10);
-      if (Number.isFinite(p)) options.port = p;
-    } else if (arg.startsWith("-")) {
-      // unrecognized flag; ignore
+    } else if (arg === "--port" || arg.startsWith("--port=")) {
+      const rawPort = readOptVal(arg, "--port", next);
+      const p = parseStrictInt(rawPort);
+      if (p === null || p < 0 || p > 65535) {
+        setError(`Invalid --port value '${rawPort ?? ""}': expected integer between 0 and 65535.`);
+      } else {
+        options.port = p;
+      }
+    } else if (arg.startsWith("-") && arg !== "-") {
+      setError(`Unknown flag: ${arg}`);
     } else {
       positional.push(arg);
     }
@@ -226,7 +345,7 @@ export function parseCliArgs(args: string[]): CliArgs {
   const subcommand = positional[1];
   const rest = positional.slice(2);
 
-  return { command, subcommand, flags, options, rest };
+  return { command, subcommand, flags, options, rest, ...(parseError ? { parseError } : {}) };
 }
 
 // ============================================================================
@@ -369,6 +488,7 @@ export interface CleanResult {
 export function runAsdClean(options?: {
   pop?: boolean;
   all?: boolean;
+  purgeOrphans?: boolean;
   projectRoot?: string;
   homeDir?: string;
 }): CleanResult {
@@ -468,8 +588,8 @@ export function runAsdClean(options?: {
     // ignore
   }
 
-  // 2c. Purge orphaned test/non-existent sessions from global SQLite DB
-  {
+  // 2c. Purge cross-project orphaned sessions ONLY when --purge-orphans is explicitly set
+  if (options?.purgeOrphans) {
     let db: SqliteDriver | undefined;
     try {
       const paths = resolveAsdPaths(projectRoot, homeDir);
@@ -577,6 +697,224 @@ export function runAsdClean(options?: {
 }
 
 // ============================================================================
+// Safe Interactive Resume Spawner & Session Handoff / Legacy DB Migration
+// ============================================================================
+
+const UNSAFE_RESUME_METACHARS = /[&|;<>`^$%\r\n\0"]/;
+
+export function validateSafeResumeArgs(
+  command: string,
+  args: string[]
+): { ok: boolean; reason?: string } {
+  if (!command || UNSAFE_RESUME_METACHARS.test(command)) {
+    return {
+      ok: false,
+      reason: `Unsafe characters detected in resume binary '${command}'`,
+    };
+  }
+  for (const arg of args) {
+    if (UNSAFE_RESUME_METACHARS.test(arg)) {
+      return {
+        ok: false,
+        reason: `Unsafe shell metacharacters detected in resume argument '${arg}'`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+function resolveWindowsExecutable(command: string): string | null {
+  if (path.isAbsolute(command) && fs.existsSync(command)) {
+    return command;
+  }
+  const pathDirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const exts = (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM")
+    .split(";")
+    .filter(Boolean);
+  const hasExt = path.extname(command).length > 0;
+  for (const dir of pathDirs) {
+    if (hasExt) {
+      const full = path.join(dir, command);
+      if (fs.existsSync(full)) return full;
+    } else {
+      for (const ext of exts) {
+        const full = path.join(dir, `${command}${ext}`);
+        if (fs.existsSync(full)) return full;
+        const lowerFull = path.join(dir, `${command}${ext.toLowerCase()}`);
+        if (fs.existsSync(lowerFull)) return lowerFull;
+      }
+    }
+  }
+  return null;
+}
+
+export function spawnInteractiveResume(
+  command: string,
+  args: string[],
+  cwd: string,
+  platform: NodeJS.Platform = process.platform
+): { status: number | null; error?: Error } {
+  const check = validateSafeResumeArgs(command, args);
+  if (!check.ok) {
+    const err = new Error(check.reason || "Unsafe resume arguments") as Error & {
+      code?: string;
+    };
+    err.code = "UNSAFE_RESUME_ARGS";
+    throw err;
+  }
+
+  if (platform !== "win32") {
+    const child = child_process.spawnSync(command, args, {
+      cwd,
+      stdio: "inherit",
+      shell: false,
+    });
+    return { status: child.status, error: child.error };
+  }
+
+  const resolved = resolveWindowsExecutable(command);
+  const targetBin = resolved || command;
+  if (/\.(?:cmd|bat)$/i.test(targetBin)) {
+    const quoteToken = (s: string) => (/\s/.test(s) ? `"${s}"` : s);
+    const cmdLine = `"${quoteToken(targetBin)} ${args.map(quoteToken).join(" ")}"`;
+    const comspec = process.env.ComSpec || "cmd.exe";
+    const child = child_process.spawnSync(comspec, ["/d", "/s", "/c", cmdLine], {
+      cwd,
+      stdio: "inherit",
+      shell: false,
+      windowsVerbatimArguments: true,
+    });
+    return { status: child.status, error: child.error };
+  }
+
+  const child = child_process.spawnSync(targetBin, args, {
+    cwd,
+    stdio: "inherit",
+    shell: false,
+  });
+  return { status: child.status, error: child.error };
+}
+
+export interface HandoffResult {
+  ok: boolean;
+  outputPath: string | null;
+  sessionId: string | null;
+  markdown: string;
+}
+
+export function runAsdHandoff(options?: {
+  projectRoot?: string;
+  homeDir?: string;
+  sessionId?: string;
+  outputPath?: string;
+  writeFile?: boolean;
+}): HandoffResult {
+  const projectRoot = path.resolve(options?.projectRoot || process.cwd());
+  const homeDir = options?.homeDir;
+  const paths = resolveAsdPaths(projectRoot, homeDir);
+
+  let session: SessionRow | undefined;
+  let tasks: TaskRow[] = [];
+  if (fs.existsSync(paths.dbPath)) {
+    let db: SqliteDriver | undefined;
+    try {
+      db = openProjectDb(projectRoot, homeDir);
+      session = options?.sessionId
+        ? db.getSession(options.sessionId)
+        : resolveDefaultSession(db, projectRoot, homeDir);
+      if (session) {
+        tasks = db.getSessionTasks(session.session_id);
+      }
+    } finally {
+      db?.close();
+    }
+  }
+
+  const branchRes = runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: projectRoot });
+  const headRes = runGit(["rev-parse", "--short", "HEAD"], { cwd: projectRoot });
+  const statusRes = runGit(["status", "--short"], { cwd: projectRoot });
+  const gitBranch = branchRes.exitCode === 0 ? branchRes.stdout.trim() : "unknown";
+  const gitHead = headRes.exitCode === 0 ? headRes.stdout.trim() : "unknown";
+  const gitDirty = statusRes.exitCode === 0 ? statusRes.stdout.trim() : "";
+
+  const routing = loadRoutingConfig(projectRoot, homeDir);
+  const logs = scanSubagentLogs(projectRoot).slice(0, 5);
+
+  const lines: string[] = [
+    `# ASD Session Handoff`,
+    ``,
+    `- **Generated At**: ${new Date().toISOString()}`,
+    `- **ASD Version**: v${ASD_VERSION}`,
+    `- **Project Root**: \`${projectRoot}\``,
+    `- **Git State**: branch \`${gitBranch}\` @ \`${gitHead}\`${gitDirty ? " (dirty working tree)" : " (clean)"}`,
+    `- **Session ID**: ${session ? `\`${session.session_id}\` (phase: \`${session.phase}\`, harness: \`${session.main_harness}\`)` : "none"}`,
+    ``,
+  ];
+
+  if (session) {
+    lines.push(renderProgressBoard(session, tasks), ``);
+  } else {
+    lines.push(`## Session Status`, `No active SQLite session recorded for this project.`, ``);
+  }
+
+  if (gitDirty) {
+    lines.push(`## Uncommitted Changes`, "```text", gitDirty, "```", ``);
+  }
+
+  if (logs.length > 0) {
+    lines.push(`## Recent Subagent Runs`);
+    for (const rec of logs) {
+      lines.push(
+        `- **${rec.taskId || rec.subSessionId}** (\`${rec.harness}/${rec.model}\`, role: \`${rec.role}\`): status=\`${rec.status}\``
+      );
+    }
+    lines.push(``);
+  }
+
+  lines.push(`## Multi-Harness Routing Summary`);
+  for (const [role, route] of Object.entries(routing.agents)) {
+    lines.push(`- **${role}**: \`${route.harness}/${route.model}\``);
+  }
+  lines.push(
+    ``,
+    `## Resume Instructions`,
+    `- Check live board: \`asd status\``,
+    session ? `- Resume session Tasks: \`/asd-run\` or \`asd dispatch --session ${session.session_id}\`` : `- Create plan: \`/asd-plan\``,
+    session?.harness_session_id ? `- Resume interactive harness CLI: \`asd resume --session ${session.session_id} --print\`` : ``
+  );
+
+  const markdown = redactSecrets(lines.filter((l, idx, arr) => !(l === "" && arr[idx - 1] === "")).join("\n") + "\n");
+  const shouldWrite = options?.writeFile !== false;
+  const resolvedOut = shouldWrite
+    ? path.resolve(projectRoot, options?.outputPath || "handoff.md")
+    : null;
+  if (resolvedOut) {
+    fs.mkdirSync(path.dirname(resolvedOut), { recursive: true });
+    fs.writeFileSync(resolvedOut, markdown, "utf8");
+  }
+
+  return {
+    ok: true,
+    outputPath: resolvedOut,
+    sessionId: session?.session_id ?? null,
+    markdown,
+  };
+}
+
+export function runAsdMigrate(options?: {
+  projectRoot?: string;
+  homeDir?: string;
+  cleanLegacy?: boolean;
+}): MigrateLegacyDbResult {
+  const projectRoot = path.resolve(options?.projectRoot || process.cwd());
+  return migrateLegacyDatabases({
+    projectRoot,
+    homeDir: options?.homeDir,
+    cleanLegacy: options?.cleanLegacy,
+  });
+}
+
+// ============================================================================
 // Help Menu Display
 // ============================================================================
 
@@ -594,11 +932,13 @@ Commands:
   sync [--force] [--no-path]             Sync ASD harnesses globally and install 'asd' CLI to PATH
   update                                 Pull latest ASD release from GitHub and sync configs
   status [--json]                        Display current session progress board and warnings
-  resume [--session <id>] [--print]      Demote/resume active ASD session in interactive CLI
+  resume [--session <id>] [--print|-p]   Demote/resume active ASD session in interactive CLI
+  handoff [--output <path>] [--print|-p] Generate cross-harness session handoff markdown (handoff.md)
+  migrate [--clean-legacy] [--json]      Migrate legacy local/per-hash core.db into ~/.asd/state/core.db
   logs [taskId] [--json]                 Inspect latest (or task-specific) subagent prompt & output log
-  ui [--port <num>] [--json]             Launch lightweight local web dashboard (default port: 3847)
+  ui [--port|-p <num>] [--json]          Launch lightweight local web dashboard (default port: 3847)
   doctor [--json]                        Verify environment, tools, and policy health
-  clean [--pop] [--all]                  Clean temporary worktrees and restore auto-stash
+  clean [--pop] [--all] [--purge-orphans] Clean temporary worktrees and restore auto-stash
   uninstall [--home <dir>]               Surgically restore user harness configurations
   hook <pre-tool-use|stop>               Internal hook evaluator for harnesses
   mcp                                    Start ASD MCP server over stdio
@@ -624,11 +964,16 @@ Options:
       --cmd <command>                Explicit verification command override for 'asd verify'
       --payload <json|->             Inline JSON payload (or '-' to read JSON from stdin)
       --file <path>                  Path to JSON payload file
-      --port <num>                   Port for 'asd ui' web dashboard (default: 3847)
+  -o, --output <path>                Output file path for 'asd handoff' (default: handoff.md)
+  -p, --port <num>                   Port for 'asd ui' web dashboard (default: 3847)
+  -p, --print                        Print command/markdown to stdout for 'asd resume' / 'asd handoff'
       --force                        Force overwriting existing configurations (sync)
       --no-path                      Skip installing 'asd' CLI shim to global PATH (sync)
+      --no-update-check              Disable remote/cached version update check (or ASD_NO_UPDATE_CHECK=1)
       --pop                          Restore stashed work (clean)
       --all                          Clean all leftover workspace state (clean)
+      --purge-orphans                Purge non-existent cross-project sessions from global DB (clean)
+      --clean-legacy                 Remove migrated legacy core.db files after 'asd migrate'
 `);
 }
 
@@ -641,198 +986,226 @@ export async function main(
 ): Promise<number> {
   const parsed = parseCliArgs(args);
 
-  if (parsed.flags.version) {
-    console.log(`ASD v${ASD_VERSION}`);
-    const notice = await checkForRemoteUpdate({ homeDir: parsed.options.home });
-    if (notice.updateAvailable && notice.latestVersion) {
-      console.log(
-        formatTerminalUpdateBanner(notice.currentVersion, notice.latestVersion)
-      );
-    }
-    return 0;
-  }
-
-  if (parsed.flags.help || !parsed.command || parsed.command === "help") {
+  if (parsed.flags.help || parsed.command === "help") {
     printHelp();
     return 0;
   }
 
-  const { command, subcommand, flags, options } = parsed;
-  const projectRoot = path.resolve(options.projectRoot || process.cwd());
-  const homeDir = options.home || process.env.ASD_HOME_DIR;
+  if (parsed.parseError) {
+    console.error(`Error: ${parsed.parseError}\n\nRun 'asd --help' for usage.`);
+    return 1;
+  }
 
-  const printUpdateBannerIfAvailable = async () => {
-    if (flags.json || process.env.ASD_SESSION_ROLE === "subagent") return;
-    const notice = await checkForRemoteUpdate({ homeDir });
-    if (notice.updateAvailable && notice.latestVersion) {
-      console.log(
-        formatTerminalUpdateBanner(notice.currentVersion, notice.latestVersion)
-      );
-    }
-  };
+  const prevNoUpdateEnv = process.env.ASD_NO_UPDATE_CHECK;
+  if (parsed.flags.noUpdateCheck) {
+    process.env.ASD_NO_UPDATE_CHECK = "1";
+  }
 
   try {
-    switch (command) {
-      case "update": {
-        if (!flags.json) {
-          console.log(`Checking for updates (current: v${ASD_VERSION})...`);
-        }
-        const res = await runAsdUpdate({ homeDir, projectRoot });
-        if (flags.json) {
-          console.log(JSON.stringify(res, null, 2));
-        } else {
-          if (res.updated) {
-            console.log(
-              `New version found: v${res.latestVersion}. Pulling latest changes from GitHub...`
-            );
-            console.log(`Syncing global harness configurations (asd sync)...`);
-          }
-          console.log(res.message);
-        }
-        return res.aborted ? 1 : 0;
+    if (parsed.flags.version) {
+      console.log(`ASD v${ASD_VERSION}`);
+      const notice = await checkForRemoteUpdate({
+        homeDir: parsed.options.home,
+        disableUpdateCheck: parsed.flags.noUpdateCheck,
+      });
+      if (notice.updateAvailable && notice.latestVersion) {
+        console.log(
+          formatTerminalUpdateBanner(notice.currentVersion, notice.latestVersion)
+        );
       }
+      return 0;
+    }
 
-      case "sync": {
-        if (process.env.ASD_SESSION_ROLE === "subagent") {
-          throw new Error("Subagents cannot invoke orchestration tools");
-        }
-        const res = await runAsdSync({
-          homeDir,
-          force: flags.force,
-          projectRoot,
-          noPath: flags.noPath,
-        });
-        if (flags.json) {
-          console.log(JSON.stringify(res, null, 2));
-        } else {
-          console.log(`ASD Harness Configuration Synchronizer`);
-          console.log(`Status: ${res.status}`);
-          console.log(`Config Hash: ${res.configHash}`);
-          console.log(`Harnesses:`);
-          for (const [h, s] of Object.entries(res.harnesses)) {
-            const files =
-              s.filesWritten.length > 0
-                ? ` (${s.filesWritten.length} files)`
-                : "";
-            console.log(`  - ${h}: ${s.status}${files}`);
-          }
-          if (flags.noPath) {
-            console.log(`CLI PATH Shims: skipped (--no-path)`);
-          } else if (res.cliShimsInstalled && res.cliShimsInstalled.length > 0) {
-            console.log(`CLI PATH Shims (${res.cliShimsInstalled.length}):`);
-            for (const shim of res.cliShimsInstalled) {
-              console.log(`  - ${shim}`);
-            }
-          }
-          await printUpdateBannerIfAvailable();
-        }
-        return 0;
+    if (!parsed.command) {
+      printHelp();
+      return 0;
+    }
+
+    const { command, subcommand, flags, options } = parsed;
+    const projectRoot = path.resolve(options.projectRoot || process.cwd());
+    const homeDir = options.home || process.env.ASD_HOME_DIR;
+
+    const printUpdateBannerIfAvailable = async () => {
+      if (flags.json || flags.noUpdateCheck || process.env.ASD_SESSION_ROLE === "subagent") return;
+      const notice = await checkForRemoteUpdate({
+        homeDir,
+        disableUpdateCheck: flags.noUpdateCheck,
+      });
+      if (notice.updateAvailable && notice.latestVersion) {
+        console.log(
+          formatTerminalUpdateBanner(notice.currentVersion, notice.latestVersion)
+        );
       }
+    };
 
-      case "status": {
-        const paths = resolveAsdPaths(projectRoot, homeDir);
-        let session: SessionRow | undefined;
-        let tasks: TaskRow[] = [];
-
-        if (fs.existsSync(paths.dbPath)) {
-          let db: SqliteDriver | undefined;
-          try {
-            db = openProjectDb(projectRoot, homeDir);
-            session = resolveDefaultSession(db, projectRoot, homeDir);
-            if (session) {
-              try {
-                recoverOrphanedTasks({
-                  db,
-                  projectRoot,
-                  sessionId: session.session_id,
-                });
-              } catch {
-                // ignore orphan recovery errors during status query
-              }
-              tasks = db.getSessionTasks(session.session_id);
-            }
-          } finally {
-            if (db) {
-              try {
-                db.close();
-              } catch {
-                // ignore
-              }
-            }
+    try {
+      switch (command) {
+        case "update": {
+          if (!flags.json) {
+            console.log(`Checking for updates (current: v${ASD_VERSION})...`);
           }
-        }
-
-        if (flags.json) {
-          console.log(
-            JSON.stringify(
-              {
-                session: session ?? null,
-                tasks,
-                hasStashedWork: !!session?.stashed_work_sha,
-              },
-              null,
-              2
-            )
-          );
-          return 0;
-        }
-
-        if (!session) {
-          console.log(
-            "No active ASD session found. Run an ASD command or skill to start a session."
-          );
-          await printUpdateBannerIfAvailable();
-          return 0;
-        }
-
-        const board = renderProgressBoard(session, tasks);
-        console.log(board);
-        await printUpdateBannerIfAvailable();
-
-        if (session.stashed_work_sha) {
-          console.log(
-            "\nWarning: Unapplied auto-stash detected. Run 'asd clean --pop' to restore auto-stashed work."
-          );
-        }
-        return 0;
-      }
-
-      case "resume": {
-        const targetSessionId = options.session || subcommand;
-        try {
-          const demotion = buildSessionDemotion({
-            projectRoot,
-            homeDir,
-            sessionId: targetSessionId,
-          });
+          const res = await runAsdUpdate({ homeDir, projectRoot });
           if (flags.json) {
-            console.log(JSON.stringify(demotion, null, 2));
-            return 0;
-          }
-          if (flags.print || !process.stdin.isTTY || !process.stdout.isTTY) {
-            console.log(demotion.cliString);
-            return 0;
-          }
-          console.log(
-            `Resuming ${demotion.harness} session (${demotion.harnessSessionId}): ${demotion.cliString}`
-          );
-          const child = child_process.spawnSync(demotion.command, demotion.args, {
-            cwd: projectRoot,
-            stdio: "inherit",
-            shell: process.platform === "win32",
-          });
-          return child.status ?? (child.error ? 1 : 0);
-        } catch (err: unknown) {
-          const code = (err as { code?: string })?.code || "RESUME_ERROR";
-          const message = err instanceof Error ? err.message : String(err);
-          if (flags.json) {
-            console.log(JSON.stringify({ error: code, message }, null, 2));
+            console.log(JSON.stringify(res, null, 2));
           } else {
-            console.error(`Error executing 'asd resume': ${message}`);
+            if (res.updated) {
+              console.log(
+                `New version found: v${res.latestVersion}. Pulling latest changes from GitHub...`
+              );
+              console.log(`Syncing global harness configurations (asd sync)...`);
+            }
+            console.log(res.message);
           }
-          return 1;
+          return res.aborted ? 1 : 0;
         }
-      }
+
+        case "sync": {
+          if (process.env.ASD_SESSION_ROLE === "subagent") {
+            throw new Error("Subagents cannot invoke orchestration tools");
+          }
+          const res = await runAsdSync({
+            homeDir,
+            force: flags.force,
+            projectRoot,
+            noPath: flags.noPath,
+          });
+          if (flags.json) {
+            console.log(JSON.stringify(res, null, 2));
+          } else {
+            console.log(`ASD Harness Configuration Synchronizer`);
+            console.log(`Status: ${res.status}`);
+            console.log(`Config Hash: ${res.configHash}`);
+            console.log(`Harnesses:`);
+            for (const [h, s] of Object.entries(res.harnesses)) {
+              const files =
+                s.filesWritten.length > 0
+                  ? ` (${s.filesWritten.length} files)`
+                  : "";
+              console.log(`  - ${h}: ${s.status}${files}`);
+            }
+            if (flags.noPath) {
+              console.log(`CLI PATH Shims: skipped (--no-path)`);
+            } else if (res.cliShimsInstalled && res.cliShimsInstalled.length > 0) {
+              console.log(`CLI PATH Shims (${res.cliShimsInstalled.length}):`);
+              for (const shim of res.cliShimsInstalled) {
+                console.log(`  - ${shim}`);
+              }
+            }
+            await printUpdateBannerIfAvailable();
+          }
+          return 0;
+        }
+
+        case "status": {
+          const paths = resolveAsdPaths(projectRoot, homeDir);
+          let session: SessionRow | undefined;
+          let tasks: TaskRow[] = [];
+
+          if (fs.existsSync(paths.dbPath)) {
+            let db: SqliteDriver | undefined;
+            try {
+              db = openProjectDb(projectRoot, homeDir);
+              session = resolveDefaultSession(db, projectRoot, homeDir);
+              if (session) {
+                try {
+                  recoverOrphanedTasks({
+                    db,
+                    projectRoot,
+                    sessionId: session.session_id,
+                  });
+                } catch {
+                  // ignore orphan recovery errors during status query
+                }
+                tasks = db.getSessionTasks(session.session_id);
+              }
+            } finally {
+              if (db) {
+                try {
+                  db.close();
+                } catch {
+                  // ignore
+                }
+              }
+            }
+          }
+
+          if (flags.json) {
+            console.log(
+              JSON.stringify(
+                {
+                  session: session ?? null,
+                  tasks,
+                  hasStashedWork: !!session?.stashed_work_sha,
+                },
+                null,
+                2
+              )
+            );
+            return 0;
+          }
+
+          if (!session) {
+            console.log(
+              "No active ASD session found. Run an ASD command or skill to start a session."
+            );
+            await printUpdateBannerIfAvailable();
+            return 0;
+          }
+
+          const board = renderProgressBoard(session, tasks);
+          console.log(board);
+          await printUpdateBannerIfAvailable();
+
+          if (session.stashed_work_sha) {
+            console.log(
+              "\nWarning: Unapplied auto-stash detected. Run 'asd clean --pop' to restore auto-stashed work."
+            );
+          }
+          return 0;
+        }
+
+        case "resume": {
+          const targetSessionId = options.session || subcommand;
+          try {
+            const demotion = buildSessionDemotion({
+              projectRoot,
+              homeDir,
+              sessionId: targetSessionId,
+            });
+            const safety = validateSafeResumeArgs(demotion.command, demotion.args);
+            if (!safety.ok) {
+              const unsafeErr = new Error(safety.reason) as Error & { code?: string };
+              unsafeErr.code = "UNSAFE_RESUME_ARGS";
+              throw unsafeErr;
+            }
+            if (flags.json) {
+              console.log(JSON.stringify(demotion, null, 2));
+              return 0;
+            }
+            if (flags.print || !process.stdin.isTTY || !process.stdout.isTTY) {
+              console.log(demotion.cliString);
+              return 0;
+            }
+            console.log(
+              `Resuming ${demotion.harness} session (${demotion.harnessSessionId}): ${demotion.cliString}`
+            );
+            const child = spawnInteractiveResume(
+              demotion.command,
+              demotion.args,
+              projectRoot
+            );
+            return child.status ?? (child.error ? 1 : 0);
+          } catch (err: unknown) {
+            const code = (err as { code?: string })?.code || "RESUME_ERROR";
+            const message = err instanceof Error ? err.message : String(err);
+            if (flags.json) {
+              console.log(JSON.stringify({ error: code, message }, null, 2));
+            } else {
+              console.error(`Error executing 'asd resume': ${message}`);
+            }
+            return 1;
+          }
+        }
 
       case "logs": {
         const res = runAsdLogs({
@@ -939,6 +1312,7 @@ export async function main(
         const res = runAsdClean({
           pop: flags.pop,
           all: flags.all,
+          purgeOrphans: flags.purgeOrphans,
           projectRoot,
           homeDir,
         });
@@ -958,7 +1332,7 @@ export async function main(
               console.log(`    - ${b}`);
             }
           }
-          if (res.purgedSessions) {
+          if (flags.purgeOrphans && res.purgedSessions) {
             console.log(
               `  Purged orphaned DB sessions: ${res.purgedSessions.length}`
             );
@@ -975,6 +1349,53 @@ export async function main(
             } else {
               console.log("  No auto-stashed work found to restore.");
             }
+          }
+        }
+        return 0;
+      }
+
+      case "handoff": {
+        const writeFile = !flags.print || Boolean(options.output);
+        const res = runAsdHandoff({
+          projectRoot,
+          homeDir,
+          sessionId: options.session || subcommand,
+          outputPath: options.output,
+          writeFile,
+        });
+        if (flags.json) {
+          console.log(JSON.stringify(res, null, 2));
+        } else if (flags.print) {
+          console.log(res.markdown.trimEnd());
+        } else {
+          console.log(`ASD Session Handoff generated: ${res.outputPath}`);
+          if (res.sessionId) {
+            console.log(`  Session ID: ${res.sessionId}`);
+          }
+        }
+        return 0;
+      }
+
+      case "migrate": {
+        if (process.env.ASD_SESSION_ROLE === "subagent") {
+          throw new Error("Subagents cannot invoke orchestration tools");
+        }
+        const res = runAsdMigrate({
+          projectRoot,
+          homeDir,
+          cleanLegacy: flags.cleanLegacy,
+        });
+        if (flags.json) {
+          console.log(JSON.stringify(res, null, 2));
+        } else {
+          console.log(`ASD Legacy Database Migration completed.`);
+          console.log(`  Target DB          : ${res.targetDbPath}`);
+          console.log(`  Databases migrated : ${res.migratedDatabases.length}`);
+          console.log(`  Sessions imported  : ${res.sessionsImported}`);
+          console.log(`  Tasks imported     : ${res.tasksImported}`);
+          console.log(`  Debates imported   : ${res.debatesImported}`);
+          if (flags.cleanLegacy) {
+            console.log(`  Legacy files cleaned: ${res.legacyFilesRemoved.length}`);
           }
         }
         return 0;
@@ -1021,18 +1442,23 @@ export async function main(
           return 1;
         }
 
-        let rawPayload = readStdin();
-        if (!rawPayload) {
-          rawPayload = await readStdinAsync();
-        }
-        if (!rawPayload && options.payload) {
+        let rawPayload = "";
+        if (options.payload && options.payload !== "-") {
           rawPayload = options.payload;
-        }
-        if (!rawPayload && parsed.rest.length > 0) {
+        } else if (parsed.rest.length > 0) {
           const lastArg = parsed.rest[parsed.rest.length - 1]?.trim();
           if (lastArg && lastArg.startsWith("{")) {
             rawPayload = lastArg;
           }
+        }
+        if (!rawPayload && options.file && fs.existsSync(options.file)) {
+          rawPayload = fs.readFileSync(options.file, "utf8");
+        }
+        if (!rawPayload) {
+          rawPayload = readStdin();
+        }
+        if (!rawPayload) {
+          rawPayload = await readStdinAsync();
         }
 
         let payload: Record<string, unknown> = {};
@@ -1502,10 +1928,19 @@ export async function main(
         return 1;
       }
     }
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`Error executing 'asd ${command}': ${msg}`);
-    return 1;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`Error executing 'asd ${command}': ${msg}`);
+      return 1;
+    }
+  } finally {
+    if (parsed.flags.noUpdateCheck) {
+      if (prevNoUpdateEnv === undefined) {
+        delete process.env.ASD_NO_UPDATE_CHECK;
+      } else {
+        process.env.ASD_NO_UPDATE_CHECK = prevNoUpdateEnv;
+      }
+    }
   }
 }
 

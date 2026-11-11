@@ -437,6 +437,10 @@ export class SqliteDriver {
     this.db.close();
   }
 
+  rawDatabase(): DatabaseSync {
+    return this.db;
+  }
+
   // --------------------------------------------------------------------------
   // sessions
   // --------------------------------------------------------------------------
@@ -1255,4 +1259,239 @@ export function openProjectDb(
   ensureProjectInitialized(projectRoot, homeDir);
   const paths = resolveAsdPaths(projectRoot, homeDir);
   return new SqliteDriver(paths.dbPath, projectRoot);
+}
+
+export interface MigrateLegacyDbResult {
+  targetDbPath: string;
+  migratedDatabases: string[];
+  sessionsImported: number;
+  tasksImported: number;
+  debatesImported: number;
+  legacyFilesRemoved: string[];
+}
+
+export function migrateLegacyDatabases(options: {
+  projectRoot: string;
+  homeDir?: string;
+  cleanLegacy?: boolean;
+}): MigrateLegacyDbResult {
+  const projectRoot = path.resolve(options.projectRoot);
+  const paths = resolveAsdPaths(projectRoot, options.homeDir);
+  const targetDbPath = path.resolve(paths.dbPath);
+
+  const candidates: string[] = [];
+  const localLegacyDb = path.join(projectRoot, ".asd", "core.db");
+  if (fs.existsSync(localLegacyDb) && path.resolve(localLegacyDb) !== targetDbPath) {
+    candidates.push(localLegacyDb);
+  }
+
+  const stateDir = path.join(paths.globalStateDir, "state");
+  if (fs.existsSync(stateDir)) {
+    try {
+      for (const entry of fs.readdirSync(stateDir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          const hashedDb = path.join(stateDir, entry.name, "core.db");
+          if (fs.existsSync(hashedDb) && path.resolve(hashedDb) !== targetDbPath) {
+            candidates.push(hashedDb);
+          }
+        }
+      }
+    } catch {
+      // Ignore unreadable state subdirectories
+    }
+  }
+
+  const migratedDatabases: string[] = [];
+  const legacyFilesRemoved: string[] = [];
+  let sessionsImported = 0;
+  let tasksImported = 0;
+  let debatesImported = 0;
+
+  if (candidates.length === 0) {
+    return {
+      targetDbPath,
+      migratedDatabases,
+      sessionsImported,
+      tasksImported,
+      debatesImported,
+      legacyFilesRemoved,
+    };
+  }
+
+  const targetDriver = openProjectDb(projectRoot, options.homeDir);
+  try {
+    const targetRaw = targetDriver.rawDatabase();
+    for (const srcPath of candidates) {
+      let srcDb: DatabaseSync | undefined;
+      let migratedOk = false;
+      try {
+        srcDb = new DatabaseSync(srcPath, { open: true });
+        const tables = new Set(
+          (
+            srcDb
+              .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+              .all() as Array<{ name: string }>
+          ).map((r) => r.name)
+        );
+
+        targetRaw.exec("BEGIN IMMEDIATE");
+        try {
+          if (tables.has("sessions")) {
+            const rows = srcDb.prepare("SELECT * FROM sessions").all() as Array<Record<string, unknown>>;
+            const ins = targetRaw.prepare(
+              `INSERT OR IGNORE INTO sessions (
+                session_id, project_root, main_harness, main_model, harness_session_id,
+                auto_approve, main_pid, phase, state_version, base_sha, stashed_work_sha,
+                no_progress_count, memo, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            );
+            for (const r of rows) {
+              const res = ins.run(
+                String(r.session_id ?? ""),
+                String(r.project_root || projectRoot),
+                String(r.main_harness || "claude-code"),
+                (r.main_model as string | null) ?? null,
+                (r.harness_session_id as string | null) ?? null,
+                typeof r.auto_approve === "number" ? r.auto_approve : 0,
+                typeof r.main_pid === "number" ? r.main_pid : null,
+                String(r.phase || "planning"),
+                typeof r.state_version === "number" ? r.state_version : 1,
+                (r.base_sha as string | null) ?? null,
+                (r.stashed_work_sha as string | null) ?? null,
+                typeof r.no_progress_count === "number" ? r.no_progress_count : 0,
+                (r.memo as string | null) ?? null,
+                typeof r.created_at === "number" ? r.created_at : Date.now(),
+                typeof r.updated_at === "number" ? r.updated_at : Date.now()
+              );
+              sessionsImported += Number(res.changes ?? 0);
+            }
+          }
+
+          if (tables.has("tasks")) {
+            const rows = srcDb.prepare("SELECT * FROM tasks").all() as Array<Record<string, unknown>>;
+            const ins = targetRaw.prepare(
+              `INSERT OR IGNORE INTO tasks (
+                task_id, session_id, turn, title, track, role, category, difficulty,
+                status, attempts, assigned_harness, assigned_model, depends_on_json,
+                target_files_json, context_hint, acceptance, verify_cmd, done_claim_json,
+                worktree_path, sub_session_id, commit_sha, duration_ms, is_cross_scope, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            );
+            for (const r of rows) {
+              const res = ins.run(
+                String(r.task_id ?? ""),
+                String(r.session_id ?? ""),
+                typeof r.turn === "number" ? r.turn : 1,
+                String(r.title ?? ""),
+                String(r.track || "LIGHT"),
+                String(r.role || "worker"),
+                String(r.category || "general"),
+                String(r.difficulty || "medium"),
+                String(r.status || "pending"),
+                typeof r.attempts === "number"
+                  ? r.attempts
+                  : typeof r.attempt_count === "number"
+                    ? r.attempt_count
+                    : 0,
+                (r.assigned_harness as string | null) ?? null,
+                (r.assigned_model as string | null) ?? null,
+                String(r.depends_on_json || "[]"),
+                String(r.target_files_json || "[]"),
+                (r.context_hint as string | null) ?? null,
+                (r.acceptance as string | null) ?? null,
+                (r.verify_cmd as string | null) ?? null,
+                (r.done_claim_json as string | null) ?? null,
+                (r.worktree_path as string | null) ?? null,
+                (r.sub_session_id as string | null) ?? null,
+                (r.commit_sha as string | null) ?? null,
+                typeof r.duration_ms === "number" ? r.duration_ms : null,
+                typeof r.is_cross_scope === "number" ? r.is_cross_scope : 0,
+                typeof r.updated_at === "number" ? r.updated_at : Date.now()
+              );
+              tasksImported += Number(res.changes ?? 0);
+            }
+          }
+
+          if (tables.has("debates")) {
+            const rows = srcDb.prepare("SELECT * FROM debates").all() as Array<Record<string, unknown>>;
+            const ins = targetRaw.prepare(
+              `INSERT OR IGNORE INTO debates (
+                debate_id, session_id, task_id, topic, status,
+                round1_bundle_json, round2_bundle_json, insight_verdict_json
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+            );
+            for (const r of rows) {
+              const res = ins.run(
+                String(r.debate_id ?? ""),
+                String(r.session_id ?? ""),
+                (r.task_id as string | null) ?? null,
+                String(r.topic ?? ""),
+                String(r.status || "done"),
+                (r.round1_bundle_json as string | null) ?? null,
+                (r.round2_bundle_json as string | null) ?? null,
+                (r.insight_verdict_json as string | null) ?? null
+              );
+              debatesImported += Number(res.changes ?? 0);
+            }
+          }
+
+          targetRaw.exec("COMMIT");
+          migratedDatabases.push(srcPath);
+          migratedOk = true;
+        } catch (txErr) {
+          try {
+            targetRaw.exec("ROLLBACK");
+          } catch {
+            // ignore rollback error
+          }
+          throw txErr;
+        }
+      } catch {
+        // Skip unreadable/corrupt legacy DB without aborting others
+      } finally {
+        if (srcDb) {
+          try {
+            srcDb.close();
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      if (migratedOk && options.cleanLegacy) {
+        for (const suffix of ["", "-wal", "-shm"]) {
+          const f = `${srcPath}${suffix}`;
+          if (fs.existsSync(f)) {
+            try {
+              fs.unlinkSync(f);
+              legacyFilesRemoved.push(f);
+            } catch {
+              // ignore unlink error
+            }
+          }
+        }
+        const parentDir = path.dirname(srcPath);
+        if (parentDir !== path.join(projectRoot, ".asd")) {
+          try {
+            if (fs.existsSync(parentDir) && fs.readdirSync(parentDir).length === 0) {
+              fs.rmdirSync(parentDir);
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+  } finally {
+    targetDriver.close();
+  }
+
+  return {
+    targetDbPath,
+    migratedDatabases,
+    sessionsImported,
+    tasksImported,
+    debatesImported,
+    legacyFilesRemoved,
+  };
 }

@@ -743,9 +743,13 @@ describe("ASD CLI (src/cli/index.ts)", () => {
           assert.equal(stateJson.tasks[0]?.task_id, "T1.1");
 
           // Update session memo via POST /api/session-memo and verify persistence in .asd
+          const csrfHeaders = {
+            "Content-Type": "application/json",
+            "X-ASD-CSRF-Token": handle.csrfToken,
+          };
           const memoRes = await fetch(`${handle.url}/api/session-memo`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: csrfHeaders,
             body: JSON.stringify({
               sessionId: "sess-ui-1",
               memo: "P0 보안 감사 토론",
@@ -796,7 +800,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
           };
           const saveRtRes = await fetch(`${handle.url}/api/routing`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: csrfHeaders,
             body: JSON.stringify({ action: "save", routingConfig: customRouting }),
           });
           assert.equal(saveRtRes.status, 200);
@@ -806,7 +810,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
           // 3. Test 4 subagent control options (kill, retry, fallback, custom)
           const killRes = await fetch(`${handle.url}/api/subagent-action`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: csrfHeaders,
             body: JSON.stringify({
               sessionId: "sess-ui-1",
               subSessionId: "sub-1-T1.1",
@@ -819,7 +823,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
 
           const fbRes = await fetch(`${handle.url}/api/subagent-action`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: csrfHeaders,
             body: JSON.stringify({
               sessionId: "sess-ui-1",
               subSessionId: "sub-1-T1.1",
@@ -841,7 +845,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
 
           const customRunRes = await fetch(`${handle.url}/api/subagent-action`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: csrfHeaders,
             body: JSON.stringify({
               sessionId: "sess-ui-1",
               subSessionId: "sub-1-T1.1",
@@ -863,7 +867,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
 
           const resetRtRes = await fetch(`${handle.url}/api/routing`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: csrfHeaders,
             body: JSON.stringify({ action: "reset" }),
           });
           assert.equal(resetRtRes.status, 200);
@@ -893,6 +897,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
 
           const refreshRes = await fetch(`${handle.url}/api/models/refresh`, {
             method: "POST",
+            headers: { "X-ASD-CSRF-Token": handle.csrfToken },
           });
           assert.equal(refreshRes.status, 200);
           const refreshJson = (await refreshRes.json()) as {
