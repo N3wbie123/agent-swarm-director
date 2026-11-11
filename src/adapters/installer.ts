@@ -157,7 +157,7 @@ interface LastSyncRecord {
   _asdVersion: string;
   configHash: string;
   lastSyncedAt: string;
-  harnesses: Partial<Record<HarnessId, { hash: string; syncedAt: string }>>;
+  harnesses: Partial<Record<HarnessId, { hash: string; syncedAt: string; userConfigHashes?: Record<string, string> }>>;
 }
 
 // ============================================================================
@@ -190,9 +190,24 @@ function safeWriteText(filePath: string, text: string): void {
   fs.writeFileSync(filePath, text, "utf8");
 }
 
-function backupUserFile(filePath: string): void {
+function backupUserFile(filePath: string, asdManagedContent?: string): void {
   const backupPath = `${filePath}.asd-backup`;
-  if (fs.existsSync(filePath) && !fs.existsSync(backupPath)) {
+  if (!fs.existsSync(filePath)) {
+    return;
+  }
+  const liveContent = fs.readFileSync(filePath, "utf8");
+  // If live content equals ASD-managed output, do NOT touch the backup (never let backup hold ASD content)
+  if (asdManagedContent !== undefined && liveContent === asdManagedContent) {
+    return;
+  }
+  // If backup doesn't exist, create it
+  if (!fs.existsSync(backupPath)) {
+    fs.copyFileSync(filePath, backupPath);
+    return;
+  }
+  // Backup exists: refresh it ONLY if live differs from BOTH backup AND ASD-managed output
+  const backupContent = fs.readFileSync(backupPath, "utf8");
+  if (liveContent !== backupContent && (asdManagedContent === undefined || liveContent !== asdManagedContent)) {
     fs.copyFileSync(filePath, backupPath);
   }
 }
@@ -209,6 +224,71 @@ function restoreUserBackup(filePath: string): boolean {
     return true;
   }
   return false;
+}
+
+function hasAsdManagedMarkers(filePath: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+  try {
+    const content = fs.readFileSync(filePath, "utf8");
+    // Check for common ASD-managed markers across config formats
+    if (content.includes("_asdManaged")) return true;
+    if (content.includes("BEGIN MANAGED BY ASD-V2")) return true;
+    if (content.includes("# >>> BEGIN MANAGED BY ASD-V2")) return true;
+    if (content.includes('"_asdVersion"')) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function smartRestoreUserBackup(filePath: string): "restored" | "kept-live" | "no-backup" {
+  const backupPath = `${filePath}.asd-backup`;
+  if (!fs.existsSync(backupPath)) {
+    return "no-backup";
+  }
+  if (!fs.existsSync(filePath)) {
+    // Live file gone, restore from backup
+    fs.copyFileSync(backupPath, filePath);
+    try { fs.unlinkSync(backupPath); } catch {}
+    return "restored";
+  }
+  const liveContent = fs.readFileSync(filePath, "utf8");
+  const backupContent = fs.readFileSync(backupPath, "utf8");
+  if (liveContent === backupContent) {
+    // Live matches backup, nothing to do
+    try { fs.unlinkSync(backupPath); } catch {}
+    return "restored";
+  }
+  // Live differs from backup: if live has no ASD markers, keep live (user edited post-sync)
+  if (!hasAsdManagedMarkers(filePath)) {
+    try { fs.unlinkSync(backupPath); } catch {}
+    return "kept-live";
+  }
+  // Live has ASD markers but differs from backup: restore backup (ASD content was modified)
+  fs.copyFileSync(backupPath, filePath);
+  try { fs.unlinkSync(backupPath); } catch {}
+  return "restored";
+}
+
+function computeUserConfigHashes(homeDir: string, harnessId: HarnessId): Record<string, string> {
+  const hashes: Record<string, string> = {};
+  const adapter = {
+    "claude-code": claudeCodeAdapter,
+    opencode: opencodeAdapter,
+    codex: codexAdapter,
+    antigravity: antigravityAdapter,
+    cursor: cursorAdapter,
+  }[harnessId];
+  if (!adapter) return hashes;
+  const targets = adapter.globalConfigTargets(homeDir);
+  for (const targetPath of targets) {
+    if (fs.existsSync(targetPath)) {
+      const content = fs.readFileSync(targetPath, "utf8");
+      const hash = crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
+      hashes[targetPath] = hash;
+    }
+  }
+  return hashes;
 }
 
 // ============================================================================
@@ -1031,7 +1111,21 @@ export async function syncHarnessConfigs(
 
     const allTargetsExist = fs.existsSync(asdCliPath) && targets.every((targetPath) => fs.existsSync(targetPath));
 
-    if (isHashMatched && allTargetsExist) {
+    // Check for user config divergence: compare current user config file hashes with last sync
+    let userConfigDiverged = false;
+    if (isHashMatched && allTargetsExist && lastSync?.harnesses?.[harnessId]?.userConfigHashes) {
+      const currentHashes = computeUserConfigHashes(homeDir, harnessId);
+      const lastHashes = lastSync.harnesses[harnessId]!.userConfigHashes!;
+      for (const [filePath, lastHash] of Object.entries(lastHashes)) {
+        const currentHash = currentHashes[filePath];
+        if (currentHash !== undefined && currentHash !== lastHash) {
+          userConfigDiverged = true;
+          break;
+        }
+      }
+    }
+
+    if (isHashMatched && allTargetsExist && !userConfigDiverged) {
       harnessResults[harnessId] = {
         harness: harnessId,
         status: "skipped",
@@ -1071,7 +1165,6 @@ export async function syncHarnessConfigs(
         const settingsPath = path.join(claudeDir, "settings.json");
         let existingSettings: Record<string, unknown> | null = null;
         if (fs.existsSync(settingsPath)) {
-          backupUserFile(settingsPath);
           try {
             existingSettings = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
           } catch {
@@ -1079,6 +1172,7 @@ export async function syncHarnessConfigs(
           }
         }
         const mergedSettings = mergeClaudeSettings(existingSettings, asdCliPath);
+        backupUserFile(settingsPath, JSON.stringify(mergedSettings, null, 2) + "\n");
         safeWriteJson(settingsPath, mergedSettings);
         written.push(settingsPath);
 
@@ -1126,7 +1220,6 @@ export async function syncHarnessConfigs(
         const opencodeJsoncPath = path.join(opencodeDir, "opencode.jsonc");
         const opencodeJsoncKeys = new Set<string>();
         if (fs.existsSync(opencodeJsoncPath)) {
-          backupUserFile(opencodeJsoncPath);
           try {
             const parsedJsonc = parseJsonc(fs.readFileSync(opencodeJsoncPath, "utf8"));
             if (parsedJsonc && typeof parsedJsonc === "object" && !Array.isArray(parsedJsonc)) {
@@ -1149,6 +1242,24 @@ export async function syncHarnessConfigs(
           }
         }
         const opencodeJsonPath = path.join(opencodeDir, "opencode.json");
+        // Compute the expected merged content for backup comparison
+        let expectedOpencodeJson: Record<string, unknown> = { _asdVersion: ASD_VERSION };
+        if (fs.existsSync(opencodeJsonPath)) {
+          try {
+            expectedOpencodeJson = JSON.parse(fs.readFileSync(opencodeJsonPath, "utf8")) as Record<string, unknown>;
+          } catch {
+            expectedOpencodeJson = { _asdVersion: ASD_VERSION };
+          }
+        }
+        // Apply the same mutations that syncJsonMcpConfigFile will apply
+        if (expectedOpencodeJson.mcp && typeof expectedOpencodeJson.mcp === "object") {
+          for (const k of Object.keys(expectedOpencodeJson.mcp as Record<string, unknown>)) {
+            opencodeJsoncKeys.add(k);
+          }
+        }
+        // We can't easily compute the full merged result without duplicating syncJsonMcpConfigFile logic
+        // So we'll pass undefined for asdManagedContent for opencode.jsonc (backup will be created if missing)
+        backupUserFile(opencodeJsoncPath);
         syncJsonMcpConfigFile({
           filePath: opencodeJsonPath,
           harnessId: "opencode",
@@ -1188,7 +1299,6 @@ export async function syncHarnessConfigs(
         const configTomlPath = path.join(codexDir, "config.toml");
         let existingToml = "";
         if (fs.existsSync(configTomlPath)) {
-          backupUserFile(configTomlPath);
           try {
             existingToml = fs.readFileSync(configTomlPath, "utf8");
           } catch {
@@ -1203,6 +1313,7 @@ export async function syncHarnessConfigs(
           asdCliPath,
         });
         const mergedToml = upsertTomlFence(existingToml, managedTomlBlock, ASD_VERSION);
+        backupUserFile(configTomlPath, mergedToml);
         safeWriteText(configTomlPath, mergedToml);
         written.push(configTomlPath);
 
@@ -1285,7 +1396,6 @@ export async function syncHarnessConfigs(
         const configHooksJsonPath = path.join(geminiDir, "config", "hooks.json");
         let existingConfigHooks: Record<string, unknown> = {};
         if (fs.existsSync(configHooksJsonPath)) {
-          backupUserFile(configHooksJsonPath);
           try {
             existingConfigHooks = JSON.parse(
               fs.readFileSync(configHooksJsonPath, "utf8").replace(/^\uFEFF/, "")
@@ -1324,6 +1434,8 @@ export async function syncHarnessConfigs(
             },
           ],
         };
+        const mergedConfigHooks = JSON.stringify(existingConfigHooks, null, 2) + "\n";
+        backupUserFile(configHooksJsonPath, mergedConfigHooks);
         safeWriteJson(configHooksJsonPath, existingConfigHooks);
         written.push(configHooksJsonPath);
 
@@ -1388,7 +1500,6 @@ export async function syncHarnessConfigs(
         const hooksJsonPath = path.join(cursorDir, "hooks.json");
         let existingHooks: Record<string, unknown> = {};
         if (fs.existsSync(hooksJsonPath)) {
-          backupUserFile(hooksJsonPath);
           try {
             existingHooks = JSON.parse(fs.readFileSync(hooksJsonPath, "utf8")) as Record<string, unknown>;
           } catch {
@@ -1449,6 +1560,8 @@ export async function syncHarnessConfigs(
         existingHooks.version =
           typeof existingHooks.version === "number" ? existingHooks.version : 1;
         existingHooks.hooks = nestedHooks;
+        const mergedHooks = JSON.stringify(existingHooks, null, 2) + "\n";
+        backupUserFile(hooksJsonPath, mergedHooks);
         safeWriteJson(hooksJsonPath, existingHooks);
         written.push(hooksJsonPath);
 
@@ -1464,7 +1577,6 @@ export async function syncHarnessConfigs(
         const cliConfigPath = path.join(cursorDir, "cli-config.json");
         let cliCfg: Record<string, unknown> = {};
         if (fs.existsSync(cliConfigPath)) {
-          backupUserFile(cliConfigPath);
           try {
             cliCfg = JSON.parse(fs.readFileSync(cliConfigPath, "utf8")) as Record<string, unknown>;
           } catch {
@@ -1472,6 +1584,8 @@ export async function syncHarnessConfigs(
           }
         }
         cliCfg._asdVersion = ASD_VERSION;
+        const mergedCliCfg = JSON.stringify(cliCfg, null, 2) + "\n";
+        backupUserFile(cliConfigPath, mergedCliCfg);
         safeWriteJson(cliConfigPath, cliCfg);
         written.push(cliConfigPath);
 
@@ -1487,18 +1601,18 @@ export async function syncHarnessConfigs(
     };
   }
 
-  // Save state
+  // Save state with user config hashes for divergence detection
   const updatedLastSync: LastSyncRecord = {
     _asdVersion: ASD_VERSION,
     configHash,
     lastSyncedAt: new Date().toISOString(),
     harnesses: {
       ...lastSync?.harnesses,
-      "claude-code": { hash: configHash, syncedAt: new Date().toISOString() },
-      opencode: { hash: configHash, syncedAt: new Date().toISOString() },
-      codex: { hash: configHash, syncedAt: new Date().toISOString() },
-      antigravity: { hash: configHash, syncedAt: new Date().toISOString() },
-      cursor: { hash: configHash, syncedAt: new Date().toISOString() },
+      "claude-code": { hash: configHash, syncedAt: new Date().toISOString(), userConfigHashes: computeUserConfigHashes(homeDir, "claude-code") },
+      opencode: { hash: configHash, syncedAt: new Date().toISOString(), userConfigHashes: computeUserConfigHashes(homeDir, "opencode") },
+      codex: { hash: configHash, syncedAt: new Date().toISOString(), userConfigHashes: computeUserConfigHashes(homeDir, "codex") },
+      antigravity: { hash: configHash, syncedAt: new Date().toISOString(), userConfigHashes: computeUserConfigHashes(homeDir, "antigravity") },
+      cursor: { hash: configHash, syncedAt: new Date().toISOString(), userConfigHashes: computeUserConfigHashes(homeDir, "cursor") },
     },
   };
   saveLastSync(homeDir, updatedLastSync);
@@ -1768,7 +1882,8 @@ export async function uninstallHarnessConfigs(
         harnessStatus["claude-code"].restored.push(claudeSettings);
       }
     } catch {
-      if (restoreUserBackup(claudeSettings)) {
+      const result = smartRestoreUserBackup(claudeSettings);
+      if (result !== "no-backup") {
         restoredFiles.push(claudeSettings);
         harnessStatus["claude-code"].restored.push(claudeSettings);
       } else {
@@ -1812,7 +1927,8 @@ export async function uninstallHarnessConfigs(
         harnessStatus[harness].restored.push(filePath);
       }
     } catch {
-      if (restoreUserBackup(filePath)) {
+      const result = smartRestoreUserBackup(filePath);
+      if (result !== "no-backup") {
         restoredFiles.push(filePath);
         harnessStatus[harness].restored.push(filePath);
       } else {
@@ -1842,7 +1958,8 @@ export async function uninstallHarnessConfigs(
   ]);
   const opencodeJsoncFile = path.join(opencodeDir, "opencode.jsonc");
   if (fs.existsSync(`${opencodeJsoncFile}.asd-backup`)) {
-    if (restoreUserBackup(opencodeJsoncFile)) {
+    const result = smartRestoreUserBackup(opencodeJsoncFile);
+    if (result !== "no-backup") {
       restoredFiles.push(opencodeJsoncFile);
       harnessStatus.opencode.restored.push(opencodeJsoncFile);
     }
@@ -1871,7 +1988,8 @@ export async function uninstallHarnessConfigs(
         harnessStatus.codex.restored.push(configToml);
       }
     } catch {
-      if (restoreUserBackup(configToml)) {
+      const result = smartRestoreUserBackup(configToml);
+      if (result !== "no-backup") {
         restoredFiles.push(configToml);
         harnessStatus.codex.restored.push(configToml);
       } else {
@@ -1928,7 +2046,8 @@ export async function uninstallHarnessConfigs(
         harnessStatus.antigravity.restored.push(hooksJson);
       }
     } catch {
-      if (restoreUserBackup(hooksJson)) {
+      const result = smartRestoreUserBackup(hooksJson);
+      if (result !== "no-backup") {
         restoredFiles.push(hooksJson);
         harnessStatus.antigravity.restored.push(hooksJson);
       } else {
@@ -1953,7 +2072,8 @@ export async function uninstallHarnessConfigs(
         harnessStatus.antigravity.restored.push(configHooksJson);
       }
     } catch {
-      if (restoreUserBackup(configHooksJson)) {
+      const result = smartRestoreUserBackup(configHooksJson);
+      if (result !== "no-backup") {
         restoredFiles.push(configHooksJson);
         harnessStatus.antigravity.restored.push(configHooksJson);
       } else {
@@ -2020,7 +2140,8 @@ export async function uninstallHarnessConfigs(
         harnessStatus.cursor.restored.push(cursorHooksJson);
       }
     } catch {
-      if (restoreUserBackup(cursorHooksJson)) {
+      const result = smartRestoreUserBackup(cursorHooksJson);
+      if (result !== "no-backup") {
         restoredFiles.push(cursorHooksJson);
         harnessStatus.cursor.restored.push(cursorHooksJson);
       } else {
@@ -2046,7 +2167,8 @@ export async function uninstallHarnessConfigs(
         harnessStatus.cursor.restored.push(cursorCliCfg);
       }
     } catch {
-      if (restoreUserBackup(cursorCliCfg)) {
+      const result = smartRestoreUserBackup(cursorCliCfg);
+      if (result !== "no-backup") {
         restoredFiles.push(cursorCliCfg);
         harnessStatus.cursor.restored.push(cursorCliCfg);
       } else {

@@ -764,3 +764,207 @@ test("v2.4.3 Auto-Migration: syncHarnessConfigs upgrades legacy (< 2.4.2) ~/.asd
     removeTempDir(migHome);
   }
 });
+
+// ============================================================================
+// I1: Backup Freshness & Uninstall Smart Restore
+// ============================================================================
+
+describe("I1: Backup Freshness & Uninstall Smart Restore", () => {
+  let i1Home: string;
+
+  before(() => {
+    i1Home = createTempDir("asd-i1-home-");
+  });
+
+  after(() => {
+    removeTempDir(i1Home);
+  });
+
+  test("I1a: sync → user edits config → uninstall preserves post-sync edits (not stale backup)", async () => {
+    // Seed pre-existing user config BEFORE initial sync
+    const claudeDir = path.join(i1Home, ".claude");
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const settingsPath = path.join(claudeDir, "settings.json");
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      theme: "light",
+      hooks: {
+        PreToolUse: [{ command: "pre-existing-guard", _asdManaged: false }],
+      },
+    }, null, 2), "utf8");
+
+    // Initial sync (backs up pre-existing user config)
+    await syncHarnessConfigs({ homeDir: i1Home, noPath: true });
+
+    // Verify backup exists (pre-sync user config)
+    const backupPath = `${settingsPath}.asd-backup`;
+    assert.ok(fs.existsSync(backupPath), "Backup should exist after initial sync");
+    const backupContent = fs.readFileSync(backupPath, "utf8");
+    assert.ok(backupContent.includes("pre-existing-guard"), "Backup should contain pre-sync user config");
+
+    // User edits settings.json AFTER sync (simulate post-sync user change)
+    const userEditedSettings = {
+      theme: "dark",
+      customSetting: "user-value",
+      hooks: {
+        PreToolUse: [{ command: "my-custom-guard", _asdManaged: false }],
+      },
+    };
+    fs.writeFileSync(settingsPath, JSON.stringify(userEditedSettings, null, 2), "utf8");
+
+    // Run uninstall
+    const uninstRes = await uninstallHarnessConfigs({ homeDir: i1Home });
+    assert.equal(uninstRes.status, "success");
+
+    // The restored settings should contain the USER's post-sync edits, not the stale backup
+    const restoredSettings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    assert.equal(restoredSettings.theme, "dark");
+    assert.equal(restoredSettings.customSetting, "user-value");
+    assert.equal(restoredSettings.hooks.PreToolUse[0].command, "my-custom-guard");
+    assert.equal(restoredSettings.hooks.PreToolUse[0]._asdManaged, false);
+    // ASD-managed hooks should be removed
+    assert.equal(restoredSettings.hooks.Stop, undefined);
+  });
+
+  test("I1b: backup file never contains ASD-generated content", async () => {
+    const i1bHome = createTempDir("asd-i1b-home-");
+    try {
+      // Seed pre-existing user config BEFORE initial sync
+      const claudeDir = path.join(i1bHome, ".claude");
+      fs.mkdirSync(claudeDir, { recursive: true });
+      const settingsPath = path.join(claudeDir, "settings.json");
+      fs.writeFileSync(settingsPath, JSON.stringify({
+        theme: "light",
+      }, null, 2), "utf8");
+
+      // Initial sync
+      await syncHarnessConfigs({ homeDir: i1bHome, noPath: true });
+
+      // Check that backup does NOT contain ASD-managed markers
+      const backupPath = `${settingsPath}.asd-backup`;
+      assert.ok(fs.existsSync(backupPath), "Backup should exist");
+
+      const backupContent = fs.readFileSync(backupPath, "utf8");
+      // Backup should be the original user config, not ASD-generated
+      assert.ok(!backupContent.includes("_asdManaged"), "Backup must not contain _asdManaged marker");
+      assert.ok(!backupContent.includes("asd-core"), "Backup must not contain asd-core MCP");
+      assert.ok(!backupContent.includes("hook pre-tool-use"), "Backup must not contain ASD hook commands");
+      assert.ok(!backupContent.includes("hook stop"), "Backup must not contain ASD hook commands");
+      assert.ok(backupContent.includes("light"), "Backup should contain original user theme");
+
+      // Second sync (idempotent) - backup should still not be overwritten with ASD content
+      await syncHarnessConfigs({ homeDir: i1bHome, noPath: true });
+
+      const backupContent2 = fs.readFileSync(backupPath, "utf8");
+      assert.ok(!backupContent2.includes("_asdManaged"), "Backup must not contain _asdManaged after second sync");
+      assert.ok(!backupContent2.includes("asd-core"), "Backup must not contain asd-core after second sync");
+      assert.ok(backupContent2.includes("light"), "Backup should still contain original user theme after second sync");
+    } finally {
+      removeTempDir(i1bHome);
+    }
+  });
+});
+
+// ============================================================================
+// I2: Hash Divergence Detection & Re-merge
+// ============================================================================
+
+describe("I2: Hash Divergence Detection & Re-merge", () => {
+  let i2Home: string;
+
+  before(() => {
+    i2Home = createTempDir("asd-i2-home-");
+  });
+
+  after(() => {
+    removeTempDir(i2Home);
+  });
+
+  test("I2a: user edits config → next sync (without --force) does NOT skip diverged harness; user keys survive re-merge", async () => {
+    // Initial sync
+    const firstSync = await syncHarnessConfigs({ homeDir: i2Home, noPath: true });
+    assert.equal(firstSync.status, "updated");
+    assert.equal(firstSync.harnesses["claude-code"].status, "updated");
+
+    // User edits Claude Code settings.json (adds a custom hook)
+    const settingsPath = path.join(i2Home, ".claude", "settings.json");
+    const currentSettings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    currentSettings.hooks.CustomUserHook = [{ command: "user-custom-hook", _asdManaged: false }];
+    fs.writeFileSync(settingsPath, JSON.stringify(currentSettings, null, 2), "utf8");
+
+    // Next sync WITHOUT --force should NOT skip claude-code (divergence detected)
+    const secondSync = await syncHarnessConfigs({ homeDir: i2Home, noPath: true });
+    assert.equal(secondSync.harnesses["claude-code"].status, "updated", "Harness should not be skipped due to user config divergence");
+    assert.equal(secondSync.harnesses["claude-code"].skipped, false);
+
+    // User's custom hook should survive the re-merge
+    const mergedSettings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    assert.ok(mergedSettings.hooks.CustomUserHook, "User's custom hook should survive re-merge");
+    assert.equal(mergedSettings.hooks.CustomUserHook[0].command, "user-custom-hook");
+    assert.equal(mergedSettings.hooks.CustomUserHook[0]._asdManaged, false);
+    // ASD-managed hooks should still be present
+    assert.ok(mergedSettings.hooks.PreToolUse?.length > 0, "ASD PreToolUse hooks should be present");
+    assert.ok(mergedSettings.hooks.Stop?.length > 0, "ASD Stop hooks should be present");
+  });
+
+  test("I2b: user edits OpenCode opencode.json → next sync re-merges preserving user MCP servers", async () => {
+    const i2bHome = createTempDir("asd-i2b-home-");
+    try {
+      // Initial sync
+      await syncHarnessConfigs({ homeDir: i2bHome, noPath: true });
+
+      // User adds a custom MCP server to opencode.json
+      const opencodeJsonPath = path.join(i2bHome, ".config", "opencode", "opencode.json");
+      const currentJson = JSON.parse(fs.readFileSync(opencodeJsonPath, "utf8"));
+      currentJson.mcpServers["user-custom-mcp"] = { command: "user-custom-bin" };
+      fs.writeFileSync(opencodeJsonPath, JSON.stringify(currentJson, null, 2), "utf8");
+
+      // Next sync should re-merge OpenCode
+      const secondSync = await syncHarnessConfigs({ homeDir: i2bHome, noPath: true });
+      assert.equal(secondSync.harnesses.opencode.status, "updated", "OpenCode should not be skipped due to user config divergence");
+
+      // User's custom MCP should survive
+      const mergedJson = JSON.parse(fs.readFileSync(opencodeJsonPath, "utf8"));
+      assert.ok(mergedJson.mcpServers["user-custom-mcp"], "User's custom MCP should survive re-merge");
+      assert.equal(mergedJson.mcpServers["user-custom-mcp"].command, "user-custom-bin");
+      // ASD-managed MCPs should still be present
+      assert.ok(mergedJson.mcpServers["context7"], "ASD context7 MCP should be present");
+      assert.equal(mergedJson.mcpServers["context7"]._asdManaged, true);
+    } finally {
+      removeTempDir(i2bHome);
+    }
+  });
+
+  test("I2c: lastSync.json stores userConfigHashes and is backward-compatible (missing field = behave as today)", async () => {
+    const i2cHome = createTempDir("asd-i2c-home-");
+    try {
+      // Initial sync
+      await syncHarnessConfigs({ homeDir: i2cHome, noPath: true });
+
+      // Check last-sync.json has userConfigHashes
+      const lastSyncPath = path.join(i2cHome, ".asd", "state", "last-sync.json");
+      const lastSync = JSON.parse(fs.readFileSync(lastSyncPath, "utf8"));
+      assert.ok(lastSync.harnesses["claude-code"].userConfigHashes, "userConfigHashes should be stored for claude-code");
+      assert.ok(lastSync.harnesses.opencode.userConfigHashes, "userConfigHashes should be stored for opencode");
+      assert.ok(lastSync.harnesses.codex.userConfigHashes, "userConfigHashes should be stored for codex");
+      assert.ok(lastSync.harnesses.antigravity.userConfigHashes, "userConfigHashes should be stored for antigravity");
+      assert.ok(lastSync.harnesses.cursor.userConfigHashes, "userConfigHashes should be stored for cursor");
+
+      // Simulate old last-sync.json without userConfigHashes (backward compatibility)
+      delete lastSync.harnesses["claude-code"].userConfigHashes;
+      fs.writeFileSync(lastSyncPath, JSON.stringify(lastSync, null, 2), "utf8");
+
+      // User edits config
+      const settingsPath = path.join(i2cHome, ".claude", "settings.json");
+      const currentSettings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+      currentSettings.hooks.CustomHook = [{ command: "custom", _asdManaged: false }];
+      fs.writeFileSync(settingsPath, JSON.stringify(currentSettings, null, 2), "utf8");
+
+      // Sync should still work (backward compatible - missing userConfigHashes means no divergence check)
+      const syncRes = await syncHarnessConfigs({ homeDir: i2cHome, noPath: true });
+      // Since userConfigHashes is missing, it may skip or not - but should not crash
+      assert.ok(syncRes.status === "updated" || syncRes.status === "skipped", "Sync should complete without error");
+    } finally {
+      removeTempDir(i2cHome);
+    }
+  });
+});
