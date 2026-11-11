@@ -47,6 +47,7 @@ import {
 } from "../core/session-tracker.ts";
 import { buildDefaultHarnessCommand, runDebateBroker } from "../core/debate.ts";
 import { checkProtectedPath, isPathAllowed, verifyChangedFilesBoundary } from "../core/policy.ts";
+import { expandTaskAllowedFiles } from "../core/subagent-control.ts";
 import {
   atomicWriteFileSync,
   getForegroundSessionId,
@@ -1248,9 +1249,7 @@ export class AsdMcpServer {
           allowedFiles = [];
         }
 
-        if (allowedFiles.length > 0 && !allowedFiles.includes("tests/**")) {
-          allowedFiles = [...allowedFiles, "tests/**", "**/*.test.ts", "**/*.spec.ts"];
-        }
+        allowedFiles = expandTaskAllowedFiles(t.role, allowedFiles);
         const workDir = wtInfo ? wtInfo.wtPath : this.projectRoot;
         const readSpawnOutput = (metaPath: string): string => {
           try {
@@ -1904,9 +1903,7 @@ export class AsdMcpServer {
     } catch {
       allowedFiles = [];
     }
-    if (allowedFiles.length > 0 && !allowedFiles.includes("tests/**")) {
-      allowedFiles = [...allowedFiles, "tests/**", "**/*.test.ts", "**/*.spec.ts"];
-    }
+    allowedFiles = expandTaskAllowedFiles(task.role, allowedFiles);
 
     let verifyResult: {
       verified: boolean;

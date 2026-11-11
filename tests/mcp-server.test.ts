@@ -1681,5 +1681,87 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.notEqual(session?.phase, "done");
       db.close();
     });
+
+    test("T2.3: handleVerify rejects tests/** modifications on docs-only and scout/critic tasks", async () => {
+      const projectRoot = makeProjectRoot();
+      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      openServers.push(server);
+
+      const sid = "asd-20261111-180000-notests";
+      await server.handlePlan({
+        action: "create",
+        sessionId: sid,
+        mainHarness: "codex",
+        tasks: [
+          {
+            taskId: "T1.1",
+            turn: 1,
+            title: "Docs-only update",
+            track: "LIGHT",
+            role: "worker",
+            category: "writing",
+            targetFiles: ["README.md"],
+          },
+          {
+            taskId: "T1.2",
+            turn: 1,
+            title: "Read-only scout audit",
+            track: "LIGHT",
+            role: "scout",
+            category: "research",
+            targetFiles: ["src/app.ts"],
+          },
+        ],
+      });
+
+      await server.handleDispatch({
+        sessionId: sid,
+        turn: 1,
+        mode: "claim_only",
+      });
+
+      // Attempt to sneak a test file modification during docs-only T1.1
+      fs.mkdirSync(path.join(projectRoot, "tests"), { recursive: true });
+      fs.writeFileSync(path.join(projectRoot, "tests/sneaky.test.ts"), "// unauthorized\n", "utf8");
+
+      const vDocs = await server.handleVerify({
+        sessionId: sid,
+        taskId: "T1.1",
+        doneClaim: {
+          summary: "Tried modifying tests in docs-only task",
+          changed_files: ["tests/sneaky.test.ts"],
+          key_decisions: [],
+          risks: [],
+        },
+      });
+      assert.equal(vDocs.verified, false, "Docs-only task must NOT be allowed to modify tests/**");
+      assert.ok(
+        vDocs.error?.includes("outside allowedFiles") ||
+          vDocs.violations?.some((v) => v.includes("sneaky.test.ts")),
+        `Expected boundary violation for sneaky.test.ts, got: ${JSON.stringify(vDocs)}`
+      );
+      fs.rmSync(path.join(projectRoot, "tests/sneaky.test.ts"), { force: true });
+
+      // Attempt to sneak a test file modification during scout T1.2
+      fs.mkdirSync(path.join(projectRoot, "tests"), { recursive: true });
+      fs.writeFileSync(path.join(projectRoot, "tests/scout.test.ts"), "// unauthorized\n", "utf8");
+
+      const vScout = await server.handleVerify({
+        sessionId: sid,
+        taskId: "T1.2",
+        doneClaim: {
+          summary: "Tried modifying tests in scout task",
+          changed_files: ["tests/scout.test.ts"],
+          key_decisions: [],
+          risks: [],
+        },
+      });
+      assert.equal(vScout.verified, false, "Scout task must NOT be allowed to modify tests/**");
+      assert.ok(
+        vScout.error?.includes("outside allowedFiles") ||
+          vScout.violations?.some((v) => v.includes("scout.test.ts")),
+        `Expected boundary violation for scout.test.ts, got: ${JSON.stringify(vScout)}`
+      );
+    });
   });
 });

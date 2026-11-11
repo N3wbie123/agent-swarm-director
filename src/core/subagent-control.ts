@@ -50,6 +50,46 @@ import { loadRoutingConfig, resolveAsdPaths } from "./config.ts";
 import { scanSubagentLogs, type SubagentLogRecord } from "./subagent-logs.ts";
 import type { HarnessId, AgentRole, DifficultyTier, TaskTrack } from "./types.ts";
 
+const NON_CODE_DOC_CONFIG_PATTERN =
+  /(?:^|\/)(?:\.gitignore|\.gitattributes|\.editorconfig|license(?:\.[a-z0-9]+)?|readme[^/]*|changelog[^/]*|handoff\.md)$|\.(?:md|mdx|markdown|txt|rst|adoc|json|jsonc|ya?ml|toml|ini|cfg|conf|lock|svg|png|jpe?g|gif|webp|ico|pdf)$/i;
+
+/**
+ * Returns true only when `tests/**` should be automatically appended to `allowedFiles`:
+ * - Never for read-only roles (`scout`, `critic`).
+ * - Never when `targetFiles` is empty or already includes `tests/**`.
+ * - Never when all `targetFiles` are documentation, markdown, or static config files.
+ */
+export function shouldAutoAllowTestFiles(
+  role: string | undefined,
+  targetFiles: string[]
+): boolean {
+  if (!Array.isArray(targetFiles) || targetFiles.length === 0) return false;
+  const normRole = (role || "worker").trim().toLowerCase();
+  if (normRole === "scout" || normRole === "critic") {
+    return false;
+  }
+  if (targetFiles.includes("tests/**")) {
+    return false;
+  }
+  return targetFiles.some((raw) => {
+    const clean = raw.replace(/\\/g, "/").replace(/^\.\//, "").trim();
+    if (!clean) return false;
+    if (/^(?:docs|doc|\.github)(?:\/|$)/i.test(clean)) return false;
+    if (NON_CODE_DOC_CONFIG_PATTERN.test(clean)) return false;
+    return true;
+  });
+}
+
+export function expandTaskAllowedFiles(
+  role: string | undefined,
+  targetFiles: string[]
+): string[] {
+  if (shouldAutoAllowTestFiles(role, targetFiles)) {
+    return [...targetFiles, "tests/**", "**/*.test.ts", "**/*.spec.ts"];
+  }
+  return [...targetFiles];
+}
+
 export async function runSubagentControlAction(options: {
   projectRoot: string;
   homeDir?: string;
@@ -254,37 +294,36 @@ export async function runSubagentControlAction(options: {
     let db: SqliteDriver | undefined;
     try {
       const paths = resolveAsdPaths(projectRoot, options.homeDir);
-      const coreDbFallback = path.join(projectRoot, ".asd", "core.db");
-      if (fs.existsSync(paths.dbPath) || fs.existsSync(coreDbFallback)) {
-        db = fs.existsSync(paths.dbPath)
-          ? openProjectDb(projectRoot, options.homeDir)
-          : new SqliteDriver(coreDbFallback, projectRoot);
+      if (fs.existsSync(paths.dbPath)) {
+        db = openProjectDb(projectRoot, options.homeDir);
         const debMatchInfo = target.subSessionId.match(/-deb-(D-[A-Za-z0-9-]+)-(r1|r2)/);
         if (debMatchInfo) {
           const debId = debMatchInfo[1]!;
           const roundTag = debMatchInfo[2]!;
           const debRow = db.getAllDebates().find((d) => d.debate_id === debId);
           if (debRow) {
+            const debProposal =
+              (debRow as DebateRow & { proposal?: string }).proposal ?? "";
             if (roundTag === "r2" && debRow.round1_bundle_json) {
               try {
                 const r1Bundle = JSON.parse(debRow.round1_bundle_json);
                 reconstructedPrompt = buildRound2Prompt(
                   debRow.topic,
-                  debRow.proposal ?? "",
+                  debProposal,
                   r1Bundle,
                   debRow.task_id ?? undefined
                 );
               } catch {
                 reconstructedPrompt = buildRound1Prompt(
                   debRow.topic,
-                  debRow.proposal ?? "",
+                  debProposal,
                   debRow.task_id ?? undefined
                 );
               }
             } else {
               reconstructedPrompt = buildRound1Prompt(
                 debRow.topic,
-                debRow.proposal ?? "",
+                debProposal,
                 debRow.task_id ?? undefined
               );
             }
@@ -327,11 +366,8 @@ export async function runSubagentControlAction(options: {
   // CR-13: State-dependent task setup when action === "resume"
   if (options.action === "resume" && target.taskId) {
     const paths = resolveAsdPaths(projectRoot, options.homeDir);
-    const coreDbFallback = path.join(projectRoot, ".asd", "core.db");
-    if (fs.existsSync(paths.dbPath) || fs.existsSync(coreDbFallback)) {
-      const db = fs.existsSync(paths.dbPath)
-        ? openProjectDb(projectRoot, options.homeDir)
-        : new SqliteDriver(coreDbFallback, projectRoot);
+    if (fs.existsSync(paths.dbPath)) {
+      const db = openProjectDb(projectRoot, options.homeDir);
       try {
         const taskRow = db.getTask(target.sessionId, target.taskId);
         if (taskRow) {
@@ -347,13 +383,10 @@ export async function runSubagentControlAction(options: {
           } catch {
             parsedTargetFiles = [];
           }
-          effectiveAllowedFiles = [...parsedTargetFiles];
-          if (
-            effectiveAllowedFiles.length > 0 &&
-            !effectiveAllowedFiles.includes("tests/**")
-          ) {
-            effectiveAllowedFiles.push("tests/**", "**/*.test.ts", "**/*.spec.ts");
-          }
+          effectiveAllowedFiles = expandTaskAllowedFiles(
+            taskRow.role,
+            parsedTargetFiles
+          );
 
           if (taskRow.status === "done") {
             const allTasks = db.getSessionTasks(target.sessionId);
@@ -486,11 +519,9 @@ export async function runSubagentControlAction(options: {
 
     if (options.action === "resume" && hasDbTask) {
       const paths = resolveAsdPaths(projectRoot, options.homeDir);
-      const coreDbFallback = path.join(projectRoot, ".asd", "core.db");
-      const db = fs.existsSync(paths.dbPath)
-        ? openProjectDb(projectRoot, options.homeDir)
-        : new SqliteDriver(coreDbFallback, projectRoot);
-      try {
+      if (fs.existsSync(paths.dbPath)) {
+        const db = openProjectDb(projectRoot, options.homeDir);
+        try {
         const sess = db.getSession(target.sessionId);
         const execTask = db.getTask(target.sessionId, effectiveTaskId);
         const autoApprove = sess ? sess.auto_approve !== 0 : true;
@@ -587,6 +618,7 @@ export async function runSubagentControlAction(options: {
         }
       } finally {
         db.close();
+      }
       }
     } else {
       try {

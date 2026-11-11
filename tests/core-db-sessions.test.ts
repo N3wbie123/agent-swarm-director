@@ -244,3 +244,37 @@ test("purgeOrphanedSessions: removes non-existent and temp test sessions, preser
     fs.rmSync(tempTestRoot, { recursive: true, force: true });
   }
 });
+
+// 11. Windows drive-letter case, slash direction, and trailing-slash variations resolve to the same scoped sessions/tasks/debates.
+test("SqliteDriver scopeProjectRoot: Windows drive-letter case and slash variations find the same sessions", () => {
+  const dir = tempDir("asd-db-case-");
+  const dbFile = path.join(dir, "core.db");
+
+  const writer = new SqliteDriver(dbFile, "C:\\Users\\Dev\\MyRepo\\");
+  cleanups.push(() => writer.close());
+  writer.createOrGetSession({
+    sessionId: "asd-20261111-160000-case",
+    projectRoot: "C:\\Users\\Dev\\MyRepo\\",
+    mainHarness: "codex",
+    harnessSessionId: "codex-sid-case-1",
+  });
+  writer.upsertTasks("asd-20261111-160000-case", [
+    { taskId: "T1.1", turn: 1, title: "Case-insensitive path lookup" },
+  ]);
+  writer.createDebate({
+    debateId: "D-case-1",
+    sessionId: "asd-20261111-160000-case",
+    topic: "Path normalization",
+  });
+
+  const readerLower = new SqliteDriver(dbFile, "c:/users/dev/myrepo");
+  cleanups.push(() => readerLower.close());
+  assert.equal(readerLower.getLatestSession()?.session_id, "asd-20261111-160000-case");
+  assert.equal(readerLower.listSessions().length, 1);
+  assert.equal(
+    readerLower.findSessionByHarnessSessionId("codex-sid-case-1", "codex")?.session_id,
+    "asd-20261111-160000-case"
+  );
+  assert.equal(readerLower.getAllTasks().length, 1);
+  assert.equal(readerLower.getAllDebates().length, 1);
+});

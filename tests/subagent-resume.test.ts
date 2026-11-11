@@ -11,7 +11,11 @@ import {
   prepareBaseline,
   runGit,
 } from "../src/core/workspace.ts";
-import { runSubagentControlAction } from "../src/core/subagent-control.ts";
+import {
+  expandTaskAllowedFiles,
+  runSubagentControlAction,
+  shouldAutoAllowTestFiles,
+} from "../src/core/subagent-control.ts";
 
 function makeTempGitRepo(prefix = "asd-sub-resume-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -284,5 +288,79 @@ test("CR-13: resuming a verifying task runs in the same worktree and respects se
     dbCheck.close();
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("T2.3: subagent-control uses global core.db exclusively (ignores legacy <project>/.asd/core.db) and restricts test auto-allow", async () => {
+  const root = makeTempGitRepo("asd-sub-nolegacy-");
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "asd-sub-nolegacy-home-"));
+  try {
+    // 1. Verify shouldAutoAllowTestFiles / expandTaskAllowedFiles rules
+    assert.equal(shouldAutoAllowTestFiles("scout", ["src/feature.ts"]), false);
+    assert.equal(shouldAutoAllowTestFiles("critic", ["src/feature.ts"]), false);
+    assert.equal(shouldAutoAllowTestFiles("worker", ["README.md", "docs/guide.md", ".gitignore"]), false);
+    assert.equal(shouldAutoAllowTestFiles("worker", ["package.json", "presets/default-routing.jsonc"]), false);
+    assert.equal(shouldAutoAllowTestFiles("worker", ["src/feature.ts"]), true);
+    assert.deepEqual(expandTaskAllowedFiles("scout", ["src/feature.ts"]), ["src/feature.ts"]);
+    assert.deepEqual(expandTaskAllowedFiles("worker", ["README.md"]), ["README.md"]);
+    assert.ok(expandTaskAllowedFiles("worker", ["src/feature.ts"]).includes("tests/**"));
+
+    // 2. Seed ONLY a legacy <project>/.asd/core.db while leaving tmpHome/.asd/state/core.db absent
+    const { SqliteDriver } = await import("../src/core/db.ts");
+    const legacyPath = path.join(root, ".asd", "core.db");
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+    const legacyDrv = new SqliteDriver(legacyPath, root);
+    const sessionId = "asd-20261111-170000-leg1";
+    legacyDrv.createOrGetSession({
+      sessionId,
+      projectRoot: root,
+      mainHarness: "codex",
+    });
+    legacyDrv.upsertTasks(sessionId, [
+      {
+        taskId: "T1.1",
+        turn: 1,
+        title: "Legacy-only task",
+        track: "LIGHT",
+        role: "worker",
+        targetFiles: ["src/feature.ts"],
+      },
+    ]);
+    legacyDrv.close();
+
+    // Subagent directory with purged prompt.md: retry without explicit prompt must NOT reconstruct from legacy .asd/core.db
+    const subDir = path.join(root, ".asd", "sessions", sessionId, "subagents", "sub-1-T1.1-worker-codex");
+    fs.mkdirSync(subDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(subDir, "meta.json"),
+      JSON.stringify({
+        subSessionId: "sub-1-T1.1-worker-codex",
+        parentSessionId: sessionId,
+        roleType: "subagent",
+        role: "worker",
+        harness: "codex",
+        model: "gpt-5.4",
+        taskId: "T1.1",
+        pid: 4001,
+        allowedFiles: ["src/feature.ts"],
+        status: "failed",
+      }),
+      "utf8"
+    );
+
+    await assert.rejects(
+      () =>
+        runSubagentControlAction({
+          projectRoot: root,
+          homeDir: tmpHome,
+          sessionId,
+          subSessionId: "sub-1-T1.1-worker-codex",
+          action: "retry",
+        }),
+      /Missing prompt/
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(tmpHome, { recursive: true, force: true });
   }
 });

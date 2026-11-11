@@ -290,6 +290,35 @@ const TASK_COLUMNS = `task_id, session_id, turn, title, track, role, category, d
 // SqliteDriver
 // ============================================================================
 
+export function normalizeProjectRootForQuery(projectRoot: string): string {
+  const raw = projectRoot.trim();
+  const isWinDrive = /^[A-Za-z]:(?:[/\\]|$)/.test(raw);
+  const resolved = (isWinDrive && process.platform !== "win32"
+    ? raw
+    : path.resolve(raw)
+  )
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "");
+  if (
+    process.platform === "win32" ||
+    process.platform === "darwin" ||
+    isWinDrive
+  ) {
+    return resolved.toLowerCase();
+  }
+  return resolved;
+}
+
+const SQL_NORM_PROJECT_ROOT =
+  process.platform === "win32" || process.platform === "darwin"
+    ? "LOWER(RTRIM(REPLACE(project_root, '\\', '/'), '/'))"
+    : "CASE WHEN project_root GLOB '[A-Za-z]:*' THEN LOWER(RTRIM(REPLACE(project_root, '\\', '/'), '/')) ELSE RTRIM(REPLACE(project_root, '\\', '/'), '/') END";
+
+const SQL_NORM_S_PROJECT_ROOT =
+  process.platform === "win32" || process.platform === "darwin"
+    ? "LOWER(RTRIM(REPLACE(s.project_root, '\\', '/'), '/'))"
+    : "CASE WHEN s.project_root GLOB '[A-Za-z]:*' THEN LOWER(RTRIM(REPLACE(s.project_root, '\\', '/'), '/')) ELSE RTRIM(REPLACE(s.project_root, '\\', '/'), '/') END";
+
 export class SqliteDriver {
   private db: DatabaseSync;
   private txDepth = 0;
@@ -318,7 +347,10 @@ export class SqliteDriver {
   private scopeProjectRoot: string | null;
 
   constructor(dbPath: string, projectRoot?: string) {
-    this.scopeProjectRoot = projectRoot ?? null;
+    this.scopeProjectRoot =
+      projectRoot !== undefined && projectRoot !== null
+        ? normalizeProjectRootForQuery(projectRoot)
+        : null;
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath, { timeout: 5000 });
     // Set busy_timeout FIRST so concurrent connections on the shared DB wait instead of failing with SQLITE_BUSY on journal_mode/DDL.
@@ -467,7 +499,7 @@ export class SqliteDriver {
       if (harness) {
         const direct = this.db
           .prepare(
-            "SELECT * FROM sessions WHERE project_root = ? AND main_harness = ? AND harness_session_id = ? ORDER BY updated_at DESC LIMIT 1"
+            `SELECT * FROM sessions WHERE ${SQL_NORM_PROJECT_ROOT} = ? AND main_harness = ? AND harness_session_id = ? ORDER BY updated_at DESC LIMIT 1`
           )
           .get(this.scopeProjectRoot, harness, trimmed) as unknown as
           | SessionRow
@@ -478,7 +510,7 @@ export class SqliteDriver {
           .prepare(
             `SELECT s.* FROM sessions s
              JOIN session_drivers d ON d.session_id = s.session_id
-             WHERE s.project_root = ? AND d.harness = ? AND d.harness_session_id = ?
+             WHERE ${SQL_NORM_S_PROJECT_ROOT} = ? AND d.harness = ? AND d.harness_session_id = ?
              ORDER BY d.attached_at DESC LIMIT 1`
           )
           .get(this.scopeProjectRoot, harness, trimmed) as unknown as
@@ -488,7 +520,7 @@ export class SqliteDriver {
 
       const direct = this.db
         .prepare(
-          "SELECT * FROM sessions WHERE project_root = ? AND harness_session_id = ? ORDER BY updated_at DESC LIMIT 1"
+          `SELECT * FROM sessions WHERE ${SQL_NORM_PROJECT_ROOT} = ? AND harness_session_id = ? ORDER BY updated_at DESC LIMIT 1`
         )
         .get(this.scopeProjectRoot, trimmed) as unknown as SessionRow | undefined;
       if (direct) return direct;
@@ -497,7 +529,7 @@ export class SqliteDriver {
         .prepare(
           `SELECT s.* FROM sessions s
            JOIN session_drivers d ON d.session_id = s.session_id
-           WHERE s.project_root = ? AND d.harness_session_id = ?
+           WHERE ${SQL_NORM_S_PROJECT_ROOT} = ? AND d.harness_session_id = ?
            ORDER BY d.attached_at DESC LIMIT 1`
         )
         .get(this.scopeProjectRoot, trimmed) as unknown as SessionRow | undefined;
@@ -642,7 +674,7 @@ export class SqliteDriver {
     if (this.scopeProjectRoot !== null) {
       return this.db
         .prepare(
-          "SELECT * FROM sessions WHERE project_root = ? ORDER BY created_at DESC LIMIT 1"
+          `SELECT * FROM sessions WHERE ${SQL_NORM_PROJECT_ROOT} = ? ORDER BY created_at DESC LIMIT 1`
         )
         .get(this.scopeProjectRoot) as unknown as SessionRow | undefined;
     }
@@ -656,7 +688,7 @@ export class SqliteDriver {
     if (this.scopeProjectRoot !== null) {
       return this.db
         .prepare(
-          "SELECT * FROM sessions WHERE project_root = ? ORDER BY created_at DESC"
+          `SELECT * FROM sessions WHERE ${SQL_NORM_PROJECT_ROOT} = ? ORDER BY created_at DESC`
         )
         .all(this.scopeProjectRoot) as unknown as SessionRow[];
     }
@@ -667,11 +699,21 @@ export class SqliteDriver {
 
   /** Distinct project roots present in this DB (single-DB discovery source). */
   listProjectRoots(): string[] {
-    return (
+    const rows = (
       this.db
         .prepare("SELECT DISTINCT project_root FROM sessions ORDER BY project_root")
         .all() as unknown as Array<{ project_root: string }>
     ).map((r) => r.project_root);
+    const seen = new Set<string>();
+    const deduped: string[] = [];
+    for (const r of rows) {
+      const key = normalizeProjectRootForQuery(r);
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(r);
+      }
+    }
+    return deduped;
   }
 
   /** Update the short memo attached to a session. */
@@ -1152,7 +1194,7 @@ export class SqliteDriver {
       return this.db
         .prepare(
           `SELECT d.* FROM debates d JOIN sessions s ON d.session_id = s.session_id
-           WHERE s.project_root = ? ORDER BY d.rowid DESC`
+           WHERE ${SQL_NORM_S_PROJECT_ROOT} = ? ORDER BY d.rowid DESC`
         )
         .all(this.scopeProjectRoot) as unknown as DebateRow[];
     }
@@ -1166,7 +1208,7 @@ export class SqliteDriver {
       return this.db
         .prepare(
           `SELECT t.* FROM tasks t JOIN sessions s ON t.session_id = s.session_id
-           WHERE s.project_root = ? ORDER BY t.turn, t.task_id`
+           WHERE ${SQL_NORM_S_PROJECT_ROOT} = ? ORDER BY t.turn, t.task_id`
         )
         .all(this.scopeProjectRoot) as unknown as TaskRow[];
     }
