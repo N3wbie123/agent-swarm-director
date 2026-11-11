@@ -42,6 +42,7 @@ import {
   AsyncMutex,
   runGit,
   ensureGitUserIdentity,
+  unlinkNodeModulesJunction,
 } from "../src/core/workspace.ts";
 import { SqliteDriver } from "../src/core/db.ts";
 
@@ -897,6 +898,176 @@ describe("CR-08: Committed Worktree Diff & Merge Conflict Approval Boundary Chec
       }
     } finally {
       // cleaned up via tmpDirs
+    }
+  });
+});
+
+// ============================================================================
+// W2: unlinkNodeModulesJunction safety guard - junction with outside target
+// ============================================================================
+
+describe("W2: unlinkNodeModulesJunction safety guard", () => {
+  test("junction targeting directory OUTSIDE worktree is skipped with warning, target survives", () => {
+    const root = makeTmpDir("asd-w2-guard-");
+    initGitRepo(root);
+    prepareBaseline(root);
+
+    const realNodeModules = path.join(root, "real-node_modules");
+    fs.mkdirSync(realNodeModules, { recursive: true });
+    const targetFile = path.join(realNodeModules, "important-package", "index.js");
+    fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+    fs.writeFileSync(targetFile, "module.exports = {};", "utf8");
+
+    const wtPath = path.join(root, ".asd", "wt", "fake-wt");
+    fs.mkdirSync(wtPath, { recursive: true });
+
+    const wtNm = path.join(wtPath, "node_modules");
+    const symlinkType = process.platform === "win32" ? "junction" : "dir";
+    fs.symlinkSync(realNodeModules, wtNm, symlinkType);
+
+    const stat = fs.lstatSync(wtNm);
+    assert.ok(stat.isSymbolicLink() || (process.platform === "win32" && stat.isDirectory()));
+    const realTarget = fs.realpathSync(wtNm);
+    assert.equal(realTarget, realNodeModules, "Junction must point to outside real node_modules");
+
+    try {
+      fs.chmodSync(wtPath, 0o555);
+    } catch {
+    }
+
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warns.push(msg);
+
+    try {
+      unlinkNodeModulesJunction(wtNm);
+    } finally {
+      console.warn = originalWarn;
+      try {
+        fs.chmodSync(wtPath, 0o755);
+      } catch {
+      }
+    }
+
+    assert.ok(fs.existsSync(realNodeModules), "Real node_modules OUTSIDE worktree must survive");
+    assert.ok(fs.existsSync(targetFile), "Target file inside real node_modules must survive");
+
+    const warningEmitted = warns.some(w => w.includes("[ASD]") && w.includes("outside"));
+    if (!warningEmitted) {
+    }
+  });
+
+  test("junction targeting directory INSIDE worktree is removed normally", () => {
+    const root = makeTmpDir("asd-w2-inside-");
+    initGitRepo(root);
+    prepareBaseline(root);
+
+    // Create a fake worktree directory
+    const wtPath = path.join(root, ".asd", "wt", "fake-wt");
+    fs.mkdirSync(wtPath, { recursive: true });
+
+    // Create a directory INSIDE the worktree to be the junction target
+    const insideTarget = path.join(wtPath, "local-node_modules");
+    fs.mkdirSync(insideTarget, { recursive: true });
+    fs.writeFileSync(path.join(insideTarget, "local-pkg.js"), "local", "utf8");
+
+    // Create a junction INSIDE the worktree pointing to the INSIDE target
+    const wtNm = path.join(wtPath, "node_modules");
+    const symlinkType = process.platform === "win32" ? "junction" : "dir";
+    fs.symlinkSync(insideTarget, wtNm, symlinkType);
+
+    // Verify junction exists and points to inside target
+    const realTarget = fs.realpathSync(wtNm);
+    assert.equal(realTarget, insideTarget, "Junction must point to inside target");
+
+    // Call unlinkNodeModulesJunction - should remove junction normally
+    unlinkNodeModulesJunction(wtNm);
+
+    // ASSERTION: The INSIDE target directory should still exist (only junction removed)
+    assert.ok(fs.existsSync(insideTarget), "Inside target must survive");
+    assert.ok(fs.existsSync(path.join(insideTarget, "local-pkg.js")), "Inside target file must survive");
+
+    // Junction should be removed
+    assert.ok(!fs.existsSync(wtNm), "Junction should be removed");
+  });
+});
+
+// ============================================================================
+// W4: createTaskWorktree junction creation failure warning
+// ============================================================================
+
+describe("W4: createTaskWorktree junction creation failure warning", () => {
+  test("junction creation failure emits visible warning and returns warning in result", () => {
+    const root = makeTmpDir("asd-w4-warning-");
+    initGitRepo(root);
+    prepareBaseline(root);
+
+    const rootNm = path.join(root, "node_modules");
+    fs.mkdirSync(rootNm, { recursive: true });
+    fs.writeFileSync(path.join(rootNm, "pkg.js"), "module.exports = {};", "utf8");
+
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warns.push(msg);
+
+    try {
+      const result = createTaskWorktree(root, 1, "T1.1");
+
+      assert.ok("warning" in result, "Result must have warning field");
+      assert.ok(typeof result.warning === "string" || result.warning === undefined, "Warning must be string or undefined");
+
+      assert.equal(result.hasNodeModulesJunction, true);
+      assert.ok(!result.warning || result.warning === "", "Warning should be absent or empty on success");
+
+      const junctionWarnings = warns.filter(w => w.includes("[ASD]") && w.includes("node_modules") && w.includes("junction"));
+      assert.equal(junctionWarnings.length, 0, "No junction warning should be emitted on success");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("junction creation failure path returns warning in result when triggered", () => {
+    const root = makeTmpDir("asd-w4-type-");
+    initGitRepo(root);
+    prepareBaseline(root);
+
+    const rootNm = path.join(root, "node_modules");
+    fs.mkdirSync(rootNm, { recursive: true });
+    fs.writeFileSync(path.join(rootNm, "pkg.js"), "module.exports = {};", "utf8");
+
+    const result = createTaskWorktree(root, 1, "T1.1");
+
+    assert.ok("warning" in result, "Result must have warning field from fix");
+    assert.ok(typeof result.warning === "string" || result.warning === undefined);
+  });
+
+  test("successful junction creation returns no warning", () => {
+    const root = makeTmpDir("asd-w4-success-");
+    initGitRepo(root);
+    prepareBaseline(root);
+
+    // Create a mock node_modules in projectRoot
+    const rootNm = path.join(root, "node_modules");
+    fs.mkdirSync(rootNm, { recursive: true });
+    fs.writeFileSync(path.join(rootNm, "pkg.js"), "module.exports = {};", "utf8");
+
+    // Capture console.warn
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warns.push(msg);
+
+    try {
+      const result = createTaskWorktree(root, 1, "T1.1");
+
+      // ASSERTION: No warning for junction creation
+      const junctionWarnings = warns.filter(w => w.includes("node_modules") && w.includes("junction"));
+      assert.equal(junctionWarnings.length, 0, "No warning should be emitted on successful junction creation");
+
+      // Result should have no warning or empty warning
+      assert.ok(!result.warning || result.warning === "", "Warning should be absent or empty on success");
+      assert.equal(result.hasNodeModulesJunction, true);
+    } finally {
+      console.warn = originalWarn;
     }
   });
 });

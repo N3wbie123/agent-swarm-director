@@ -67,6 +67,7 @@ export interface TaskWorktreeInfo {
   turn: number;
   taskId: string;
   hasNodeModulesJunction: boolean;
+  warning?: string;
 }
 
 export interface VerifyLightTaskOptions {
@@ -949,6 +950,7 @@ export function createTaskWorktree(
   const rootNm = path.join(projectRoot, "node_modules");
   const wtNm = path.join(wtPath, "node_modules");
   let hasNodeModulesJunction = false;
+  let junctionWarning: string | undefined;
 
   if (fs.existsSync(rootNm)) {
     // Remove if already exists (stale link)
@@ -969,8 +971,11 @@ export function createTaskWorktree(
     try {
       fs.symlinkSync(rootNm, wtNm, symlinkType);
       hasNodeModulesJunction = true;
-    } catch {
-      // Symlink failed; continue without junction
+    } catch (err) {
+      // W4: Junction creation failed - emit visible warning and return it
+      const msg = `Failed to create node_modules junction at ${wtNm}: ${err instanceof Error ? err.message : String(err)}`;
+      console.warn(`[ASD] createTaskWorktree: ${msg}`);
+      junctionWarning = msg;
     }
 
     // Exclude /node_modules from worktree git status
@@ -983,13 +988,18 @@ export function createTaskWorktree(
     turn,
     taskId,
     hasNodeModulesJunction,
+    warning: junctionWarning,
   };
 }
 
 /**
  * Safely unlinks a node_modules junction without deleting target directory contents.
+ * W2 Guard: Before rmSync fallback, verify the junction target is INSIDE the worktree.
+ * If target is outside (points to real node_modules), skip rmSync with warning.
  */
 export function unlinkNodeModulesJunction(wtNm: string): void {
+  const wtPath = path.dirname(wtNm); // worktree root = parent of node_modules
+
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       if (!fs.existsSync(wtNm)) {
@@ -1009,6 +1019,32 @@ export function unlinkNodeModulesJunction(wtNm: string): void {
             fs.rmdirSync(wtNm);
             return;
           } catch {
+            // W2 Guard: Before rmSync, verify junction target is inside worktree
+            let targetPath: string;
+            try {
+              targetPath = fs.realpathSync(wtNm);
+            } catch {
+              // Cannot resolve target - assume unsafe, skip rmSync
+              console.warn(
+                `[ASD] unlinkNodeModulesJunction: cannot resolve target of ${wtNm}, skipping rmSync to protect potential outside target`
+              );
+              return;
+            }
+
+            // Normalize paths for comparison
+            const normalizedWtPath = path.resolve(wtPath);
+            const normalizedTarget = path.resolve(targetPath);
+
+            // Check if target is strictly inside worktree
+            // Must start with worktree path + separator
+            if (!normalizedTarget.startsWith(normalizedWtPath + path.sep)) {
+              console.warn(
+                `[ASD] unlinkNodeModulesJunction: junction target "${targetPath}" is outside worktree "${wtPath}", skipping rmSync to prevent data loss`
+              );
+              return;
+            }
+
+            // Target is inside worktree - safe to rmSync
             fs.rmSync(wtNm, { recursive: false, force: true });
             return;
           }
