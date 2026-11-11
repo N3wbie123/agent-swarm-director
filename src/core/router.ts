@@ -215,12 +215,12 @@ export const DEFAULT_LIGHT_SUBAGENTS: LightSubagentsConfig = {
     fallbacks: ["haiku"],
   },
   opencode: {
-    scout: "glm-5",
-    worker: "glm-5",
-    planner: "glm-5",
-    architect: "glm-5",
-    critic: "glm-5",
-    defaultModel: "glm-5",
+    scout: "z-ai/glm-5.3-flash",
+    worker: "z-ai/glm-5.3-flash",
+    planner: "z-ai/glm-5.3-flash",
+    architect: "z-ai/glm-5.3-flash",
+    critic: "z-ai/glm-5.3-flash",
+    defaultModel: "z-ai/glm-5.3-flash",
   },
   codex: {
     defaultModel: "gpt-5-codex",
@@ -865,7 +865,7 @@ function resolveBaseRoute(
   const workerEntry = agentsMap.worker;
   return {
     harness: workerEntry?.harness ?? "opencode",
-    model: workerEntry?.model ?? "glm-5",
+    model: workerEntry?.model ?? "z-ai/glm-5.3-flash",
     modelFamily: workerEntry?.modelFamily ?? "glm",
     fallbacks: workerEntry ? [...workerEntry.fallbacks] : [],
     tier: 4,

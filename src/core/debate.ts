@@ -639,7 +639,7 @@ const DEFAULT_DEBATE_ROLE_CYCLE: readonly AgentRole[] = [
 
 const DEFAULT_HARNESS_DEBATE_MODELS: Record<HarnessId, string> = {
   "claude-code": "claude-opus-4-6",
-  opencode: "glm-5",
+  opencode: "z-ai/glm-5.3-flash",
   codex: "gpt-5-codex",
   antigravity: "gemini-3-pro",
   cursor: "claude-sonnet-4-6",

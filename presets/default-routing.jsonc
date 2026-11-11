@@ -1,4 +1,4 @@
-// ASD v2.4.2 default model routing preset.
+// ASD v2.5.0 default model routing preset.
 // Bootstrapped to ~/.asd/routing.jsonc on first use; per-project
 // overrides live in <project>/.asd/routing.jsonc (1st priority).
 //
@@ -8,7 +8,7 @@
 // 2. "agents" & "categories" (or "heavyRouting"): Used in HEAVY mode
 //    (external CLI parallel_spawn & cross-harness blind debate).
 {
-  "_asdVersion": "2.4.2",
+  "_asdVersion": "2.5.0",
   "lightSubagents": {
     "antigravity": {
       "scout": { "model": "flash_lite", "fallbacks": ["flash"] },

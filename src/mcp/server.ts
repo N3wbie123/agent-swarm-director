@@ -1018,7 +1018,7 @@ export class AsdMcpServer {
             taskId: t.task_id,
             status: t.status as TaskStatus,
             harness: (t.assigned_harness as HarnessId) ?? "opencode",
-            model: t.assigned_model ?? "glm-5",
+            model: t.assigned_model ?? "z-ai/glm-5.3-flash",
             durationMs: 0,
             error: `Upstream dependencies not satisfied: ${upCtx.missingDeps.join(", ")}`,
           });
@@ -1143,7 +1143,7 @@ export class AsdMcpServer {
           taskId: t.task_id,
           status: t.status as TaskStatus,
           harness: (t.assigned_harness as HarnessId) ?? "opencode",
-          model: t.assigned_model ?? "glm-5",
+          model: t.assigned_model ?? "z-ai/glm-5.3-flash",
           durationMs: 0,
           error: `Upstream dependencies not satisfied: ${upCtx.missingDeps.join(", ")}`,
         };
@@ -1218,7 +1218,7 @@ export class AsdMcpServer {
             taskId: t.task_id,
             status: "failed",
             harness: (t.assigned_harness as HarnessId) ?? "opencode",
-            model: t.assigned_model ?? "glm-5",
+            model: t.assigned_model ?? "z-ai/glm-5.3-flash",
             durationMs: 0,
             error: "Maximum escalation attempts exhausted (failed)",
           };
