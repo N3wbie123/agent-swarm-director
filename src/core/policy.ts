@@ -201,6 +201,17 @@ export function resolveSafeTargetPath(
     };
   }
 
+  // Reject UNC paths (//server/share or \\server\share) and Windows device namespaces (\\?\, \\.\)
+  // These bypass normal path resolution and can escape sandbox boundaries
+  const uncOrDevicePrefix = /^(\\\\|\\\\?\\|\\\\\.\\|\/\/)/;
+  if (uncOrDevicePrefix.test(targetPath)) {
+    return {
+      safe: false,
+      resolvedPath: targetPath,
+      reason: "UNC or device namespace paths are not allowed",
+    };
+  }
+
   // Determine absolute target path
   const absTarget = path.isAbsolute(targetPath)
     ? path.normalize(targetPath)
@@ -209,6 +220,15 @@ export function resolveSafeTargetPath(
   // Normalize target and root for comparison (walks up existing ancestors with realpathSync.native)
   const normTarget = normalizePathForCompare(absTarget);
   const normRoot = normalizePathForCompare(rootDir);
+
+  // If normalization returned the 8.3 sentinel, fail-closed
+  if (normTarget.includes("\0UNRESOLVABLE_8DOT3\0")) {
+    return {
+      safe: false,
+      resolvedPath: absTarget,
+      reason: "Path contains 8.3 short-name segment (e.g., PROGRA~1) — unresolvable",
+    };
+  }
 
   // Root prefix: ensure trailing slash to avoid matching sibling dirs with common prefixes
   const rootPrefix = normRoot.endsWith("/") ? normRoot : normRoot + "/";

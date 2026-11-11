@@ -41,12 +41,66 @@ export function resolveExistingAncestorRealpath(targetPath: string): string {
 
 /**
  * Normalize a path for comparison/hashing:
- * realpath-resolve, `\` → `/`, strip trailing `/` (bare roots kept),
- * lowercase on win32/darwin.
+ * realpath-resolve existing ancestors, then lexically normalize the remaining
+ * non-existent suffix (resolve . and .., lowercase on win32/darwin, convert backslashes).
+ * Detect and reject 8.3 short-name segments (e.g., PROGRA~1) — treat as unresolvable.
  */
 export function normalizePathForCompare(p: string): string {
-  const real = resolveExistingAncestorRealpath(p);
-  let s = real.replaceAll("\\", "/");
+  // First, resolve existing ancestors
+  let current = path.resolve(p);
+  const remainder: string[] = [];
+  let realPath: string;
+  for (;;) {
+    try {
+      realPath = fs.realpathSync.native(current);
+      break;
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        // Even root doesn't exist — treat entire path as non-existent, normalize lexically
+        realPath = current;
+        break;
+      }
+      remainder.push(path.basename(current));
+      current = parent;
+    }
+  }
+
+  // Reconstruct path: realPath + remaining segments (in correct order)
+  let reconstructed = remainder.length === 0
+    ? realPath
+    : path.resolve(realPath, ...[...remainder].reverse());
+
+  // Lexically normalize the non-existent suffix: resolve . and .., convert backslashes
+  let s = reconstructed.replaceAll("\\", "/");
+  
+  // Split into segments and resolve . and .. lexically
+  const segments = s.split("/");
+  const resolvedSegments: string[] = [];
+  for (const seg of segments) {
+    if (seg === "" || seg === ".") {
+      // Skip empty (from leading //) and .
+      continue;
+    }
+    if (seg === "..") {
+      if (resolvedSegments.length > 0) {
+        resolvedSegments.pop();
+      }
+      // If at root, ignore .. (can't go above root)
+      continue;
+    }
+    // Detect 8.3 short-name segments (e.g., PROGRA~1, FOOBAR~2)
+    // Pattern: 1-6 non-dot chars, followed by ~, followed by digits
+    if (/^[^.]{1,6}~\d+$/i.test(seg)) {
+      // 8.3 short name detected — treat as unresolvable, fail-closed
+      // Return a sentinel that will fail prefix comparison
+      return "\0UNRESOLVABLE_8DOT3\0";
+    }
+    resolvedSegments.push(seg);
+  }
+  s = resolvedSegments.join("/");
+
+  // Handle trailing slash for roots
   if (s.length > 1 && s.endsWith("/")) {
     const stripped = s.replace(/\/+$/, "");
     if (stripped === "") s = "/"; // bare POSIX root
