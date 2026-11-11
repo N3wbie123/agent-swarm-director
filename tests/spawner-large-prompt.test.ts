@@ -70,28 +70,62 @@ describe("spawner.ts - large prompt stdin offloading", () => {
     assert.ok(!result.args.includes("-"));
   });
 
-  test("buildSpawnCommand: antigravity throws when argv exceeds budget (no stdin support)", () => {
+  test("buildSpawnCommand: codex exec resume offloads prompt at index 3 while preserving 'resume <sid>'", () => {
     const prompt = "x".repeat(MAX_ARGV_CHARS + 100);
-    assert.throws(
-      () => buildSpawnCommand("antigravity", "agy", ["-p", prompt, "--output-format", "json"], prompt),
-      /does not support stdin prompt offloading/
+    const result = buildSpawnCommand(
+      "codex",
+      "codex",
+      ["exec", "resume", "thread-abc-123", prompt, "--json"],
+      prompt
     );
+    assert.equal(result.stdinPayload, prompt);
+    assert.equal(result.closeStdinOnSpawn, true);
+    assert.deepEqual(result.args, ["exec", "resume", "thread-abc-123", "-", "--json"]);
   });
 
-  test("buildSpawnCommand: cursor throws when argv exceeds budget (no stdin support)", () => {
+  test("buildSpawnCommand: antigravity offloads >MAX_ARGV_CHARS prompt via temp prompt file pointer", () => {
     const prompt = "x".repeat(MAX_ARGV_CHARS + 100);
-    assert.throws(
-      () => buildSpawnCommand("cursor", "agent", ["-p", prompt, "--force", "--output-format", "json"], prompt),
-      /does not support stdin prompt offloading/
-    );
+    const result = buildSpawnCommand("antigravity", "agy", ["-p", prompt, "--output-format", "json"], prompt);
+    try {
+      assert.ok(result.promptFilePath && fs.existsSync(result.promptFilePath));
+      assert.equal(fs.readFileSync(result.promptFilePath, "utf8"), prompt);
+      assert.ok(!result.args.includes(prompt));
+      assert.ok(result.args[1]?.includes(result.promptFilePath));
+    } finally {
+      if (result.promptFilePath) {
+        fs.rmSync(path.dirname(result.promptFilePath), { recursive: true, force: true });
+      }
+    }
   });
 
-  test("buildSpawnCommand: opencode throws when argv exceeds budget (no stdin support)", () => {
+  test("buildSpawnCommand: cursor offloads >MAX_ARGV_CHARS prompt via temp prompt file pointer", () => {
     const prompt = "x".repeat(MAX_ARGV_CHARS + 100);
-    assert.throws(
-      () => buildSpawnCommand("opencode", "opencode", ["run", prompt, "--format", "json"], prompt),
-      /does not support stdin prompt offloading/
-    );
+    const result = buildSpawnCommand("cursor", "agent", ["-p", prompt, "--force", "--output-format", "json"], prompt);
+    try {
+      assert.ok(result.promptFilePath && fs.existsSync(result.promptFilePath));
+      assert.equal(fs.readFileSync(result.promptFilePath, "utf8"), prompt);
+      assert.ok(!result.args.includes(prompt));
+      assert.ok(result.args[1]?.includes(result.promptFilePath));
+    } finally {
+      if (result.promptFilePath) {
+        fs.rmSync(path.dirname(result.promptFilePath), { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("buildSpawnCommand: opencode offloads >MAX_ARGV_CHARS prompt via temp prompt file pointer", () => {
+    const prompt = "x".repeat(MAX_ARGV_CHARS + 100);
+    const result = buildSpawnCommand("opencode", "opencode", ["run", prompt, "--format", "json"], prompt);
+    try {
+      assert.ok(result.promptFilePath && fs.existsSync(result.promptFilePath));
+      assert.equal(fs.readFileSync(result.promptFilePath, "utf8"), prompt);
+      assert.ok(!result.args.includes(prompt));
+      assert.ok(result.args[1]?.includes(result.promptFilePath));
+    } finally {
+      if (result.promptFilePath) {
+        fs.rmSync(path.dirname(result.promptFilePath), { recursive: true, force: true });
+      }
+    }
   });
 
   test("getHarnessStdinSpec returns correct specs for all harnesses", () => {
@@ -200,14 +234,41 @@ describe("spawner.ts - large prompt end-to-end with mock runner", () => {
     assert.equal(meta.harness, "claude-code");
   });
 
-  test("antigravity: >32k prompt fails early with clear error (buildSpawnCommand throws)", () => {
+  test("antigravity: >32k prompt spawns gracefully via temp prompt file and cleans up on exit", async () => {
+    const projectRoot = makeProjectRoot();
     const largePrompt = "x".repeat(40000);
     const baseArgs = ["-p", largePrompt, "--output-format", "json"];
+    const spec = buildSpawnCommand("antigravity", "agy", baseArgs, largePrompt);
+    assert.ok(spec.promptFilePath && fs.existsSync(spec.promptFilePath));
 
-    assert.throws(
-      () => buildSpawnCommand("antigravity", "agy", baseArgs, largePrompt),
-      /does not support stdin prompt offloading/
-    );
+    let promptExistedDuringRun = false;
+    const mockRunner: CommandRunner = {
+      async run(_cmd, _args, opts) {
+        promptExistedDuringRun = Boolean(spec.promptFilePath && fs.existsSync(spec.promptFilePath));
+        opts.onSpawn?.(7788);
+        return { exitCode: 0, pid: 7788 };
+      },
+    };
+
+    const res = await spawnSubagent({
+      projectRoot,
+      mainSessionId: "main-agy-large",
+      subSessionId: "sub-agy-large",
+      role: "worker",
+      harness: "antigravity",
+      model: "flash",
+      taskId: "T-LARGE-AGY",
+      prompt: largePrompt,
+      allowedFiles: [],
+      command: spec.command,
+      args: spec.args,
+      promptFilePath: spec.promptFilePath,
+      commandRunner: mockRunner,
+    });
+
+    assert.equal(res.exitCode, 0);
+    assert.equal(promptExistedDuringRun, true, "Temp prompt file must exist while child runs");
+    assert.equal(fs.existsSync(spec.promptFilePath!), false, "Temp prompt file must be cleaned up after child exits");
   });
 });
 

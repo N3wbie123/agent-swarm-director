@@ -148,7 +148,7 @@ export async function discoverHarnessModels(options?: {
   homeDir?: string;
   forceRefresh?: boolean;
   skipCliSpawn?: boolean;
-  enableGatewayProbe?: boolean;
+  enableGatewayProbe?: boolean | "trusted-only";
   cacheTtlMs?: number;
   persistCache?: boolean;
 }): Promise<HarnessModelCatalog> {
@@ -456,15 +456,60 @@ export async function discoverHarnessModels(options?: {
     });
 
     // Pair each token strictly with its matching gateway base URL (F21)
+    const TRUSTED_GATEWAY_HOSTS = new Set([
+      "api.anthropic.com",
+      "integrate.api.nvidia.com",
+      "api.openai.com",
+    ]);
+    const isSafeGatewayProbeUrl = (rawUrl: string, allowCustomRemoteHost: boolean): boolean => {
+      try {
+        const parsed = new URL(rawUrl);
+        if (parsed.username || parsed.password) return false;
+        const host = parsed.hostname.toLowerCase();
+        const isLoopback = host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
+        if (isLoopback) {
+          return parsed.protocol === "http:" || parsed.protocol === "https:";
+        }
+        if (parsed.protocol !== "https:") return false;
+        if (
+          host === "0.0.0.0" ||
+          host === "metadata.google.internal" ||
+          host === "100.100.100.200" ||
+          host.startsWith("169.254.") ||
+          host.startsWith("10.") ||
+          host.startsWith("192.168.") ||
+          /^172\.(?:1[6-9]|2\d|3[01])\./.test(host)
+        ) {
+          return false;
+        }
+        if (TRUSTED_GATEWAY_HOSTS.has(host)) return true;
+        return allowCustomRemoteHost;
+      } catch {
+        return false;
+      }
+    };
+
+    const allowCustomRemoteHost =
+      options?.enableGatewayProbe === true ||
+      process.env.ASD_ALLOW_CUSTOM_GATEWAY_PROBE === "1";
+
     let gatewayToken = "";
     let gatewayBase = "";
     const explicitGatewayBase = (anthropicBaseUrl || litellmBaseUrl).replace(/\/+$/, "");
     if (anthropicToken && explicitGatewayBase) {
-      gatewayToken = anthropicToken;
-      gatewayBase = explicitGatewayBase;
+      if (isSafeGatewayProbeUrl(explicitGatewayBase, allowCustomRemoteHost)) {
+        gatewayToken = anthropicToken;
+        gatewayBase = explicitGatewayBase;
+      }
     } else if (nvidiaToken) {
-      gatewayToken = nvidiaToken;
-      gatewayBase = explicitGatewayBase || "https://integrate.api.nvidia.com/v1";
+      const candidateNvidiaBase = "https://integrate.api.nvidia.com/v1";
+      if (
+        !explicitGatewayBase ||
+        explicitGatewayBase.toLowerCase().includes("integrate.api.nvidia.com")
+      ) {
+        gatewayToken = nvidiaToken;
+        gatewayBase = explicitGatewayBase || candidateNvidiaBase;
+      }
     }
 
     const gatewayProbe = (async () => {
@@ -480,6 +525,7 @@ export async function discoverHarnessModels(options?: {
         const modelsEndpoint = gatewayBase.endsWith("/models") ? gatewayBase : `${gatewayBase}/models`;
         const res = await fetch(modelsEndpoint, {
           headers: { Authorization: `Bearer ${gatewayToken}` },
+          redirect: "error",
           signal: AbortSignal.timeout(2500),
         });
         if (res.ok) {

@@ -277,4 +277,38 @@ describe("spawner.ts", () => {
     assert.ok(log.includes("mock-out"));
     assert.ok(log.includes("mock-err"));
   });
+
+  test("prompt.md redacts leaked secrets before persisting to disk", async () => {
+    const projectRoot = makeProjectRoot();
+    const fakeSecret = ["sk-proj", "9fK3mP8xQ2vL7nR4tW6yZ1bC5dG8hJ0kM3pS6uV9wX2"].join("-");
+    const mockRunner: CommandRunner = {
+      async run(_cmd, _args, opts) {
+        opts.onSpawn?.(5151);
+        return { exitCode: 0, pid: 5151 };
+      },
+    };
+
+    const result = await spawnSubagent({
+      projectRoot,
+      mainSessionId: "main-redact-prompt",
+      subSessionId: "sub-redact-prompt",
+      role: "worker",
+      harness: "opencode",
+      model: "z-ai/glm-5.3-flash",
+      taskId: "T-REDACT",
+      prompt: `Deploy using key ${fakeSecret} and api_key="topsecret999"`,
+      allowedFiles: [],
+      command: "fake-cmd",
+      args: [],
+      commandRunner: mockRunner,
+    });
+
+    const promptMd = fs.readFileSync(
+      path.join(path.dirname(result.metaPath), "prompt.md"),
+      "utf8"
+    );
+    assert.equal(promptMd.includes(fakeSecret), false, "Raw API key must not be persisted in prompt.md");
+    assert.equal(promptMd.includes("topsecret999"), false, "Raw api_key must not be persisted in prompt.md");
+    assert.ok(promptMd.includes("[REDACTED]"), "prompt.md must contain [REDACTED]");
+  });
 });

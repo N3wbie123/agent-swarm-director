@@ -73,6 +73,7 @@ export function buildSpawnSpec(
   args: string[];
   stdinPayload?: string;
   closeStdinOnSpawn?: boolean;
+  promptFilePath?: string;
 } {
   const base = options.resumeSessionId
     ? buildResumeHarnessCommand({

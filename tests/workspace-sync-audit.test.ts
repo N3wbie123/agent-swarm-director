@@ -11,7 +11,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { hasLeakedSecrets, redactSecrets } from "../src/core/redact.ts";
-import { prepareBaseline, rollbackLightChanges, runGit } from "../src/core/workspace.ts";
+import {
+  checkChangedFilesAndSecrets,
+  prepareBaseline,
+  rollbackLightChanges,
+  runGit,
+} from "../src/core/workspace.ts";
 import { renderPlanMd, syncPlanFromMd } from "../src/core/render.ts";
 import { openProjectDb, SqliteDriver } from "../src/core/db.ts";
 
@@ -231,5 +236,38 @@ describe("Workspace, Secret Redaction & PLAN.md Sync Audit (T2.1)", () => {
       "original content\n",
       "tracked file must be restored to HEAD"
     );
+  });
+
+  test("7. checkChangedFilesAndSecrets detects real leaked secrets inside test files while allowing safe dummy fixtures", () => {
+    const root = makeTempDir();
+    fs.mkdirSync(path.join(root, "tests"), { recursive: true });
+
+    const realLookingKey = ["sk-proj", "9fK3mP8xQ2vL7nR4tW6yZ1bC5dG8hJ0kM3pS6uV9wX2"].join("-");
+    const dummyAwsKey = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
+
+    fs.writeFileSync(
+      path.join(root, "tests", "leaked.test.ts"),
+      `export const k = "${realLookingKey}";\n`,
+      "utf8"
+    );
+    fs.writeFileSync(
+      path.join(root, "tests", "safe-fixture.test.ts"),
+      `export const sample = "${dummyAwsKey}";\n`,
+      "utf8"
+    );
+
+    const leakedRes = checkChangedFilesAndSecrets(
+      ["tests/leaked.test.ts"],
+      ["tests/**"],
+      root
+    );
+    assert.equal(leakedRes.valid, false, "Real secret inside test file must be flagged");
+
+    const safeRes = checkChangedFilesAndSecrets(
+      ["tests/safe-fixture.test.ts"],
+      ["tests/**"],
+      root
+    );
+    assert.equal(safeRes.valid, true, "Safe EXAMPLE fixture in test file must pass");
   });
 });

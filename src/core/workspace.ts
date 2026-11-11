@@ -464,6 +464,20 @@ export function runVerifyCmd(
 // 5. Boundary & Secret Scanning
 // ============================================================================
 
+const DEDICATED_REDACTOR_TEST_FILES = new Set([
+  "tests/redact.test.ts",
+  "tests/jsonc-and-toml.test.ts",
+]);
+
+function scrubSafeTestFixtures(content: string): string {
+  return content
+    .replace(/\b(?:AKIA|ASIA)[0-9A-Z]*?(?:EXAMPLE|DUMMY|TEST|FAKE|MOCK)[0-9A-Z]*\b/gi, "[FIXTURE]")
+    .replace(
+      /\b(?:sk|ghp|gho|ghu|ghs|ghr|npm|pypi|AIza)[-_][A-Za-z0-9_-]*?(?:example|dummy|test|fake|mock|sample|placeholder|12345678|abcdef)[A-Za-z0-9_-]*\b/gi,
+      "[FIXTURE]"
+    );
+}
+
 export function checkChangedFilesAndSecrets(
   changedFiles: string[],
   allowedFiles: string[] | undefined,
@@ -481,21 +495,27 @@ export function checkChangedFilesAndSecrets(
     violations.push(...boundaryResult.violations);
   }
 
-  // 2. Secret scan via redact.ts (skip test files which intentionally contain sample redaction fixtures)
+  // 2. Secret scan via redact.ts (only exempt dedicated redactor unit tests or explicit marker;
+  //    regular test files are still scanned after scrubbing obvious dummy/example fixture strings)
   for (const relFile of changedFiles) {
     const normRel = relFile.replaceAll("\\", "/").toLowerCase();
-    if (
-      normRel.startsWith("tests/") ||
-      normRel.endsWith(".test.ts") ||
-      normRel.endsWith(".spec.ts")
-    ) {
+    if (DEDICATED_REDACTOR_TEST_FILES.has(normRel)) {
       continue;
     }
+    const isTestFile =
+      normRel.startsWith("tests/") ||
+      normRel.endsWith(".test.ts") ||
+      normRel.endsWith(".spec.ts");
+
     const absPath = path.resolve(targetDir, relFile);
     try {
       if (fs.existsSync(absPath) && fs.statSync(absPath).isFile()) {
         const content = fs.readFileSync(absPath, "utf8");
-        if (hasLeakedSecrets(content)) {
+        if (isTestFile && content.includes("asd-allow-secret-fixtures")) {
+          continue;
+        }
+        const scanTarget = isTestFile ? scrubSafeTestFixtures(content) : content;
+        if (hasLeakedSecrets(scanTarget)) {
           violations.push(
             `File '${relFile}' contains leaked secrets or credentials matching redact patterns`
           );

@@ -17,6 +17,7 @@
 
 import * as child_process from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { resolveAsdPaths } from "./config.ts";
 import { redactSecrets } from "./redact.ts";
@@ -73,21 +74,25 @@ export function getHarnessStdinSpec(harness: HarnessId): HarnessStdinSpec {
 /**
  * Builds the final spawn command/args, offloading the prompt to stdin when:
  * - the harness supports stdin, AND
- * - the total argv length would exceed MAX_ARGV_CHARS.
+ * - the total argv length would exceed MAX_ARGV_CHARS (or prompt > 1500 chars for claude-code).
  *
- * For claude-code, preserves existing behavior: also offloads when prompt > 1500 chars
- * (the original threshold) even if total argv is under budget.
- *
- * Returns { command, args, stdinPayload?, closeStdinOnSpawn? }.
- * If stdin offloading is needed but the harness doesn't support it, throws an Error
- * with a clear message instead of letting spawn throw ENAMETOOLONG.
+ * When argv exceeds MAX_ARGV_CHARS on a harness without stdin prompt support
+ * (opencode, antigravity, cursor), writes the prompt to a restricted temporary
+ * markdown file and replaces the oversized argv prompt with a short file-pointer
+ * instruction so spawn never crashes with ENAMETOOLONG.
  */
 export function buildSpawnCommand(
   harness: HarnessId,
   command: string,
   args: string[],
   prompt: string
-): { command: string; args: string[]; stdinPayload?: string; closeStdinOnSpawn?: boolean } {
+): {
+  command: string;
+  args: string[];
+  stdinPayload?: string;
+  closeStdinOnSpawn?: boolean;
+  promptFilePath?: string;
+} {
   const spec = getHarnessStdinSpec(harness);
   const totalArgChars = args.reduce((acc, a) => acc + a.length, 0) + command.length;
   const promptLen = prompt.length;
@@ -99,17 +104,46 @@ export function buildSpawnCommand(
     return { command, args };
   }
 
+  let newArgs = [...args];
+
   if (!spec.stdinSupported) {
-    throw new Error(
-      `Harness '${harness}' does not support stdin prompt offloading; ` +
-        `argv length (${totalArgChars} chars) exceeds safe budget (${MAX_ARGV_CHARS} chars). ` +
-        `Reduce prompt size or use a harness that supports stdin (claude-code, codex).`
-    );
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "asd-prompt-"));
+    try {
+      fs.chmodSync(tmpDir, 0o700);
+    } catch {
+      // Windows chmod best-effort
+    }
+    const promptFilePath = path.join(tmpDir, "prompt.md");
+    fs.writeFileSync(promptFilePath, prompt, { encoding: "utf8", mode: 0o600 });
+    const pointerPrompt =
+      `Read the complete task instructions from file "${promptFilePath}" and execute all requirements within.`;
+
+    let replaced = false;
+    if (harness === "antigravity" || harness === "cursor") {
+      const pIdx = newArgs.indexOf("-p");
+      if (pIdx !== -1 && pIdx + 1 < newArgs.length) {
+        newArgs[pIdx + 1] = pointerPrompt;
+        replaced = true;
+      }
+    } else if (harness === "opencode") {
+      const runIdx = newArgs.indexOf("run");
+      if (runIdx !== -1 && runIdx + 1 < newArgs.length) {
+        newArgs[runIdx + 1] = pointerPrompt;
+        replaced = true;
+      }
+    }
+    if (!replaced) {
+      const exactIdx = newArgs.indexOf(prompt);
+      if (exactIdx !== -1) {
+        newArgs[exactIdx] = pointerPrompt;
+      }
+    }
+
+    return { command, args: newArgs, promptFilePath };
   }
 
-  let newArgs = [...args];
-  let stdinPayload = prompt;
-  let closeStdinOnSpawn = true;
+  const stdinPayload = prompt;
+  const closeStdinOnSpawn = true;
 
   if (harness === "claude-code") {
     const pIdx = newArgs.indexOf("-p");
@@ -118,8 +152,12 @@ export function buildSpawnCommand(
     }
   } else if (harness === "codex") {
     const execIdx = newArgs.indexOf("exec");
-    if (execIdx !== -1 && execIdx + 1 < newArgs.length) {
-      newArgs[execIdx + 1] = "-";
+    if (execIdx !== -1) {
+      if (newArgs[execIdx + 1] === "resume" && execIdx + 3 < newArgs.length) {
+        newArgs[execIdx + 3] = "-";
+      } else if (execIdx + 1 < newArgs.length) {
+        newArgs[execIdx + 1] = "-";
+      }
     }
   }
 
@@ -179,6 +217,7 @@ export interface SpawnSubagentOptions {
   ownerPid?: number;
   stdinPayload?: string;
   closeStdinOnSpawn?: boolean;
+  promptFilePath?: string;
 }
 
 export const DEFAULT_DISPATCH_TIMEOUT_MS =
@@ -512,6 +551,7 @@ export interface ExecuteHarnessProcessOptions {
   commandRunner?: CommandRunner;
   stdinPayload?: string;
   closeStdinOnSpawn?: boolean;
+  promptFilePath?: string;
   onSpawn?: (pid: number) => void;
   onSessionIdDetected?: (harnessSessionId: string) => void;
   onOutput?: (redactedChunk: string) => void;
@@ -608,6 +648,18 @@ export function executeHarnessProcess(
         errorSummary,
       };
       options.onBeforeStreamEnd?.(result);
+      if (options.promptFilePath) {
+        try {
+          const tmpParent = path.dirname(options.promptFilePath);
+          if (path.basename(tmpParent).startsWith("asd-prompt-")) {
+            fs.rmSync(tmpParent, { recursive: true, force: true });
+          } else {
+            fs.rmSync(options.promptFilePath, { force: true });
+          }
+        } catch {
+          // Best-effort temp prompt cleanup
+        }
+      }
       logStream.end(() => {
         resolve(result);
       });
@@ -742,7 +794,7 @@ export function spawnSubagent(
   const metaPath = path.join(sessionDir, "meta.json");
   const logPath = path.join(sessionDir, "output.log");
 
-  fs.writeFileSync(path.join(sessionDir, "prompt.md"), options.prompt);
+  fs.writeFileSync(path.join(sessionDir, "prompt.md"), redactSecrets(options.prompt));
 
   const startedAt = Date.now();
   let meta: SubagentSessionMeta = {
@@ -790,6 +842,7 @@ export function spawnSubagent(
     commandRunner: options.commandRunner,
     stdinPayload: options.stdinPayload,
     closeStdinOnSpawn: options.closeStdinOnSpawn ?? true,
+    promptFilePath: options.promptFilePath,
     onSpawn: (pid) => {
       meta = { ...meta, pid };
       writeMeta();
