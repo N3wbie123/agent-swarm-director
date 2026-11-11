@@ -222,7 +222,7 @@ test("Tier 4: builder or worker + general or unknown category -> difficulty tier
 // ============================================================================
 
 test("@ag fallback: falls back to first CLI harness in fallbacks when headless unsupported", () => {
-  // Scout role default in presets is antigravity / gemini-3-flash-lite
+  // Scout role default in presets is antigravity / gemini-3.8-flash-low
   // Fallback 1: codex / gpt-5-codex, Fallback 2: opencode / z-ai/glm-5.3-flash
   const route = resolveRoute(
     {
@@ -252,7 +252,7 @@ test("@ag fallback: retains antigravity when headless is supported", () => {
   );
 
   assert.equal(route.harness, "antigravity");
-  assert.equal(route.model, "gemini-3-flash-lite");
+  assert.equal(route.model, "gemini-3.8-flash-low");
   assert.equal(route.fallbackApplied, undefined);
 });
 
@@ -269,7 +269,7 @@ test("@ag fallback: retains antigravity when mainHarness is antigravity and mode
   );
 
   assert.equal(route.harness, "antigravity");
-  assert.equal(route.model, "gemini-3-flash-lite");
+  assert.equal(route.model, "gemini-3.8-flash-low");
   assert.equal(route.fallbackApplied, undefined);
 });
 
@@ -284,7 +284,7 @@ test("@ag fallback: retains antigravity when isSubagentSpawn is false (main host
   );
 
   assert.equal(route.harness, "antigravity");
-  assert.equal(route.model, "gemini-3-flash-lite");
+  assert.equal(route.model, "gemini-3.8-flash-low");
 });
 
 test("@ag fallback: respects availableHarnesses constraint during fallback", () => {

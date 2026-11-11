@@ -179,14 +179,21 @@ export function normalizeAntigravityModel(
     m === "flash_lite" ||
     m === "flash-lite" ||
     m.includes("flash_lite") ||
-    m.includes("flash-lite")
+    m.includes("flash-lite") ||
+    m.includes("flash_low") ||
+    m.includes("flash-low")
   ) {
     return "flash_lite";
   }
   if (m === "flash" || m.includes("flash")) {
     return "flash";
   }
-  if (m === "pro" || m.includes("pro")) {
+  if (
+    m === "pro" ||
+    m.includes("pro") ||
+    m.includes("carbon") ||
+    m.includes("argon")
+  ) {
     return "pro";
   }
   if (m === "inherit" || m === "inherent") {

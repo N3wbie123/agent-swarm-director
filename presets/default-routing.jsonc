@@ -71,12 +71,12 @@
       "modelFamily": "glm",
       "fallbacks": [
         { "harness": "codex", "model": "gpt-5-codex", "modelFamily": "gpt" },
-        { "harness": "antigravity", "model": "gemini-3-flash", "modelFamily": "gemini" }
+        { "harness": "antigravity", "model": "gemini-3.8-flash-medium", "modelFamily": "gemini" }
       ]
     },
     "scout": {
       "harness": "antigravity",
-      "model": "gemini-3-flash-lite",
+      "model": "gemini-3.8-flash-low",
       "modelFamily": "gemini",
       "fallbacks": [
         { "harness": "codex", "model": "gpt-5-codex", "modelFamily": "gpt" },
@@ -99,7 +99,7 @@
       "model": "claude-sonnet-4-6",
       "modelFamily": "claude",
       "fallbacks": [
-        { "harness": "antigravity", "model": "gemini-3-pro", "modelFamily": "gemini" },
+        { "harness": "antigravity", "model": "gemini-4-carbon-high", "modelFamily": "gemini" },
         { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
@@ -108,7 +108,7 @@
       "model": "claude-sonnet-4-6",
       "modelFamily": "claude",
       "fallbacks": [
-        { "harness": "antigravity", "model": "gemini-3-pro", "modelFamily": "gemini" },
+        { "harness": "antigravity", "model": "gemini-4-carbon-high", "modelFamily": "gemini" },
         { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
@@ -136,12 +136,12 @@
       "modelFamily": "glm",
       "fallbacks": [
         { "harness": "codex", "model": "gpt-5-codex", "modelFamily": "gpt" },
-        { "harness": "antigravity", "model": "gemini-3-flash", "modelFamily": "gemini" }
+        { "harness": "antigravity", "model": "gemini-3.8-flash-medium", "modelFamily": "gemini" }
       ]
     },
     "low": {
       "harness": "antigravity",
-      "model": "gemini-3-flash",
+      "model": "gemini-3.8-flash-medium",
       "modelFamily": "gemini",
       "fallbacks": [
         { "harness": "codex", "model": "gpt-5-codex", "modelFamily": "gpt" },

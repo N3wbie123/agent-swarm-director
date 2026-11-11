@@ -732,6 +732,11 @@ test("v2.4.3 Auto-Migration: syncHarnessConfigs upgrades legacy (< 2.4.2) ~/.asd
       "User custom agents.worker must be preserved intact"
     );
     assert.equal(
+      migrated.agents.worker.fallbacks[0].model,
+      "gemini-3.8-flash-medium",
+      "Legacy nonexistent Antigravity CLI model must be migrated to valid agy model ID"
+    );
+    assert.equal(
       migrated.categories.general.model,
       "nvidia/z-ai/glm-5.3-flash",
       "User custom categories.general must be preserved intact"

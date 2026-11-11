@@ -507,7 +507,7 @@ function getDefaultModelForHarness(harness: HarnessId): string {
     case "opencode":
       return "glm-5";
     case "antigravity":
-      return "gemini-3.1-pro-high";
+      return "gemini-4-carbon-high";
     case "cursor":
       return "claude-4.5-sonnet";
     default:

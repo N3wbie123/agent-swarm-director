@@ -606,6 +606,58 @@ This document defines the 5 standard specialist agent roles in ASD v${ASD_VERSIO
 // Preset Bootstrapping & Hash Calculation
 // ============================================================================
 
+const LEGACY_ANTIGRAVITY_CLI_MODEL_MAP: Record<string, string> = {
+  "gemini-3-flash-lite": "gemini-3.8-flash-low",
+  "gemini-3.5-flash-lite": "gemini-3.8-flash-low",
+  "gemini-3-flash": "gemini-3.8-flash-medium",
+  "gemini-3.8-flash": "gemini-3.8-flash-medium",
+  "gemini-3-pro": "gemini-4-carbon-high",
+  "gemini-3.1-pro": "gemini-4-carbon-high",
+  "gemini-3.1-pro-high": "gemini-4-carbon-high",
+};
+
+function migrateAntigravityRouteGroup(group: unknown): boolean {
+  if (!group || typeof group !== "object") return false;
+  let changed = false;
+  for (const route of Object.values(group as Record<string, unknown>)) {
+    if (!route || typeof route !== "object") continue;
+    const entry = route as Record<string, unknown>;
+    if (entry.harness === "antigravity" && typeof entry.model === "string") {
+      const replacement = LEGACY_ANTIGRAVITY_CLI_MODEL_MAP[entry.model];
+      if (replacement) {
+        entry.model = replacement;
+        changed = true;
+      }
+    }
+    if (Array.isArray(entry.fallbacks)) {
+      for (const fb of entry.fallbacks) {
+        if (!fb || typeof fb !== "object") continue;
+        const fbRec = fb as Record<string, unknown>;
+        if (fbRec.harness === "antigravity" && typeof fbRec.model === "string") {
+          const replacement = LEGACY_ANTIGRAVITY_CLI_MODEL_MAP[fbRec.model];
+          if (replacement) {
+            fbRec.model = replacement;
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+  return changed;
+}
+
+function migrateLegacyAntigravityCliModels(routing: Record<string, unknown>): boolean {
+  let changed = false;
+  if (migrateAntigravityRouteGroup(routing.agents)) changed = true;
+  if (migrateAntigravityRouteGroup(routing.categories)) changed = true;
+  if (routing.heavyRouting && typeof routing.heavyRouting === "object") {
+    const heavy = routing.heavyRouting as Record<string, unknown>;
+    if (migrateAntigravityRouteGroup(heavy.agents)) changed = true;
+    if (migrateAntigravityRouteGroup(heavy.categories)) changed = true;
+  }
+  return changed;
+}
+
 function bootstrapGlobalPresets(homeDir: string): { routingPath: string; mcpPath: string } {
   const asdHome = path.join(homeDir, ".asd");
   ensureDir(asdHome);
@@ -632,44 +684,49 @@ function bootstrapGlobalPresets(homeDir: string): { routingPath: string; mcpPath
     try {
       const existingRaw = fs.readFileSync(routingPath, "utf8");
       const parsed = parseJsonc<RoutingConfig & { _asdVersion?: string }>(existingRaw);
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        typeof parsed._asdVersion === "string" &&
-        compareSemver(parsed._asdVersion, ASD_VERSION) < 0
-      ) {
-        let presetLightSubagents: RoutingConfig["lightSubagents"] | undefined;
-        if (fs.existsSync(presetRouting)) {
-          try {
-            const presetParsed = parseJsonc<RoutingConfig>(
-              fs.readFileSync(presetRouting, "utf8")
-            );
-            presetLightSubagents = presetParsed?.lightSubagents;
-          } catch {
-            presetLightSubagents = undefined;
+      if (parsed && typeof parsed === "object") {
+        const needsVersionUpgrade =
+          typeof parsed._asdVersion === "string" &&
+          compareSemver(parsed._asdVersion, ASD_VERSION) < 0;
+        const parsedRec = parsed as unknown as Record<string, unknown>;
+        const modelsMigrated = migrateLegacyAntigravityCliModels(parsedRec);
+
+        if (needsVersionUpgrade || modelsMigrated) {
+          let presetLightSubagents: RoutingConfig["lightSubagents"] | undefined;
+          if (needsVersionUpgrade && fs.existsSync(presetRouting)) {
+            try {
+              const presetParsed = parseJsonc<RoutingConfig>(
+                fs.readFileSync(presetRouting, "utf8")
+              );
+              presetLightSubagents = presetParsed?.lightSubagents;
+            } catch {
+              presetLightSubagents = undefined;
+            }
           }
-        }
 
-        const migrated: Record<string, unknown> = {
-          _asdVersion: ASD_VERSION,
-        };
-        const mergedLightSubagents = parsed.lightSubagents
-          ? { ...(presetLightSubagents ?? {}), ...parsed.lightSubagents }
-          : presetLightSubagents;
-        if (mergedLightSubagents) {
-          migrated.lightSubagents = mergedLightSubagents;
-        }
-        for (const [key, val] of Object.entries(parsed)) {
-          if (key === "_asdVersion" || key === "lightSubagents") continue;
-          migrated[key] = val;
-        }
+          const migrated: Record<string, unknown> = {
+            _asdVersion: ASD_VERSION,
+          };
+          const mergedLightSubagents = needsVersionUpgrade
+            ? parsed.lightSubagents
+              ? { ...(presetLightSubagents ?? {}), ...parsed.lightSubagents }
+              : presetLightSubagents
+            : parsed.lightSubagents;
+          if (mergedLightSubagents) {
+            migrated.lightSubagents = mergedLightSubagents;
+          }
+          for (const [key, val] of Object.entries(parsedRec)) {
+            if (key === "_asdVersion" || key === "lightSubagents") continue;
+            migrated[key] = val;
+          }
 
-        const header = [
-          `// ASD v${ASD_VERSION} global user model routing configuration (~/.asd/routing.jsonc).`,
-          `// 1. "lightSubagents": LIGHT mode (in-harness native subagent delegation) model tier & fallback mapping.`,
-          `// 2. "agents" & "categories": HEAVY mode (external CLI parallel_spawn & cross-harness blind debate).`,
-        ].join("\n");
-        safeWriteText(routingPath, `${header}\n${JSON.stringify(migrated, null, 2)}\n`);
+          const header = [
+            `// ASD v${ASD_VERSION} global user model routing configuration (~/.asd/routing.jsonc).`,
+            `// 1. "lightSubagents": LIGHT mode (in-harness native subagent delegation) model tier & fallback mapping.`,
+            `// 2. "agents" & "categories": HEAVY mode (external CLI parallel_spawn & cross-harness blind debate).`,
+          ].join("\n");
+          safeWriteText(routingPath, `${header}\n${JSON.stringify(migrated, null, 2)}\n`);
+        }
       }
     } catch {
       // Preserve user file untouched if unparseable
