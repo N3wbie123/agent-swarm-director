@@ -10,35 +10,37 @@ import { openProjectDb, type SqliteDriver } from "../src/core/db.ts";
 import {
   resolveSafeTargetPath,
   checkProtectedPath,
+  matchGlobOrPrefix,
 } from "../src/core/policy.ts";
 import { normalizePathForCompare, resolveExistingAncestorRealpath } from "../src/core/config.ts";
 
-describe("Security Policy, Subagent Guard, Orphan Recovery & Secret Fixture Audit (T2.2)", () => {
-  const tempDirs: string[] = [];
-  const openDbs: SqliteDriver[] = [];
+const tempDirs: string[] = [];
+const openDbs: SqliteDriver[] = [];
 
-  function makeTempDir(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "asd-sec-audit-"));
-    tempDirs.push(dir);
-    return dir;
+function makeTempDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "asd-sec-audit-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const db of openDbs.splice(0)) {
+    try {
+      db.close();
+    } catch {
+      // ignore
+    }
   }
+  for (const dir of tempDirs.splice(0)) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+});
 
-  afterEach(() => {
-    for (const db of openDbs.splice(0)) {
-      try {
-        db.close();
-      } catch {
-        // ignore
-      }
-    }
-    for (const dir of tempDirs.splice(0)) {
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // ignore
-      }
-    }
-  });
+describe("Security Policy, Subagent Guard, Orphan Recovery & Secret Fixture Audit (T2.2)", () => {
 
   test("1. Subagent guard blocks orchestration commands in both CLI and MCP server", async () => {
     const root = makeTempDir();
@@ -383,5 +385,283 @@ describe("Security Policy, Subagent Guard, Orphan Recovery & Secret Fixture Audi
       // This test documents the expected behavior
       assert.ok(normResult.includes(".git") || normResult.includes(".git".toLowerCase()));
     });
+  });
+});
+
+// ============================================================================
+// 6. T2.2 Evasion Gap Closure Tests (P2, P3, P4)
+// ============================================================================
+
+describe("T2.2 evasion gap closures", () => {
+  // P2: matchGlobOrPrefix must resolve/canonicalize target path BEFORE glob matching
+  // so that "src/../.git/config" cannot fake-match "src/" (directory prefix)
+  test("P2: matchGlobOrPrefix blocks traversal segments faking prefix match (src/../.git/config vs src/)", () => {
+    // The target path with traversal that would escape to .git
+    const traversalPath = "src/../.git/config";
+    
+    // Before fix: this returns true because "src/../.git/config".startsWith("src/") is true
+    // After fix: should return false because the resolved path is ".git/config" which doesn't match "src/"
+    const result = matchGlobOrPrefix(traversalPath, "src/");
+    assert.equal(result, false, "Traversal path src/../.git/config must not match src/");
+  });
+
+  test("P2: matchGlobOrPrefix blocks traversal segments faking glob match (src/../.git/config vs src/**)", () => {
+    // Also test with glob pattern - defense in depth
+    const traversalPath = "src/../.git/config";
+    const result = matchGlobOrPrefix(traversalPath, "src/**");
+    assert.equal(result, false, "Traversal path src/../.git/config must not match src/**");
+  });
+
+  test("P2: matchGlobOrPrefix allows legitimate paths under allowed prefix", () => {
+    // Legitimate path under src/ should still match
+    assert.equal(matchGlobOrPrefix("src/components/button.tsx", "src/**"), true);
+    assert.equal(matchGlobOrPrefix("src/index.ts", "src/"), true);
+    assert.equal(matchGlobOrPrefix("src", "src"), true);
+  });
+
+  // P3: Subagent write-path detection - close redirection gaps
+  test("P3: subagent blocks quoted-arg redirection (cmd /c \"echo x > ../../secrets.env\")", () => {
+    const rootDir = makeTempDir();
+    const metaPath = path.join(rootDir, "meta.json");
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify({
+        subSessionId: "sub-1",
+        sessionId: "asd-20261109-000000-sec",
+        taskId: "T1.1",
+        role: "worker",
+        harness: "claude-code",
+        model: "sonnet",
+        track: "LIGHT",
+        allowedFiles: ["src/**"],
+        startedAt: Date.now(),
+        status: "running",
+      }),
+      "utf8"
+    );
+
+    const subEnv = {
+      ASD_SESSION_ROLE: "subagent",
+      ASD_SUBAGENT_META: metaPath,
+      ASD_PROJECT_ROOT: rootDir,
+    };
+
+    // Quoted cmd /c redirection
+    const r1 = evaluatePreToolUse(
+      { tool: "bash", command: 'cmd /c "echo x > ../../secrets.env"' },
+      undefined,
+      subEnv
+    );
+    assert.equal(r1.allowed, false, "Quoted cmd /c redirection must be blocked");
+
+    // Quoted PowerShell Set-Content
+    const r2 = evaluatePreToolUse(
+      { tool: "bash", command: 'powershell -c "Set-Content -Path ../../secrets.env -Value x"' },
+      undefined,
+      subEnv
+    );
+    assert.equal(r2.allowed, false, "Quoted PowerShell Set-Content must be blocked");
+
+    // Process substitution >(cat > file)
+    const r3 = evaluatePreToolUse(
+      { tool: "bash", command: "echo x > >(cat > ../../secrets.env)" },
+      undefined,
+      subEnv
+    );
+    assert.equal(r3.allowed, false, "Process substitution redirection must be blocked");
+
+    // Out-File (PowerShell)
+    const r4 = evaluatePreToolUse(
+      { tool: "bash", command: 'powershell -c "echo x | Out-File ../../secrets.env"' },
+      undefined,
+      subEnv
+    );
+    assert.equal(r4.allowed, false, "PowerShell Out-File must be blocked");
+
+    // Add-Content (PowerShell)
+    const r5 = evaluatePreToolUse(
+      { tool: "bash", command: 'powershell -c "Add-Content -Path ../../secrets.env -Value x"' },
+      undefined,
+      subEnv
+    );
+    assert.equal(r5.allowed, false, "PowerShell Add-Content must be blocked");
+
+    // Tee-Object (PowerShell)
+    const r6 = evaluatePreToolUse(
+      { tool: "bash", command: 'powershell -c "echo x | Tee-Object -FilePath ../../secrets.env"' },
+      undefined,
+      subEnv
+    );
+    assert.equal(r6.allowed, false, "PowerShell Tee-Object must be blocked");
+  });
+
+  test("P3: subagent allows benign commands that resemble redirection but are not", () => {
+    const rootDir = makeTempDir();
+    const metaPath = path.join(rootDir, "meta.json");
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify({
+        subSessionId: "sub-1",
+        sessionId: "asd-20261109-000000-sec",
+        taskId: "T1.1",
+        role: "worker",
+        harness: "claude-code",
+        model: "sonnet",
+        track: "LIGHT",
+        allowedFiles: ["src/**"],
+        startedAt: Date.now(),
+        status: "running",
+      }),
+      "utf8"
+    );
+
+    const subEnv = {
+      ASD_SESSION_ROLE: "subagent",
+      ASD_SUBAGENT_META: metaPath,
+      ASD_PROJECT_ROOT: rootDir,
+    };
+
+    // Benign: cmd /c with no redirection
+    const r1 = evaluatePreToolUse(
+      { tool: "bash", command: 'cmd /c "echo hello"' },
+      undefined,
+      subEnv
+    );
+    assert.equal(r1.allowed, true, "Benign cmd /c without redirection must be allowed");
+
+    // Benign: PowerShell without file write
+    const r2 = evaluatePreToolUse(
+      { tool: "bash", command: 'powershell -c "Get-Process"' },
+      undefined,
+      subEnv
+    );
+    assert.equal(r2.allowed, true, "Benign PowerShell without file write must be allowed");
+
+    // Benign: grep with > in pattern (not redirection)
+    const r3 = evaluatePreToolUse(
+      { tool: "bash", command: 'grep ">" src/file.ts' },
+      undefined,
+      subEnv
+    );
+    assert.equal(r3.allowed, true, "grep with > in pattern must be allowed");
+  });
+
+  // P4: isBlockedGitCommand - block GIT_DIR= and git -C forms targeting protected paths
+  test("P4: isBlockedGitCommand blocks GIT_DIR=.git git config ...", () => {
+    const rootDir = makeTempDir();
+    const metaPath = path.join(rootDir, "meta.json");
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify({
+        subSessionId: "sub-1",
+        sessionId: "asd-20261109-000000-sec",
+        taskId: "T1.1",
+        role: "worker",
+        harness: "claude-code",
+        model: "sonnet",
+        track: "LIGHT",
+        allowedFiles: ["src/**"],
+        startedAt: Date.now(),
+        status: "running",
+      }),
+      "utf8"
+    );
+
+    const subEnv = {
+      ASD_SESSION_ROLE: "subagent",
+      ASD_SUBAGENT_META: metaPath,
+      ASD_PROJECT_ROOT: rootDir,
+    };
+
+    // GIT_DIR=.git git config user.email x@y.z
+    const r1 = evaluatePreToolUse(
+      { tool: "bash", command: "GIT_DIR=.git git config user.email x@y.z" },
+      undefined,
+      subEnv
+    );
+    assert.equal(r1.allowed, false, "GIT_DIR=.git git config must be blocked");
+
+    // GIT_DIR=.git git status
+    const r2 = evaluatePreToolUse(
+      { tool: "bash", command: "GIT_DIR=.git git status" },
+      undefined,
+      subEnv
+    );
+    assert.equal(r2.allowed, false, "GIT_DIR=.git git status must be blocked");
+
+    // git -C .git status
+    const r3 = evaluatePreToolUse(
+      { tool: "bash", command: "git -C .git status" },
+      undefined,
+      subEnv
+    );
+    assert.equal(r3.allowed, false, "git -C .git status must be blocked");
+
+    // git -C .git config user.email x@y.z
+    const r4 = evaluatePreToolUse(
+      { tool: "bash", command: "git -C .git config user.email x@y.z" },
+      undefined,
+      subEnv
+    );
+    assert.equal(r4.allowed, false, "git -C .git config must be blocked");
+  });
+
+  test("P4: isBlockedGitCommand allows benign git commands without protected GIT_DIR/-C", () => {
+    const rootDir = makeTempDir();
+    const metaPath = path.join(rootDir, "meta.json");
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify({
+        subSessionId: "sub-1",
+        sessionId: "asd-20261109-000000-sec",
+        taskId: "T1.1",
+        role: "worker",
+        harness: "claude-code",
+        model: "sonnet",
+        track: "LIGHT",
+        allowedFiles: ["src/**"],
+        startedAt: Date.now(),
+        status: "running",
+      }),
+      "utf8"
+    );
+
+    const subEnv = {
+      ASD_SESSION_ROLE: "subagent",
+      ASD_SUBAGENT_META: metaPath,
+      ASD_PROJECT_ROOT: rootDir,
+    };
+
+    // Normal git status (no -C, no GIT_DIR)
+    const r1 = evaluatePreToolUse(
+      { tool: "bash", command: "git status" },
+      undefined,
+      subEnv
+    );
+    assert.equal(r1.allowed, true, "Normal git status must be allowed");
+
+    // git -C src status (normal directory, not .git)
+    const r2 = evaluatePreToolUse(
+      { tool: "bash", command: "git -C src status" },
+      undefined,
+      subEnv
+    );
+    assert.equal(r2.allowed, true, "git -C src status must be allowed");
+
+    // FOO=bar git status (env var but not GIT_DIR)
+    const r3 = evaluatePreToolUse(
+      { tool: "bash", command: "FOO=bar git status" },
+      undefined,
+      subEnv
+    );
+    assert.equal(r3.allowed, true, "FOO=bar git status must be allowed");
+
+    // GIT_DIR=../other-repo/.git git status (outside project, not protected .git)
+    const r4 = evaluatePreToolUse(
+      { tool: "bash", command: "GIT_DIR=../other-repo/.git git status" },
+      undefined,
+      subEnv
+    );
+    assert.equal(r4.allowed, true, "GIT_DIR pointing outside project must be allowed");
   });
 });

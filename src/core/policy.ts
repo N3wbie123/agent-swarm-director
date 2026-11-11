@@ -333,18 +333,45 @@ export const isProtectedPath = checkProtectedPath;
 // ============================================================================
 
 /**
+ * Lexically resolves . and .. segments in a POSIX-style path without touching the filesystem.
+ * Returns the normalized path with all . and .. segments resolved.
+ * Does not resolve symlinks or verify existence - purely lexical.
+ */
+function resolveLexicalPath(posixPath: string): string {
+  const segments = posixPath.split("/");
+  const resolved: string[] = [];
+  for (const seg of segments) {
+    if (seg === "" || seg === ".") {
+      continue;
+    }
+    if (seg === "..") {
+      if (resolved.length > 0) {
+        resolved.pop();
+      }
+    } else {
+      resolved.push(seg);
+    }
+  }
+  return resolved.join("/");
+}
+
+/**
  * Matches target relative path against a glob or prefix pattern.
  * Case-normalized. Supports directory prefixes ("src/"), exact files, and globs ("*", "**").
+ * Resolves lexical . and .. segments in target before matching to prevent traversal faking.
  */
 export function matchGlobOrPrefix(
   targetRelPath: string,
   pattern: string
 ): boolean {
-  const target = targetRelPath
-    .replaceAll("\\", "/")
-    .replace(/^\.\//, "")
-    .replace(/^\/+/, "")
-    .toLowerCase();
+  // Normalize and lexically resolve target path to prevent traversal faking (P2)
+  const target = resolveLexicalPath(
+    targetRelPath
+      .replaceAll("\\", "/")
+      .replace(/^\.\//, "")
+      .replace(/^\/+/, "")
+      .toLowerCase()
+  );
 
   const pat = pattern
     .replaceAll("\\", "/")
@@ -482,18 +509,162 @@ function stripBenignGitExclusions(cmd: string): string {
     .replace(/\bgit@[^\s'"]+\.git\b/gi, " ");
 }
 
+/**
+ * Detects shell redirection operators (>, >>, >&, process substitution >(...))
+ * and PowerShell write commands (Set-Content, Add-Content, Out-File, Tee-Object)
+ * while respecting quoted strings to avoid false positives like grep ">" file.
+ */
+function hasShellRedirection(cmd: string): boolean {
+  // Check for >> (append) - simple and rarely appears in quotes legitimately
+  if (cmd.includes(">>")) {
+    return true;
+  }
+
+  // Check for process substitution >(...)
+  if (/>\s*\(/.test(cmd)) {
+    return true;
+  }
+
+  // Check for PowerShell write commands (case-insensitive, word boundaries)
+  if (/\b(?:set-content|add-content|out-file|tee-object)\b/i.test(cmd)) {
+    return true;
+  }
+
+  // Check for sed -i (in-place edit)
+  if (/\bsed\s+-i\b/i.test(cmd)) {
+    return true;
+  }
+
+  // Check for Node.js file write calls
+  if (/\b(?:writeFileSync|writeFile|appendFileSync)\s*\(/i.test(cmd)) {
+    return true;
+  }
+
+  // Detect shell command invocations that pass quoted scripts (cmd /c, powershell -c, bash -c, sh -c)
+  // In these cases, redirection INSIDE the quoted string IS executed by the shell
+  const shellInvocationMatch = cmd.match(/\b(?:cmd|powershell|pwsh|bash|sh)\s+(?:\/c|-c|-command)\s+(['"`])([\s\S]*?)\1/i);
+  if (shellInvocationMatch) {
+    const quotedScript = shellInvocationMatch[2];
+    // Check for redirection inside the quoted script (quote-aware not needed here - the whole string is the script)
+    if (hasRedirectionInScript(quotedScript)) {
+      return true;
+    }
+  }
+
+  // Quote-aware detection for > (single redirect) excluding 2>&1 and >&2
+  // Track quote state to ignore > inside single/double quotes
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let prevChar = "";
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    const nextChar = cmd[i + 1] ?? "";
+
+    // Handle quote toggling (ignore escaped quotes)
+    if (ch === "'" && prevChar !== "\\") {
+      inSingleQuote = !inSingleQuote;
+    } else if (ch === '"' && prevChar !== "\\") {
+      inDoubleQuote = !inDoubleQuote;
+    }
+
+    // Check for > redirection when not inside quotes
+    if (ch === ">" && !inSingleQuote && !inDoubleQuote) {
+      // Exclude 2>&1, >&2, >&1, etc.
+      if (nextChar === "&") {
+        prevChar = ch;
+        continue;
+      }
+      // Exclude 2> (file descriptor redirect) - check if preceded by digit
+      if (prevChar.match(/^\d$/)) {
+        prevChar = ch;
+        continue;
+      }
+      // This is a genuine output redirection
+      return true;
+    }
+
+    prevChar = ch;
+  }
+
+  return false;
+}
+
+/**
+ * Checks for redirection operators in a script string (no quote tracking needed -
+ * the entire string is treated as shell code where redirections are active).
+ */
+function hasRedirectionInScript(script: string): boolean {
+  if (script.includes(">>")) return true;
+  if (/>\(/.test(script)) return true; // process substitution
+  if (/\b(?:set-content|add-content|out-file|tee-object)\b/i.test(script)) return true;
+  if (/\bsed\s+-i\b/i.test(script)) return true;
+  if (/\b(?:writeFileSync|writeFile|appendFileSync)\s*\(/i.test(script)) return true;
+  // Simple > detection (excluding 2>&1, >&2, 2>)
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let prevChar = "";
+  for (let i = 0; i < script.length; i++) {
+    const ch = script[i];
+    const nextChar = script[i + 1] ?? "";
+    if (ch === "'" && prevChar !== "\\") inSingleQuote = !inSingleQuote;
+    else if (ch === '"' && prevChar !== "\\") inDoubleQuote = !inDoubleQuote;
+    if (ch === ">" && !inSingleQuote && !inDoubleQuote) {
+      if (nextChar === "&") { prevChar = ch; continue; }
+      if (prevChar.match(/^\d$/)) { prevChar = ch; continue; }
+      return true;
+    }
+    prevChar = ch;
+  }
+  return false;
+}
+
 function isBlockedGitCommand(cmd: string, isSubagent: boolean): boolean {
   const sanitized = stripBenignGitExclusions(cmd);
   const lower = sanitized.toLowerCase();
   const unquoted = lower.replace(/['"`]/g, "");
 
+  // Check for GIT_DIR=<path> git ... form (P4)
+  const gitDirMatch = lower.match(/(?:^|\s)git_dir\s*=\s*([^\s;|&]+)/);
+  let gitDirNonProtected = false;
+  if (gitDirMatch) {
+    const gitDirPath = gitDirMatch[1];
+    if (isProtectedGitPath(gitDirPath)) {
+      return true;
+    }
+    gitDirNonProtected = true;
+  }
+
+  // Check for git -C <path> ... form (P4)
+  const gitCMatch = lower.match(/\bgit\s+-C\s+([^\s;|&]+)/);
+  let gitCNonProtected = false;
+  if (gitCMatch) {
+    const gitCPath = gitCMatch[1];
+    if (isProtectedGitPath(gitCPath)) {
+      return true;
+    }
+    gitCNonProtected = true;
+  }
+
+  // For subagents: if the ONLY .git references are in non-protected GIT_DIR/-C forms, allow
+  // Create a version of the command with non-protected GIT_DIR/-C forms masked out
+  let checkLower = lower;
+  let checkUnquoted = unquoted;
+  if (gitDirNonProtected) {
+    checkLower = checkLower.replace(/(?:^|\s)git_dir\s*=\s*[^\s;|&]+/gi, " ");
+    checkUnquoted = checkUnquoted.replace(/(?:^|\s)git_dir\s*=\s*[^\s;|&]+/gi, " ");
+  }
+  if (gitCNonProtected) {
+    checkLower = checkLower.replace(/\bgit\s+-C\s+[^\s;|&]+/gi, " ");
+    checkUnquoted = checkUnquoted.replace(/\bgit\s+-C\s+[^\s;|&]+/gi, " ");
+  }
+
   const hasGitPathToken =
-    lower.includes(".git/") ||
-    lower.includes(".git\\") ||
-    unquoted.includes(".git/") ||
-    unquoted.includes(".git\\") ||
-    /(?:^|[\s"'`=/\\])\.git(?:[/\\]|[\s"'`]|$)/.test(lower) ||
-    /(?:^|[\s=/\\])\.git(?:[/\\]|\s|$)/.test(unquoted);
+    checkLower.includes(".git/") ||
+    checkLower.includes(".git\\") ||
+    checkUnquoted.includes(".git/") ||
+    checkUnquoted.includes(".git\\") ||
+    /(?:^|[\s"'`=/\\])\.git(?:[/\\]|[\s"'`]|$)/.test(checkLower) ||
+    /(?:^|[\s=/\\])\.git(?:[/\\]|\s|$)/.test(checkUnquoted);
 
   if (!hasGitPathToken) {
     return false;
@@ -538,6 +709,32 @@ function isBlockedGitCommand(cmd: string, isSubagent: boolean): boolean {
   }
 
   return false;
+}
+
+/**
+ * Determines if a path string targets a protected .git directory (repo metadata).
+ * Protected paths are relative paths containing .git that don't escape the project root:
+ * - .git, .git/, .git\...
+ * - ./git, ./.git/, subdir/.git, etc.
+ * Non-protected (allowed): absolute paths, paths starting with ../, URLs
+ */
+function isProtectedGitPath(pathStr: string): boolean {
+  const p = pathStr.toLowerCase();
+  // Absolute paths (Windows drive letter or POSIX root or UNC)
+  if (/^[a-z]:[/\\]/i.test(p) || p.startsWith("/") || p.startsWith("\\\\")) {
+    return false;
+  }
+  // Paths that escape upward (../)
+  if (p.startsWith("..")) {
+    return false;
+  }
+  // Remote URLs
+  if (/^(?:https?|git|ssh):\/\//.test(p) || /^git@/.test(p)) {
+    return false;
+  }
+  // Contains .git as a path segment (protected repo metadata)
+  // Match .git at start of string or after path separator, followed by separator or end
+  return /(^|[/\\])\.git(?:[/\\]|$)/.test(p);
 }
 
 /**
@@ -720,17 +917,12 @@ export function evaluatePreToolUse(
         };
       }
       // Block redirection writes: > or >> (excluding 2>&1 and >&2) and shell/script write bypasses
-      if (
-        cmd.includes(">>") ||
-        /(?:^|[^2&])>{1}(?!&)/.test(cmd) ||
-        /\b(?:set-content|add-content|out-file|tee)\b/i.test(cmd) ||
-        /\bsed\s+-i\b/i.test(cmd) ||
-        /\b(?:writeFileSync|writeFile|appendFileSync)\s*\(/i.test(cmd)
-      ) {
+      // Quote-aware detection to avoid false positives like grep ">" file
+      if (hasShellRedirection(cmd)) {
         return {
           allowed: false,
           reason: formatPolicyDenyReason(
-            "Bash command blocked for subagent: output redirection (>, >>, Out-File, Set-Content, tee) is forbidden. DO NOT attempt to bypass allowedFiles via shell/bash commands; emit a crossScopeRequests entry in your final asd-report block instead."
+            "Bash command blocked for subagent: output redirection (>, >>, Out-File, Set-Content, tee, process substitution) is forbidden. DO NOT attempt to bypass allowedFiles via shell/bash commands; emit a crossScopeRequests entry in your final asd-report block instead."
           ),
         };
       }
