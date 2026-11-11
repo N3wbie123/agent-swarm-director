@@ -14,12 +14,17 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 
 export interface LockFilePayload {
   pid: number;
   hostname: string;
   acquiredAt: number;
   purpose: string;
+  /** Per-owner random nonce to detect PID reuse and enable re-entrancy verification. */
+  nonce: string;
+  /** Timestamp of the last heartbeat refresh by the lock owner. */
+  lastHeartbeatAt: number;
 }
 
 export interface FileLockConfig {
@@ -32,9 +37,14 @@ export interface FileLockConfig {
   backoffBaseMs: number;
   backoffFactor: number;
   backoffCapMs: number;
+  /** Interval at which the lock owner refreshes the heartbeat (ms). Default: 1000. */
+  heartbeatIntervalMs?: number;
+  /** Heartbeat staleness multiplier: lock is reclaimable if heartbeat older than heartbeatIntervalMs * heartbeatStaleFactor. Default: 3. */
+  heartbeatStaleFactor?: number;
 }
 
 const heldLockDepth = new Map<string, number>();
+const heartbeatTimers = new Map<string, NodeJS.Timeout>();
 
 function lockKey(lockPath: string): string {
   const resolved = path.resolve(lockPath).replaceAll("\\", "/");
@@ -54,65 +64,74 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-function isLockFileStale(
-  lockPath: string,
-  now: number,
-  staleMaxAgeMs: number
-): boolean {
-  let raw = "";
+function readLockPayload(lockPath: string): LockFilePayload | null {
   try {
-    raw = fs.readFileSync(lockPath, "utf8");
+    const raw = fs.readFileSync(lockPath, "utf8");
+    if (!raw.trim()) return null;
+    return JSON.parse(raw) as LockFilePayload;
   } catch {
-    return false;
-  }
-
-  if (!raw.trim()) {
-    try {
-      const stat = fs.statSync(lockPath);
-      return now - stat.mtimeMs > 2_000;
-    } catch {
-      return false;
-    }
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<LockFilePayload>;
-    const pid = typeof parsed.pid === "number" ? parsed.pid : -1;
-    const acquiredAt = typeof parsed.acquiredAt === "number" ? parsed.acquiredAt : 0;
-    if (now - acquiredAt > staleMaxAgeMs) {
-      return true;
-    }
-    if (!isPidAlive(pid)) {
-      return true;
-    }
-    return false;
-  } catch {
-    try {
-      const stat = fs.statSync(lockPath);
-      return now - stat.mtimeMs > 2_000;
-    } catch {
-      return false;
-    }
+    return null;
   }
 }
 
-function tryOpenLockFile(lockPath: string, purpose: string): boolean {
+function writeLockPayload(lockPath: string, payload: LockFilePayload): void {
+  fs.writeFileSync(lockPath, JSON.stringify(payload) + "\n", "utf8");
+}
+
+export function isLockFileStale(
+  lockPath: string,
+  now: number,
+  staleMaxAgeMs: number,
+  heartbeatIntervalMs: number,
+  heartbeatStaleFactor: number
+): boolean {
+  const payload = readLockPayload(lockPath);
+  if (!payload) {
+    try {
+      const stat = fs.statSync(lockPath);
+      return now - stat.mtimeMs > 2_000;
+    } catch {
+      return false;
+    }
+  }
+
+  const pid = typeof payload.pid === "number" ? payload.pid : -1;
+  const acquiredAt = typeof payload.acquiredAt === "number" ? payload.acquiredAt : 0;
+  const lastHeartbeatAt = typeof payload.lastHeartbeatAt === "number" ? payload.lastHeartbeatAt : acquiredAt;
+
+  if (now - acquiredAt > staleMaxAgeMs) {
+    return true;
+  }
+  if (!isPidAlive(pid)) {
+    return true;
+  }
+  const heartbeatStaleMs = heartbeatIntervalMs * heartbeatStaleFactor;
+  if (now - lastHeartbeatAt > heartbeatStaleMs) {
+    return true;
+  }
+  return false;
+}
+
+function tryOpenLockFile(lockPath: string, purpose: string): LockFilePayload | null {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   let fd: number | undefined;
   try {
     fd = fs.openSync(lockPath, "wx");
+    const now = Date.now();
     const payload: LockFilePayload = {
       pid: process.pid,
       hostname: os.hostname(),
-      acquiredAt: Date.now(),
+      acquiredAt: now,
       purpose,
+      nonce: crypto.randomBytes(8).toString("hex"),
+      lastHeartbeatAt: now,
     };
     fs.writeFileSync(fd, JSON.stringify(payload) + "\n", "utf8");
-    return true;
+    return payload;
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === "EEXIST" || code === "EPERM" || code === "EACCES") {
-      return false;
+      return null;
     }
     throw err;
   } finally {
@@ -126,16 +145,45 @@ function tryOpenLockFile(lockPath: string, purpose: string): boolean {
   }
 }
 
-function releaseLockFile(lockPath: string): void {
+function releaseLockFile(lockPath: string, expectedNonce?: string): void {
   try {
     if (!fs.existsSync(lockPath)) return;
-    const raw = fs.readFileSync(lockPath, "utf8");
-    const parsed = JSON.parse(raw) as Partial<LockFilePayload>;
-    if (parsed.pid === process.pid) {
+    const payload = readLockPayload(lockPath);
+    if (!payload) return;
+    if (payload.pid === process.pid && (!expectedNonce || payload.nonce === expectedNonce)) {
       fs.unlinkSync(lockPath);
     }
   } catch {
     // ignore
+  }
+}
+
+function startHeartbeat(lockPath: string, nonce: string, intervalMs: number): void {
+  const timer = setInterval(() => {
+    try {
+      const payload = readLockPayload(lockPath);
+      if (payload && payload.nonce === nonce && payload.pid === process.pid) {
+        payload.lastHeartbeatAt = Date.now();
+        writeLockPayload(lockPath, payload);
+      } else {
+        clearInterval(timer);
+        heartbeatTimers.delete(lockKey(lockPath));
+      }
+    } catch {
+      clearInterval(timer);
+      heartbeatTimers.delete(lockKey(lockPath));
+    }
+  }, intervalMs);
+  timer.unref();
+  heartbeatTimers.set(lockKey(lockPath), timer);
+}
+
+function stopHeartbeat(lockPath: string): void {
+  const key = lockKey(lockPath);
+  const timer = heartbeatTimers.get(key);
+  if (timer) {
+    clearInterval(timer);
+    heartbeatTimers.delete(key);
   }
 }
 
@@ -175,24 +223,28 @@ export function withFileLockSync<T>(
     }
   }
 
+  const heartbeatIntervalMs = config.heartbeatIntervalMs ?? 1000;
+  const heartbeatStaleFactor = config.heartbeatStaleFactor ?? 3;
   const start = Date.now();
   let attempt = 0;
+  let acquiredPayload: LockFilePayload | null = null;
   while (true) {
-    if (tryOpenLockFile(config.lockPath, purpose)) {
+    const now = Date.now();
+    const elapsed = now - start;
+    if (elapsed >= timeoutMs) {
+      throw new Error(config.timeoutError);
+    }
+    acquiredPayload = tryOpenLockFile(config.lockPath, purpose);
+    if (acquiredPayload) {
       break;
     }
-    const now = Date.now();
-    if (isLockFileStale(config.lockPath, now, config.staleMaxAgeMs)) {
+    if (isLockFileStale(config.lockPath, now, config.staleMaxAgeMs, heartbeatIntervalMs, heartbeatStaleFactor)) {
       try {
         fs.unlinkSync(config.lockPath);
       } catch {
         // ignore race
       }
       continue;
-    }
-    const elapsed = now - start;
-    if (elapsed >= timeoutMs) {
-      throw new Error(config.timeoutError);
     }
     const backoff = Math.min(
       config.backoffCapMs,
@@ -204,11 +256,13 @@ export function withFileLockSync<T>(
   }
 
   heldLockDepth.set(key, 1);
+  startHeartbeat(config.lockPath, acquiredPayload!.nonce, heartbeatIntervalMs);
   try {
     return fn();
   } finally {
     heldLockDepth.delete(key);
-    releaseLockFile(config.lockPath);
+    stopHeartbeat(config.lockPath);
+    releaseLockFile(config.lockPath, acquiredPayload!.nonce);
   }
 }
 
@@ -234,24 +288,28 @@ export async function withFileLockAsync<T>(
     }
   }
 
+  const heartbeatIntervalMs = config.heartbeatIntervalMs ?? 1000;
+  const heartbeatStaleFactor = config.heartbeatStaleFactor ?? 3;
   const start = Date.now();
   let attempt = 0;
+  let acquiredPayload: LockFilePayload | null = null;
   while (true) {
-    if (tryOpenLockFile(config.lockPath, purpose)) {
+    const now = Date.now();
+    const elapsed = now - start;
+    if (elapsed >= timeoutMs) {
+      throw new Error(config.timeoutError);
+    }
+    acquiredPayload = tryOpenLockFile(config.lockPath, purpose);
+    if (acquiredPayload) {
       break;
     }
-    const now = Date.now();
-    if (isLockFileStale(config.lockPath, now, config.staleMaxAgeMs)) {
+    if (isLockFileStale(config.lockPath, now, config.staleMaxAgeMs, heartbeatIntervalMs, heartbeatStaleFactor)) {
       try {
         fs.unlinkSync(config.lockPath);
       } catch {
         // ignore race
       }
       continue;
-    }
-    const elapsed = now - start;
-    if (elapsed >= timeoutMs) {
-      throw new Error(config.timeoutError);
     }
     const backoff = Math.min(
       config.backoffCapMs,
@@ -263,10 +321,12 @@ export async function withFileLockAsync<T>(
   }
 
   heldLockDepth.set(key, 1);
+  startHeartbeat(config.lockPath, acquiredPayload!.nonce, heartbeatIntervalMs);
   try {
     return await fn();
   } finally {
     heldLockDepth.delete(key);
-    releaseLockFile(config.lockPath);
+    stopHeartbeat(config.lockPath);
+    releaseLockFile(config.lockPath, acquiredPayload!.nonce);
   }
 }
