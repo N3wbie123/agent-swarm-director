@@ -501,17 +501,17 @@ const activeDriverRuns = new Set<string>();
 function getDefaultModelForHarness(harness: HarnessId): string {
   switch (harness) {
     case "claude-code":
-      return "claude-sonnet-4-6";
+      return "claude-sonnet-5-5";
     case "codex":
-      return "gpt-5.4";
+      return "gpt-6-luna";
     case "opencode":
       return "z-ai/glm-5.3-flash";
     case "antigravity":
       return "gemini-4-carbon-high";
     case "cursor":
-      return "claude-sonnet-4-6";
+      return "claude-sonnet-5-5-medium";
     default:
-      return "claude-sonnet-4-6";
+      return "claude-sonnet-5-5";
   }
 }
 

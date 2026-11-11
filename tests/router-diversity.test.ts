@@ -98,7 +98,7 @@ test("Tier 1: model-only pin infers harness and modelFamily", () => {
 test("Tier 1: harness-only pin adapts base route to target harness", () => {
   const route = resolveRoute(
     {
-      role: "planner", // default is claude-code / claude-sonnet-4-6
+      role: "planner", // default is claude-code / claude-sonnet-5-5
       harness: "codex",
     },
     defaultRouting
@@ -106,7 +106,7 @@ test("Tier 1: harness-only pin adapts base route to target harness", () => {
 
   assert.equal(route.tier, 1);
   assert.equal(route.harness, "codex");
-  assert.equal(route.model, "gpt-5.4");
+  assert.equal(route.model, "gpt-6-luna");
   assert.equal(route.modelFamily, "gpt");
 });
 
@@ -160,7 +160,7 @@ test("Tier 3: builder or worker + registered domain categories (including design
   );
   assert.equal(designRoute.tier, 3);
   assert.equal(designRoute.harness, "claude-code");
-  assert.equal(designRoute.model, "claude-sonnet-4-6");
+  assert.equal(designRoute.model, "claude-sonnet-5-5");
   assert.equal(designRoute.modelFamily, "claude");
 });
 
@@ -223,7 +223,7 @@ test("Tier 4: builder or worker + general or unknown category -> difficulty tier
 
 test("@ag fallback: falls back to first CLI harness in fallbacks when headless unsupported", () => {
   // Scout role default in presets is antigravity / gemini-3.8-flash-low
-  // Fallback 1: codex / gpt-5.4, Fallback 2: opencode / z-ai/glm-5.3-flash
+  // Fallback 1: codex / gpt-6-luna, Fallback 2: opencode / z-ai/glm-5.3-flash
   const route = resolveRoute(
     {
       role: "scout",
@@ -235,7 +235,7 @@ test("@ag fallback: falls back to first CLI harness in fallbacks when headless u
   );
 
   assert.equal(route.harness, "codex");
-  assert.equal(route.model, "gpt-5.4");
+  assert.equal(route.model, "gpt-6-luna");
   assert.equal(route.modelFamily, "gpt");
   assert.equal(route.fallbackApplied, true);
 });
@@ -367,9 +367,9 @@ test("escalateTaskRoute: Attempt 3 (attempts = 2) sets status 'escalated' and up
   assert.equal(res.failed, false);
   assert.equal(res.attempts, 2);
   assert.ok(res.route);
-  // Upgraded to architect role route (claude-code / claude-opus-4-6)
+  // Upgraded to architect role route (claude-code / claude-opus-5-5)
   assert.equal(res.harness, "claude-code");
-  assert.equal(res.model, "claude-opus-4-6");
+  assert.equal(res.model, "claude-opus-5-5");
   assert.equal(res.modelFamily, "claude");
 });
 
@@ -399,13 +399,13 @@ test("escalateTaskRoute: after Attempt 3 failure (attempts >= 3) sets status 'fa
 // ============================================================================
 
 test("selectDiverseReviewer: prioritizes different modelFamily and different harness", () => {
-  // Proposer is codex / gpt-5-codex (family: gpt, harness: codex)
-  // Critic primary is codex / gpt-5-codex (same family, same harness)
-  // Critic fallback 1 is claude-code / claude-opus-4-6 (different family: claude, different harness: claude-code)
+  // Proposer is codex / gpt-6-luna (family: gpt, harness: codex)
+  // Critic primary is codex / gpt-6-luna (same family, same harness)
+  // Critic fallback 1 is claude-code / claude-opus-5-5 (different family: claude, different harness: claude-code)
   const sel = selectDiverseReviewer(
     {
       harness: "codex",
-      model: "gpt-5-codex",
+      model: "gpt-6-luna",
       modelFamily: "gpt",
     },
     "critic",
@@ -415,18 +415,18 @@ test("selectDiverseReviewer: prioritizes different modelFamily and different har
   assert.equal(sel.diversityDegraded, false);
   assert.equal(sel.modelFamily, "claude");
   assert.equal(sel.harness, "claude-code");
-  assert.equal(sel.model, "claude-opus-4-6");
+  assert.equal(sel.model, "claude-opus-5-5");
   assert.equal(sel.tag, undefined);
   assert.equal(sel.warning, undefined);
 });
 
 test("selectDiverseReviewer: selects primary when primary already has different modelFamily", () => {
-  // Proposer is claude-code / claude-sonnet-4-6 (family: claude)
-  // Critic primary is codex / gpt-5.4 (family: gpt)
+  // Proposer is claude-code / claude-sonnet-5-5 (family: claude)
+  // Critic primary is codex / gpt-6-luna (family: gpt)
   const sel = selectDiverseReviewer(
     {
       harness: "claude-code",
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5-5",
       modelFamily: "claude",
     },
     "critic",
@@ -436,7 +436,7 @@ test("selectDiverseReviewer: selects primary when primary already has different 
   assert.equal(sel.diversityDegraded, false);
   assert.equal(sel.modelFamily, "gpt");
   assert.equal(sel.harness, "codex");
-  assert.equal(sel.model, "gpt-5.4");
+  assert.equal(sel.model, "gpt-6-luna");
 });
 
 test("selectDiverseReviewer: sets diversityDegraded: true and warning tag when single model family available", () => {
@@ -444,7 +444,7 @@ test("selectDiverseReviewer: sets diversityDegraded: true and warning tag when s
   const sel = selectDiverseReviewer(
     {
       harness: "codex",
-      model: "gpt-5.4",
+      model: "gpt-6-luna",
       modelFamily: "gpt",
     },
     "critic",
@@ -460,13 +460,13 @@ test("selectDiverseReviewer: sets diversityDegraded: true and warning tag when s
 });
 
 test("selectDiverseReviewer: arbiter role selects diverse reviewer from claude proposer", () => {
-  // Arbiter primary is claude-code / claude-opus-4-6 (family: claude)
+  // Arbiter primary is claude-code / claude-opus-5-5 (family: claude)
   // Proposer is claude
-  // Fallback 1: codex / gpt-5.4 (family: gpt)
+  // Fallback 1: codex / gpt-6-luna (family: gpt)
   const sel = selectDiverseReviewer(
     {
       harness: "claude-code",
-      model: "claude-opus-4-6",
+      model: "claude-opus-5-5",
       modelFamily: "claude",
     },
     "arbiter",
@@ -476,7 +476,7 @@ test("selectDiverseReviewer: arbiter role selects diverse reviewer from claude p
   assert.equal(sel.diversityDegraded, false);
   assert.equal(sel.modelFamily, "gpt");
   assert.equal(sel.harness, "codex");
-  assert.equal(sel.model, "gpt-5.4");
+  assert.equal(sel.model, "gpt-6-luna");
 });
 
 // ============================================================================
@@ -485,12 +485,12 @@ test("selectDiverseReviewer: arbiter role selects diverse reviewer from claude p
 
 test("resolveFallback: steps through available fallbacks in order", () => {
   const primary = defaultRouting.agents.critic;
-  // Fallbacks: [0] claude-code / claude-opus-4-6, [1] opencode / z-ai/glm-5.3-flash
+  // Fallbacks: [0] claude-code / claude-opus-5-5, [1] opencode / z-ai/glm-5.3-flash
 
   const fb1 = resolveFallback(primary, defaultRouting);
   assert.ok(fb1);
   assert.equal(fb1.harness, "claude-code");
-  assert.equal(fb1.model, "claude-opus-4-6");
+  assert.equal(fb1.model, "claude-opus-5-5");
   assert.equal(fb1.fallbacks.length, 1);
 
   const fb2 = resolveFallback(fb1, defaultRouting);

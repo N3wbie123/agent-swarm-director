@@ -186,7 +186,7 @@ export async function runSubagentControlAction(options: {
   const roleRoute = routingCfg.agents[normRole];
 
   let nextHarness = (target.harness || "claude-code") as HarnessId;
-  let nextModel = target.model || "claude-sonnet-4-6";
+  let nextModel = target.model || "claude-sonnet-5-5";
   let suffix = "retry";
 
   if (options.action === "retry") {

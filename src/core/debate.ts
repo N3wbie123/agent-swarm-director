@@ -638,11 +638,11 @@ const DEFAULT_DEBATE_ROLE_CYCLE: readonly AgentRole[] = [
 ];
 
 const DEFAULT_HARNESS_DEBATE_MODELS: Record<HarnessId, string> = {
-  "claude-code": "claude-opus-4-6",
+  "claude-code": "claude-opus-5-5",
   opencode: "z-ai/glm-5.3-flash",
-  codex: "gpt-5.4",
+  codex: "gpt-6-luna",
   antigravity: "gemini-4-carbon-high",
-  cursor: "claude-sonnet-4-6",
+  cursor: "claude-sonnet-5-5-high",
 };
 
 /**
@@ -878,7 +878,7 @@ export function resolveDebateReviewers(options: {
   // 4. Role-based / Count-based / Auto-assigned selection from routing.jsonc
   const proposerRoute: ProposalRouteInput = options.proposerRoute ?? {
     harness: "claude-code",
-    model: "claude-opus-4-6",
+    model: "claude-opus-5-5",
     modelFamily: "claude",
   };
 

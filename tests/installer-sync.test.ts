@@ -1275,9 +1275,9 @@ describe("Model Discovery Integration on Bootstrap & asd sync", () => {
           "gemini-3.8-flash-low",
         ],
         "claude-code": [], // Simulate offline / unauthenticated Claude Code -> must keep mainstream preset!
-        codex: ["gpt-6-luna", "gpt-5.6-terra"],
+        codex: ["gpt-5.6-terra", "gpt-5.6-luna"], // Simulate user without gpt-6-luna -> auto-matched to gpt-5.6-terra!
         opencode: ["nvidia/z-ai/glm-5.3-flash", "nvidia/deepseek-ai/deepseek-v4.1-flash"],
-        cursor: ["claude-sonnet-4-6"],
+        cursor: ["claude-sonnet-5-5-medium"],
       };
 
       const res = await syncHarnessConfigs({
@@ -1301,15 +1301,15 @@ describe("Model Discovery Integration on Bootstrap & asd sync", () => {
           .join("\n")
       );
 
-      // Codex preset 'gpt-5.4' was auto-matched to 'gpt-6-luna'
-      assert.equal(routing.lightSubagents.codex.defaultModel, "gpt-6-luna");
-      assert.equal(routing.agents.critic.model, "gpt-6-luna");
-      // OpenCode preset 'z-ai/glm-5.3-flash' & 'deepseek-ai/deepseek-v3.2' matched provider-prefixed models
+      // Codex preset 'gpt-6-luna' was auto-matched to available 'gpt-5.6-terra'
+      assert.equal(routing.lightSubagents.codex.defaultModel, "gpt-5.6-terra");
+      assert.equal(routing.agents.critic.model, "gpt-5.6-terra");
+      // OpenCode preset 'z-ai/glm-5.3-flash' & 'deepseek-ai/deepseek-v4.1-flash' matched provider-prefixed models
       assert.equal(routing.agents.worker.model, "nvidia/z-ai/glm-5.3-flash");
       assert.equal(routing.categories.research.model, "nvidia/deepseek-ai/deepseek-v4.1-flash");
-      // Offline Claude Code preserved mainstream static preset without error
-      assert.equal(routing.agents.planner.model, "claude-sonnet-4-6");
-      assert.equal(routing.agents.architect.model, "claude-opus-4-6");
+      // Offline Claude Code preserved latest 5.5 mainstream static preset without error
+      assert.equal(routing.agents.planner.model, "claude-sonnet-5-5");
+      assert.equal(routing.agents.architect.model, "claude-opus-5-5");
       // Native Antigravity lightSubagents tiers remained untouched
       assert.equal(routing.lightSubagents.antigravity.scout.model, "flash_lite");
     } finally {

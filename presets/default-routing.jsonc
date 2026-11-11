@@ -38,30 +38,30 @@
       "fallbacks": []
     },
     "codex": {
-      "defaultModel": "gpt-5.4",
+      "defaultModel": "gpt-6-luna",
       "fallbacks": []
     },
     "cursor": {
-      "defaultModel": "claude-sonnet-4-6",
+      "defaultModel": "claude-sonnet-5-5-medium",
       "fallbacks": []
     }
   },
   "agents": {
     "planner": {
       "harness": "claude-code",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5-5",
       "modelFamily": "claude",
       "fallbacks": [
-        { "harness": "codex", "model": "gpt-5.4", "modelFamily": "gpt" },
+        { "harness": "codex", "model": "gpt-6-luna", "modelFamily": "gpt" },
         { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
     "architect": {
       "harness": "claude-code",
-      "model": "claude-opus-4-6",
+      "model": "claude-opus-5-5",
       "modelFamily": "claude",
       "fallbacks": [
-        { "harness": "codex", "model": "gpt-5.4", "modelFamily": "gpt" },
+        { "harness": "codex", "model": "gpt-6-luna", "modelFamily": "gpt" },
         { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
@@ -70,7 +70,7 @@
       "model": "z-ai/glm-5.3-flash",
       "modelFamily": "glm",
       "fallbacks": [
-        { "harness": "codex", "model": "gpt-5.4", "modelFamily": "gpt" },
+        { "harness": "codex", "model": "gpt-6-luna", "modelFamily": "gpt" },
         { "harness": "antigravity", "model": "gemini-3.8-flash-medium", "modelFamily": "gemini" }
       ]
     },
@@ -79,16 +79,16 @@
       "model": "gemini-3.8-flash-low",
       "modelFamily": "gemini",
       "fallbacks": [
-        { "harness": "codex", "model": "gpt-5.4", "modelFamily": "gpt" },
+        { "harness": "codex", "model": "gpt-6-luna", "modelFamily": "gpt" },
         { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
     "critic": {
       "harness": "codex",
-      "model": "gpt-5.4",
+      "model": "gpt-6-luna",
       "modelFamily": "gpt",
       "fallbacks": [
-        { "harness": "claude-code", "model": "claude-opus-4-6", "modelFamily": "claude" },
+        { "harness": "claude-code", "model": "claude-opus-5-5", "modelFamily": "claude" },
         { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     }
@@ -96,7 +96,7 @@
   "categories": {
     "visual-ui": {
       "harness": "claude-code",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5-5",
       "modelFamily": "claude",
       "fallbacks": [
         { "harness": "antigravity", "model": "gemini-4-carbon-high", "modelFamily": "gemini" },
@@ -105,7 +105,7 @@
     },
     "design": {
       "harness": "claude-code",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5-5",
       "modelFamily": "claude",
       "fallbacks": [
         { "harness": "antigravity", "model": "gemini-4-carbon-high", "modelFamily": "gemini" },
@@ -114,19 +114,19 @@
     },
     "research": {
       "harness": "opencode",
-      "model": "deepseek-ai/deepseek-v3.2",
+      "model": "deepseek-ai/deepseek-v4.1-flash",
       "modelFamily": "deepseek",
       "fallbacks": [
-        { "harness": "codex", "model": "gpt-5.4", "modelFamily": "gpt" },
-        { "harness": "claude-code", "model": "claude-sonnet-4-6", "modelFamily": "claude" }
+        { "harness": "codex", "model": "gpt-6-luna", "modelFamily": "gpt" },
+        { "harness": "claude-code", "model": "claude-sonnet-5-5", "modelFamily": "claude" }
       ]
     },
     "writing": {
       "harness": "codex",
-      "model": "gpt-5.4",
+      "model": "gpt-6-luna",
       "modelFamily": "gpt",
       "fallbacks": [
-        { "harness": "claude-code", "model": "claude-sonnet-4-6", "modelFamily": "claude" },
+        { "harness": "claude-code", "model": "claude-sonnet-5-5", "modelFamily": "claude" },
         { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
@@ -135,7 +135,7 @@
       "model": "z-ai/glm-5.3-flash",
       "modelFamily": "glm",
       "fallbacks": [
-        { "harness": "codex", "model": "gpt-5.4", "modelFamily": "gpt" },
+        { "harness": "codex", "model": "gpt-6-luna", "modelFamily": "gpt" },
         { "harness": "antigravity", "model": "gemini-3.8-flash-medium", "modelFamily": "gemini" }
       ]
     },
@@ -144,7 +144,7 @@
       "model": "gemini-3.8-flash-medium",
       "modelFamily": "gemini",
       "fallbacks": [
-        { "harness": "codex", "model": "gpt-5.4", "modelFamily": "gpt" },
+        { "harness": "codex", "model": "gpt-6-luna", "modelFamily": "gpt" },
         { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     },
@@ -153,16 +153,16 @@
       "model": "z-ai/glm-5.3-flash",
       "modelFamily": "glm",
       "fallbacks": [
-        { "harness": "codex", "model": "gpt-5.4", "modelFamily": "gpt" },
-        { "harness": "claude-code", "model": "claude-sonnet-4-6", "modelFamily": "claude" }
+        { "harness": "codex", "model": "gpt-6-luna", "modelFamily": "gpt" },
+        { "harness": "claude-code", "model": "claude-sonnet-5-5", "modelFamily": "claude" }
       ]
     },
     "high": {
       "harness": "claude-code",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5-5",
       "modelFamily": "claude",
       "fallbacks": [
-        { "harness": "codex", "model": "gpt-5.4", "modelFamily": "gpt" },
+        { "harness": "codex", "model": "gpt-6-luna", "modelFamily": "gpt" },
         { "harness": "opencode", "model": "z-ai/glm-5.3-flash", "modelFamily": "glm" }
       ]
     }

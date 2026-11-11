@@ -692,7 +692,7 @@ export function selectBestAvailableModel(
           ? [/claude-haiku-.*-medium$/i, /gemini-.*flash-low$/i, /gpt-.*-mini-medium$/i]
           : tier === "high"
             ? [/^claude-opus-[\d.-]+-high$/i, /^claude-sonnet-[\d.-]+-high$/i, /^gpt-[\d.-]+-high$/i, /-high$/i]
-            : [/^claude-sonnet-4-6$/i, /^claude-sonnet-[\d.-]+-medium$/i, /claude-sonnet/i, /^gpt-[\d.-]+-medium$/i];
+            : [/^claude-sonnet-5-5-medium$/i, /^claude-sonnet-[\d.-]+-medium$/i, /claude-sonnet/i, /^gpt-[\d.-]+-medium$/i];
       break;
   }
 
