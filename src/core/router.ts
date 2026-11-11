@@ -230,7 +230,7 @@ export const DEFAULT_LIGHT_SUBAGENTS: LightSubagentsConfig = {
     defaultModel: "z-ai/glm-5.3-flash",
   },
   codex: {
-    defaultModel: "gpt-5-codex",
+    defaultModel: "gpt-5.4",
   },
   cursor: {
     defaultModel: "claude-sonnet-4-6",

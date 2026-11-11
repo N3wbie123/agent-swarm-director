@@ -11,6 +11,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { atomicWriteFileSync } from "./render.ts";
+import { inferModelFamily } from "./router.ts";
 import {
   resolveSpawnCommand,
   type CommandRunner,
@@ -63,7 +64,7 @@ function readModelsDiskCache(
   }
 }
 
-function writeModelsDiskCache(
+export function writeModelsDiskCache(
   homeDir: string,
   catalog: HarnessModelCatalog,
   forceCreateDir = false
@@ -151,13 +152,17 @@ export async function discoverHarnessModels(options?: {
   enableGatewayProbe?: boolean | "trusted-only";
   cacheTtlMs?: number;
   persistCache?: boolean;
+  cliTimeoutMs?: number;
+  excludeAsdRouting?: boolean;
 }): Promise<HarnessModelCatalog> {
   const projectRoot = path.resolve(options?.projectRoot || process.cwd());
   const homeDir = path.resolve(options?.homeDir || os.homedir());
-  const cacheKey = `${projectRoot}::${homeDir}`;
+  const cacheKey = `${projectRoot}::${homeDir}::${options?.excludeAsdRouting ? "noasd" : "all"}`;
   const ttlMs = options?.cacheTtlMs ?? DEFAULT_MODELS_CACHE_TTL_MS;
+  const cliTimeoutMs = options?.cliTimeoutMs ?? 3500;
+  const excludeAsdRouting = Boolean(options?.excludeAsdRouting);
 
-  if (!options?.forceRefresh) {
+  if (!options?.forceRefresh && !excludeAsdRouting) {
     if (modelCatalogCache.has(cacheKey)) {
       return modelCatalogCache.get(cacheKey)!;
     }
@@ -183,8 +188,11 @@ export async function discoverHarnessModels(options?: {
       const agySettings = JSON.parse(fs.readFileSync(agySettingsPath, "utf8")) as {
         model?: string;
       };
-      if (typeof agySettings.model === "string" && agySettings.model.trim()) {
-        sets.antigravity.add(agySettings.model.trim());
+      if (typeof agySettings.model === "string") {
+        const trimmed = agySettings.model.trim();
+        if (trimmed && !trimmed.includes(" ")) {
+          sets.antigravity.add(trimmed);
+        }
       }
     }
   } catch {
@@ -196,10 +204,11 @@ export async function discoverHarnessModels(options?: {
     const codexCachePath = path.join(homeDir, ".codex", "models_cache.json");
     if (fs.existsSync(codexCachePath)) {
       const cacheObj = JSON.parse(fs.readFileSync(codexCachePath, "utf8")) as {
-        models?: Array<{ slug?: string }>;
+        models?: Array<{ slug?: string; visibility?: string }>;
       };
       if (Array.isArray(cacheObj.models)) {
         for (const item of cacheObj.models) {
+          if (item?.visibility === "hide") continue;
           if (item?.slug && typeof item.slug === "string" && item.slug.trim()) {
             sets.codex.add(item.slug.trim());
           }
@@ -327,6 +336,7 @@ export async function discoverHarnessModels(options?: {
     const agentDir = path.join(homeDir, ".config", "opencode", "agent");
     if (fs.existsSync(agentDir)) {
       for (const entry of fs.readdirSync(agentDir, { withFileTypes: true })) {
+        if (excludeAsdRouting && entry.name.startsWith("asd-")) continue;
         if (entry.isFile() && entry.name.endsWith(".md")) {
           try {
             const text = fs.readFileSync(path.join(agentDir, entry.name), "utf8");
@@ -341,9 +351,9 @@ export async function discoverHarnessModels(options?: {
       }
     }
 
-    // Scan global ~/.asd/routing.jsonc for opencode models
+    // Scan global ~/.asd/routing.jsonc for opencode models (UI dropdown convenience only)
     const globalRoutingPath = path.join(homeDir, ".asd", "routing.jsonc");
-    if (fs.existsSync(globalRoutingPath)) {
+    if (!excludeAsdRouting && fs.existsSync(globalRoutingPath)) {
       try {
         const text = fs.readFileSync(globalRoutingPath, "utf8");
         const matches = text.matchAll(/"harness"\s*:\s*"opencode"\s*,\s*"model"\s*:\s*"([^"]+)"/g);
@@ -375,6 +385,7 @@ export async function discoverHarnessModels(options?: {
     const cursorAgentDir = path.join(homeDir, ".cursor", "agents");
     if (fs.existsSync(cursorAgentDir)) {
       for (const entry of fs.readdirSync(cursorAgentDir, { withFileTypes: true })) {
+        if (excludeAsdRouting && entry.name.startsWith("asd-")) continue;
         if (entry.isFile() && entry.name.endsWith(".md")) {
           try {
             const text = fs.readFileSync(path.join(cursorAgentDir, entry.name), "utf8");
@@ -390,7 +401,7 @@ export async function discoverHarnessModels(options?: {
     }
 
     const globalRoutingPath = path.join(homeDir, ".asd", "routing.jsonc");
-    if (fs.existsSync(globalRoutingPath)) {
+    if (!excludeAsdRouting && fs.existsSync(globalRoutingPath)) {
       try {
         const text = fs.readFileSync(globalRoutingPath, "utf8");
         const matches = text.matchAll(/"harness"\s*:\s*"cursor"\s*,\s*"model"\s*:\s*"([^"]+)"/g);
@@ -411,7 +422,7 @@ export async function discoverHarnessModels(options?: {
   const runCliProbes = !options?.skipCliSpawn;
   const runGatewayProbe = !options?.skipCliSpawn || Boolean(options?.enableGatewayProbe);
   if (runCliProbes || runGatewayProbe) {
-    const agyProbe = !runCliProbes ? Promise.resolve() : execCliOutputAsync("agy", ["models"], 3500).then((res) => {
+    const agyProbe = !runCliProbes ? Promise.resolve() : execCliOutputAsync("agy", ["models"], cliTimeoutMs).then((res) => {
       if (!res.stdout) return;
       for (const rawLine of res.stdout.split(/\r?\n/)) {
         const line = rawLine.trim();
@@ -423,7 +434,7 @@ export async function discoverHarnessModels(options?: {
       }
     });
 
-    const opencodeProbe = !runCliProbes ? Promise.resolve() : execCliOutputAsync("opencode", ["models"], 3500, homeDir).then((res) => {
+    const opencodeProbe = !runCliProbes ? Promise.resolve() : execCliOutputAsync("opencode", ["models"], cliTimeoutMs, homeDir).then((res) => {
       if (res.status !== 0 || !res.stdout) return;
       const lines = res.stdout
         .split(/\r?\n/)
@@ -445,11 +456,11 @@ export async function discoverHarnessModels(options?: {
       }
     };
 
-    const cursorProbe = !runCliProbes ? Promise.resolve() : execCliOutputAsync("cursor-agent", ["models"], 3500).then((res) => {
+    const cursorProbe = !runCliProbes ? Promise.resolve() : execCliOutputAsync("cursor-agent", ["models"], cliTimeoutMs).then((res) => {
       if (res.stdout) {
         parseCursorModelsOutput(res.stdout);
       } else {
-        return execCliOutputAsync("agent", ["models"], 3500).then((agentRes) => {
+        return execCliOutputAsync("agent", ["models"], cliTimeoutMs).then((agentRes) => {
           if (agentRes.stdout) parseCursorModelsOutput(agentRes.stdout);
         });
       }
@@ -557,4 +568,340 @@ export async function discoverHarnessModels(options?: {
   modelCatalogCache.set(cacheKey, catalog);
   writeModelsDiskCache(homeDir, catalog, Boolean(options?.persistCache));
   return catalog;
+}
+
+// ============================================================================
+// Routing Model Validation & Initial-Bootstrap / Explicit-Refresh Substitution
+// ============================================================================
+
+export interface RoutingModelWarning {
+  location: string;
+  harness: HarnessId;
+  configuredModel: string;
+  suggestedModel: string;
+}
+
+export interface RoutingModelRemap {
+  location: string;
+  harness: HarnessId;
+  fromModel: string;
+  toModel: string;
+}
+
+const ANTIGRAVITY_NATIVE_TIERS = new Set(["inherit", "flash_lite", "flash", "pro"]);
+const CLAUDE_NATIVE_ALIASES = new Set(["haiku", "sonnet", "opus", "fable", "default"]);
+const CURSOR_META_MODELS = new Set(["default", "auto"]);
+
+function inferDesiredTier(desiredModel: string, hint: string): "low" | "medium" | "high" {
+  const lower = desiredModel.toLowerCase();
+  const h = hint.toLowerCase();
+  if (
+    h === "scout" ||
+    h === "low" ||
+    /(?:lite|haiku|mini|nano|-low\b|_low\b)/.test(lower)
+  ) {
+    return "low";
+  }
+  if (
+    h === "architect" ||
+    h === "critic" ||
+    h === "high" ||
+    h === "visual-ui" ||
+    h === "design" ||
+    /(?:opus|pro|carbon|argon|-high\b|xhigh)/.test(lower)
+  ) {
+    return "high";
+  }
+  return "medium";
+}
+
+export function selectBestAvailableModel(
+  harness: HarnessId,
+  desiredModel: string,
+  hint: string,
+  availableModels: readonly string[]
+): string | null {
+  const cleanAll = availableModels.filter((m) => Boolean(m && !m.includes(" ")));
+  const usable = cleanAll.filter((m) => m !== "default" && m !== "auto");
+  const pool = usable.length > 0 ? usable : cleanAll;
+  if (pool.length === 0) return null;
+
+  const desiredLower = desiredModel.toLowerCase().trim();
+  const baseSlug = desiredLower.includes("/")
+    ? desiredLower.split("/").pop() || desiredLower
+    : desiredLower;
+
+  // 1. Provider-prefixed or exact basename match (e.g. z-ai/glm-5.3-flash -> nvidia/z-ai/glm-5.3-flash)
+  const exactSuffix = pool.find((m) => {
+    const ml = m.toLowerCase();
+    return (
+      ml === desiredLower ||
+      ml.endsWith(`/${desiredLower}`) ||
+      (baseSlug.length >= 4 && ml.endsWith(`/${baseSlug}`))
+    );
+  });
+  if (exactSuffix) return exactSuffix;
+
+  // 2. Specialized research / DeepSeek family preference
+  if (desiredLower.includes("deepseek") || hint.toLowerCase() === "research") {
+    const ds = pool.find((m) => m.toLowerCase().includes("deepseek"));
+    if (ds) return ds;
+  }
+
+  // 3. Harness & tier-aware mainstream model preference
+  const tier = inferDesiredTier(desiredModel, hint);
+  let patterns: RegExp[] = [];
+
+  switch (harness) {
+    case "antigravity":
+      patterns =
+        tier === "low"
+          ? [/gemini-.*flash-low/i, /flash-low/i, /gemini-.*flash-medium/i, /flash/i]
+          : tier === "high"
+            ? [
+                /gemini-.*carbon-high/i,
+                /gemini-.*argon-high/i,
+                /claude-opus-.*-high/i,
+                /claude-sonnet-.*-high/i,
+                /-high$/i,
+              ]
+            : [/gemini-.*flash-medium/i, /gemini-.*carbon-medium/i, /flash/i, /-medium$/i];
+      break;
+    case "codex":
+      if (tier === "low") {
+        patterns = [/mini/i, /nano/i, /flash/i];
+      } else {
+        const nonMini = pool.find((m) => !/mini|nano/i.test(m));
+        if (nonMini) return nonMini;
+      }
+      break;
+    case "opencode":
+      patterns = [/glm-5/i, /claude-sonnet/i, /gpt-5/i, /qwen.*coder/i, /deepseek/i];
+      break;
+    case "claude-code":
+      patterns =
+        tier === "low"
+          ? [/^haiku$/i, /haiku/i, /flash/i]
+          : tier === "high"
+            ? [/^opus$/i, /opus/i, /^sonnet$/i, /sonnet/i, /deepseek/i, /qwen.*coder/i, /glm-5/i]
+            : [/^sonnet$/i, /sonnet/i, /glm-5/i, /qwen.*coder/i, /deepseek/i];
+      break;
+    case "cursor":
+      patterns =
+        tier === "low"
+          ? [/claude-haiku-.*-medium$/i, /gemini-.*flash-low$/i, /gpt-.*-mini-medium$/i]
+          : tier === "high"
+            ? [/^claude-opus-[\d.-]+-high$/i, /^claude-sonnet-[\d.-]+-high$/i, /^gpt-[\d.-]+-high$/i, /-high$/i]
+            : [/^claude-sonnet-4-6$/i, /^claude-sonnet-[\d.-]+-medium$/i, /claude-sonnet/i, /^gpt-[\d.-]+-medium$/i];
+      break;
+  }
+
+  for (const pat of patterns) {
+    const matched = pool.find((m) => pat.test(m));
+    if (matched) return matched;
+  }
+
+  return pool[0] ?? null;
+}
+
+function isHarnessCatalogAuthoritative(
+  harness: HarnessId,
+  available: readonly string[],
+  strictSingleEntry: boolean
+): boolean {
+  if (available.length === 0) return false;
+  if (harness === "claude-code" || harness === "cursor") {
+    return strictSingleEntry || available.length >= 2;
+  }
+  return true;
+}
+
+function isModelValidInCatalog(
+  harness: HarnessId,
+  model: string,
+  availableSet: ReadonlySet<string>,
+  isLightSubagentSlot: boolean
+): boolean {
+  const trimmed = model.trim();
+  if (!trimmed) return true;
+  if (isLightSubagentSlot && harness === "antigravity") {
+    return ANTIGRAVITY_NATIVE_TIERS.has(trimmed.toLowerCase());
+  }
+  if (harness === "claude-code" && CLAUDE_NATIVE_ALIASES.has(trimmed.toLowerCase())) {
+    return true;
+  }
+  if (harness === "cursor" && CURSOR_META_MODELS.has(trimmed.toLowerCase())) {
+    return true;
+  }
+  return availableSet.has(trimmed);
+}
+
+export function inspectOrRemapRoutingModels(
+  routingObj: Record<string, unknown>,
+  catalog: HarnessModelCatalog,
+  options?: {
+    applyRemap?: boolean;
+    strictSingleEntryCatalogs?: boolean;
+  }
+): {
+  warnings: RoutingModelWarning[];
+  remapped: RoutingModelRemap[];
+  changed: boolean;
+} {
+  const applyRemap = Boolean(options?.applyRemap);
+  const strictSingle = Boolean(options?.strictSingleEntryCatalogs);
+  const warnings: RoutingModelWarning[] = [];
+  const remapped: RoutingModelRemap[] = [];
+  let changed = false;
+
+  const catalogSets: Record<HarnessId, Set<string>> = {
+    antigravity: new Set(catalog.antigravity ?? []),
+    "claude-code": new Set(catalog["claude-code"] ?? []),
+    codex: new Set(catalog.codex ?? []),
+    opencode: new Set(catalog.opencode ?? []),
+    cursor: new Set(catalog.cursor ?? []),
+  };
+
+  const checkModelSlot = (
+    harness: HarnessId,
+    currentModel: string,
+    hint: string,
+    location: string,
+    isLightSlot: boolean,
+    applyChange: (nextModel: string) => void
+  ) => {
+    const available = catalog[harness] ?? [];
+    if (!isHarnessCatalogAuthoritative(harness, available, strictSingle)) {
+      return;
+    }
+    if (isModelValidInCatalog(harness, currentModel, catalogSets[harness], isLightSlot)) {
+      return;
+    }
+    const replacement = selectBestAvailableModel(harness, currentModel, hint, available);
+    if (!replacement || replacement === currentModel) {
+      return;
+    }
+    if (applyRemap) {
+      applyChange(replacement);
+      remapped.push({
+        location,
+        harness,
+        fromModel: currentModel,
+        toModel: replacement,
+      });
+      changed = true;
+    } else {
+      warnings.push({
+        location,
+        harness,
+        configuredModel: currentModel,
+        suggestedModel: replacement,
+      });
+    }
+  };
+
+  // 1. Inspect lightSubagents (skip antigravity native tier enum slots)
+  if (routingObj.lightSubagents && typeof routingObj.lightSubagents === "object") {
+    const lightRoot = routingObj.lightSubagents as Record<string, unknown>;
+    const harnessKeys: HarnessId[] = ["claude-code", "opencode", "codex", "cursor"];
+    for (const hKey of harnessKeys) {
+      const hBlock = lightRoot[hKey];
+      if (!hBlock || typeof hBlock !== "object") continue;
+      const hRec = hBlock as Record<string, unknown>;
+      for (const [slotKey, slotVal] of Object.entries(hRec)) {
+        const locBase = `lightSubagents.${hKey}.${slotKey}`;
+        if (typeof slotVal === "string") {
+          checkModelSlot(hKey, slotVal, slotKey, locBase, true, (nextModel) => {
+            hRec[slotKey] = nextModel;
+          });
+        } else if (Array.isArray(slotVal)) {
+          for (let idx = 0; idx < slotVal.length; idx++) {
+            const item = slotVal[idx];
+            if (typeof item === "string") {
+              checkModelSlot(hKey, item, slotKey, `${locBase}[${idx}]`, true, (nextModel) => {
+                slotVal[idx] = nextModel;
+              });
+            }
+          }
+        } else if (slotVal && typeof slotVal === "object") {
+          const objSlot = slotVal as Record<string, unknown>;
+          if (typeof objSlot.model === "string") {
+            checkModelSlot(hKey, objSlot.model, slotKey, `${locBase}.model`, true, (nextModel) => {
+              objSlot.model = nextModel;
+            });
+          }
+          if (Array.isArray(objSlot.fallbacks)) {
+            const fbs = objSlot.fallbacks;
+            for (let idx = 0; idx < fbs.length; idx++) {
+              const fbItem = fbs[idx];
+              if (typeof fbItem === "string") {
+                checkModelSlot(
+                  hKey,
+                  fbItem,
+                  slotKey,
+                  `${locBase}.fallbacks[${idx}]`,
+                  true,
+                  (nextModel) => {
+                    fbs[idx] = nextModel;
+                  }
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Inspect HEAVY route groups (agents, categories, heavyRouting)
+  const walkRouteGroup = (group: unknown, groupPrefix: string) => {
+    if (!group || typeof group !== "object") return;
+    for (const [routeKey, routeVal] of Object.entries(group as Record<string, unknown>)) {
+      if (!routeVal || typeof routeVal !== "object") continue;
+      const entry = routeVal as Record<string, unknown>;
+      if (typeof entry.harness === "string" && typeof entry.model === "string") {
+        const h = entry.harness as HarnessId;
+        if (h in catalogSets) {
+          checkModelSlot(h, entry.model, routeKey, `${groupPrefix}.${routeKey}`, false, (nextModel) => {
+            entry.model = nextModel;
+            entry.modelFamily = inferModelFamily(nextModel, h);
+          });
+        }
+      }
+      if (Array.isArray(entry.fallbacks)) {
+        const fbs = entry.fallbacks;
+        for (let idx = 0; idx < fbs.length; idx++) {
+          const fb = fbs[idx];
+          if (!fb || typeof fb !== "object") continue;
+          const fbRec = fb as Record<string, unknown>;
+          if (typeof fbRec.harness === "string" && typeof fbRec.model === "string") {
+            const h = fbRec.harness as HarnessId;
+            if (h in catalogSets) {
+              checkModelSlot(
+                h,
+                fbRec.model,
+                routeKey,
+                `${groupPrefix}.${routeKey}.fallbacks[${idx}]`,
+                false,
+                (nextModel) => {
+                  fbRec.model = nextModel;
+                  fbRec.modelFamily = inferModelFamily(nextModel, h);
+                }
+              );
+            }
+          }
+        }
+      }
+    }
+  };
+
+  walkRouteGroup(routingObj.agents, "agents");
+  walkRouteGroup(routingObj.categories, "categories");
+  if (routingObj.heavyRouting && typeof routingObj.heavyRouting === "object") {
+    const heavy = routingObj.heavyRouting as Record<string, unknown>;
+    walkRouteGroup(heavy.agents, "heavyRouting.agents");
+    walkRouteGroup(heavy.categories, "heavyRouting.categories");
+  }
+
+  return { warnings, remapped, changed };
 }

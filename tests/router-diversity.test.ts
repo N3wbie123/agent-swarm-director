@@ -106,7 +106,7 @@ test("Tier 1: harness-only pin adapts base route to target harness", () => {
 
   assert.equal(route.tier, 1);
   assert.equal(route.harness, "codex");
-  assert.equal(route.model, "gpt-5-codex");
+  assert.equal(route.model, "gpt-5.4");
   assert.equal(route.modelFamily, "gpt");
 });
 
@@ -223,7 +223,7 @@ test("Tier 4: builder or worker + general or unknown category -> difficulty tier
 
 test("@ag fallback: falls back to first CLI harness in fallbacks when headless unsupported", () => {
   // Scout role default in presets is antigravity / gemini-3.8-flash-low
-  // Fallback 1: codex / gpt-5-codex, Fallback 2: opencode / z-ai/glm-5.3-flash
+  // Fallback 1: codex / gpt-5.4, Fallback 2: opencode / z-ai/glm-5.3-flash
   const route = resolveRoute(
     {
       role: "scout",
@@ -235,7 +235,7 @@ test("@ag fallback: falls back to first CLI harness in fallbacks when headless u
   );
 
   assert.equal(route.harness, "codex");
-  assert.equal(route.model, "gpt-5-codex");
+  assert.equal(route.model, "gpt-5.4");
   assert.equal(route.modelFamily, "gpt");
   assert.equal(route.fallbackApplied, true);
 });
@@ -422,7 +422,7 @@ test("selectDiverseReviewer: prioritizes different modelFamily and different har
 
 test("selectDiverseReviewer: selects primary when primary already has different modelFamily", () => {
   // Proposer is claude-code / claude-sonnet-4-6 (family: claude)
-  // Critic primary is codex / gpt-5-codex (family: gpt)
+  // Critic primary is codex / gpt-5.4 (family: gpt)
   const sel = selectDiverseReviewer(
     {
       harness: "claude-code",
@@ -436,7 +436,7 @@ test("selectDiverseReviewer: selects primary when primary already has different 
   assert.equal(sel.diversityDegraded, false);
   assert.equal(sel.modelFamily, "gpt");
   assert.equal(sel.harness, "codex");
-  assert.equal(sel.model, "gpt-5-codex");
+  assert.equal(sel.model, "gpt-5.4");
 });
 
 test("selectDiverseReviewer: sets diversityDegraded: true and warning tag when single model family available", () => {
@@ -444,7 +444,7 @@ test("selectDiverseReviewer: sets diversityDegraded: true and warning tag when s
   const sel = selectDiverseReviewer(
     {
       harness: "codex",
-      model: "gpt-5-codex",
+      model: "gpt-5.4",
       modelFamily: "gpt",
     },
     "critic",
@@ -462,7 +462,7 @@ test("selectDiverseReviewer: sets diversityDegraded: true and warning tag when s
 test("selectDiverseReviewer: arbiter role selects diverse reviewer from claude proposer", () => {
   // Arbiter primary is claude-code / claude-opus-4-6 (family: claude)
   // Proposer is claude
-  // Fallback 1: codex / gpt-5-codex (family: gpt)
+  // Fallback 1: codex / gpt-5.4 (family: gpt)
   const sel = selectDiverseReviewer(
     {
       harness: "claude-code",
@@ -476,7 +476,7 @@ test("selectDiverseReviewer: arbiter role selects diverse reviewer from claude p
   assert.equal(sel.diversityDegraded, false);
   assert.equal(sel.modelFamily, "gpt");
   assert.equal(sel.harness, "codex");
-  assert.equal(sel.model, "gpt-5-codex");
+  assert.equal(sel.model, "gpt-5.4");
 });
 
 // ============================================================================

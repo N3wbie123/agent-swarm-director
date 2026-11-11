@@ -505,11 +505,11 @@ function getDefaultModelForHarness(harness: HarnessId): string {
     case "codex":
       return "gpt-5.4";
     case "opencode":
-      return "glm-5";
+      return "z-ai/glm-5.3-flash";
     case "antigravity":
       return "gemini-4-carbon-high";
     case "cursor":
-      return "claude-4.5-sonnet";
+      return "claude-sonnet-4-6";
     default:
       return "claude-sonnet-4-6";
   }

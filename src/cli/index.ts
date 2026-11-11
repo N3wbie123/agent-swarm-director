@@ -99,6 +99,8 @@ export interface CliArgs {
     help?: boolean;
     version?: boolean;
     noPath?: boolean;
+    refreshModels?: boolean;
+    noModelProbe?: boolean;
     fromMarkdown?: boolean;
     diff?: boolean;
     print?: boolean;
@@ -241,6 +243,10 @@ export function parseCliArgs(args: string[]): CliArgs {
       flags.noUpdateCheck = true;
     } else if (arg === "--no-path" || arg === "--noPath") {
       flags.noPath = true;
+    } else if (arg === "--refresh-models" || arg === "--refreshModels") {
+      flags.refreshModels = true;
+    } else if (arg === "--no-model-probe" || arg === "--noModelProbe") {
+      flags.noModelProbe = true;
     } else if (arg === "--from-markdown" || arg === "--from-md") {
       flags.fromMarkdown = true;
     } else if (arg === "--diff") {
@@ -931,7 +937,7 @@ Commands:
   dispatch [--turn <n>] [--mode <m>]     Dispatch wave tasks in parallel_spawn or claim_only mode
   verify --task <id> [--summary <s>]     Verify task boundaries, run tests, and commit/merge
   debate --topic <t> --proposal <p>      Run zero-timeout cross-model blind debate via CLI
-  sync [--force] [--no-path]             Sync ASD harnesses globally and install 'asd' CLI to PATH
+  sync [--force] [--refresh-models]      Sync ASD harnesses globally and install 'asd' CLI to PATH
   update                                 Pull latest ASD release from GitHub and sync configs
   status [--json]                        Display current session progress board and warnings
   resume [--session <id>] [--print|-p]   Demote/resume active ASD session in interactive CLI
@@ -970,6 +976,8 @@ Options:
   -p, --port <num>                   Port for 'asd ui' web dashboard (default: 3847)
   -p, --print                        Print command/markdown to stdout for 'asd resume' / 'asd handoff'
       --force                        Force overwriting existing configurations (sync)
+      --refresh-models               Remap unavailable models in routing.jsonc to discovered models (sync)
+      --no-model-probe               Skip live harness model discovery during 'asd sync'
       --no-path                      Skip installing 'asd' CLI shim to global PATH (sync)
       --no-update-check              Disable remote/cached version update check (or ASD_NO_UPDATE_CHECK=1)
       --pop                          Restore stashed work (clean)
@@ -1070,6 +1078,9 @@ export async function main(
             force: flags.force,
             projectRoot,
             noPath: flags.noPath,
+            discoverModels: !flags.noModelProbe,
+            refreshModels: Boolean(flags.refreshModels),
+            skipModelDiscovery: Boolean(flags.noModelProbe),
           });
           if (flags.json) {
             console.log(JSON.stringify(res, null, 2));
@@ -1092,6 +1103,33 @@ export async function main(
               for (const shim of res.cliShimsInstalled) {
                 console.log(`  - ${shim}`);
               }
+            }
+            if (res.modelsBootstrapped && res.modelsBootstrapped.length > 0) {
+              console.log(`Initial Preset Models Auto-Matched (${res.modelsBootstrapped.length}):`);
+              for (const item of res.modelsBootstrapped) {
+                console.log(
+                  `  - ${item.location} (${item.harness}): '${item.fromModel}' -> '${item.toModel}'`
+                );
+              }
+            }
+            if (res.modelsRemapped && res.modelsRemapped.length > 0) {
+              console.log(`Routing Models Remapped (${res.modelsRemapped.length}):`);
+              for (const item of res.modelsRemapped) {
+                console.log(
+                  `  - ${item.location} (${item.harness}): '${item.fromModel}' -> '${item.toModel}'`
+                );
+              }
+            }
+            if (res.modelWarnings && res.modelWarnings.length > 0) {
+              console.log(`Model Warnings (${res.modelWarnings.length}):`);
+              for (const w of res.modelWarnings) {
+                console.log(
+                  `  - [WARN] ${w.location} (${w.harness}): '${w.configuredModel}' not found in available models (suggested: '${w.suggestedModel}')`
+                );
+              }
+              console.log(
+                `  Tip: Run 'asd sync --refresh-models' to automatically remap missing models in routing.jsonc.`
+              );
             }
             await printUpdateBannerIfAvailable();
           }

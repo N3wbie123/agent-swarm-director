@@ -1263,3 +1263,150 @@ describe("T1.3: Subagent tools frontmatter, quoted hooks, OpenCode plugin, and r
     }
   });
 });
+
+describe("Model Discovery Integration on Bootstrap & asd sync", () => {
+  test("1. Initial install (routing.jsonc missing): auto-substitutes unavailable preset models from discovered catalog while keeping offline harnesses on mainstream preset", async () => {
+    const bootHome = createTempDir("asd-model-boot-home-");
+    try {
+      const mockCatalog = {
+        antigravity: [
+          "gemini-4-carbon-high",
+          "gemini-3.8-flash-medium",
+          "gemini-3.8-flash-low",
+        ],
+        "claude-code": [], // Simulate offline / unauthenticated Claude Code -> must keep mainstream preset!
+        codex: ["gpt-6-luna", "gpt-5.6-terra"],
+        opencode: ["nvidia/z-ai/glm-5.3-flash", "nvidia/deepseek-ai/deepseek-v4.1-flash"],
+        cursor: ["claude-sonnet-4-6"],
+      };
+
+      const res = await syncHarnessConfigs({
+        homeDir: bootHome,
+        noPath: true,
+        modelCatalogOverride: mockCatalog,
+      });
+
+      assert.ok(res.modelsBootstrapped && res.modelsBootstrapped.length > 0);
+      assert.equal(res.modelWarnings, undefined);
+
+      // Verify models-cache.json was pre-warmed
+      const cachePath = path.join(bootHome, ".asd", "state", "models-cache.json");
+      assert.equal(fs.existsSync(cachePath), true);
+
+      const routingRaw = fs.readFileSync(path.join(bootHome, ".asd", "routing.jsonc"), "utf8");
+      const routing = JSON.parse(
+        routingRaw
+          .split("\n")
+          .filter((l) => !l.trim().startsWith("//"))
+          .join("\n")
+      );
+
+      // Codex preset 'gpt-5.4' was auto-matched to 'gpt-6-luna'
+      assert.equal(routing.lightSubagents.codex.defaultModel, "gpt-6-luna");
+      assert.equal(routing.agents.critic.model, "gpt-6-luna");
+      // OpenCode preset 'z-ai/glm-5.3-flash' & 'deepseek-ai/deepseek-v3.2' matched provider-prefixed models
+      assert.equal(routing.agents.worker.model, "nvidia/z-ai/glm-5.3-flash");
+      assert.equal(routing.categories.research.model, "nvidia/deepseek-ai/deepseek-v4.1-flash");
+      // Offline Claude Code preserved mainstream static preset without error
+      assert.equal(routing.agents.planner.model, "claude-sonnet-4-6");
+      assert.equal(routing.agents.architect.model, "claude-opus-4-6");
+      // Native Antigravity lightSubagents tiers remained untouched
+      assert.equal(routing.lightSubagents.antigravity.scout.model, "flash_lite");
+    } finally {
+      removeTempDir(bootHome);
+    }
+  });
+
+  test("2. Normal asd sync vs --refresh-models: warns without mutating existing user routing.jsonc, preserves idempotency, and remaps only when --refresh-models is passed", async () => {
+    const warnHome = createTempDir("asd-model-warn-home-");
+    try {
+      const asdDir = path.join(warnHome, ".asd");
+      fs.mkdirSync(asdDir, { recursive: true });
+      const routingPath = path.join(asdDir, "routing.jsonc");
+      const userRouting = {
+        _asdVersion: "2.5.0",
+        lightSubagents: {
+          antigravity: {
+            scout: "flash_lite",
+            defaultModel: "flash",
+          },
+          codex: {
+            defaultModel: "gpt-6.1-nonexistent",
+          },
+        },
+        agents: {
+          planner: {
+            harness: "codex",
+            model: "gpt-6.1-nonexistent",
+            modelFamily: "gpt",
+            fallbacks: [
+              { harness: "opencode", model: "nvidia/z-ai/glm-5.3-flash", modelFamily: "glm" },
+            ],
+          },
+          worker: {
+            harness: "opencode",
+            model: "nvidia/z-ai/glm-5.3-flash",
+            modelFamily: "glm",
+            fallbacks: [],
+          },
+        },
+        categories: {},
+      };
+      const initialContent = JSON.stringify(userRouting, null, 2);
+      fs.writeFileSync(routingPath, initialContent, "utf8");
+
+      const mockCatalog = {
+        antigravity: ["gemini-3.8-flash-medium", "gemini-3.8-flash-low"],
+        "claude-code": [],
+        codex: ["gpt-6-luna", "gpt-5.6-terra"],
+        opencode: ["nvidia/z-ai/glm-5.3-flash"],
+        cursor: [],
+      };
+
+      // Normal sync: MUST NOT mutate user routing.jsonc, MUST emit warnings, and second sync MUST skip (idempotent)
+      const firstSync = await syncHarnessConfigs({
+        homeDir: warnHome,
+        noPath: true,
+        modelCatalogOverride: mockCatalog,
+      });
+      assert.equal(fs.readFileSync(routingPath, "utf8"), initialContent, "Normal sync must never overwrite user routing.jsonc");
+      assert.equal(firstSync.modelsRemapped, undefined);
+      assert.ok(firstSync.modelWarnings && firstSync.modelWarnings.length === 2);
+      assert.equal(firstSync.modelWarnings[0]!.configuredModel, "gpt-6.1-nonexistent");
+      assert.equal(firstSync.modelWarnings[0]!.suggestedModel, "gpt-6-luna");
+
+      const secondSync = await syncHarnessConfigs({
+        homeDir: warnHome,
+        noPath: true,
+        modelCatalogOverride: {
+          ...mockCatalog,
+          codex: ["gpt-6-luna", "gpt-5.6-terra", "gpt-brand-new-model"],
+        },
+      });
+      assert.equal(secondSync.status, "skipped", "Provider model list changes must NOT break configHash idempotency");
+
+      // Explicit --refresh-models: remaps ONLY missing models while keeping valid user models untouched
+      const refreshSync = await syncHarnessConfigs({
+        homeDir: warnHome,
+        noPath: true,
+        refreshModels: true,
+        modelCatalogOverride: mockCatalog,
+      });
+      assert.ok(refreshSync.modelsRemapped && refreshSync.modelsRemapped.length === 2);
+      assert.equal(refreshSync.modelWarnings, undefined);
+
+      const updated = JSON.parse(
+        fs
+          .readFileSync(routingPath, "utf8")
+          .split("\n")
+          .filter((l) => !l.trim().startsWith("//"))
+          .join("\n")
+      );
+      assert.equal(updated.lightSubagents.codex.defaultModel, "gpt-6-luna");
+      assert.equal(updated.agents.planner.model, "gpt-6-luna");
+      assert.equal(updated.agents.worker.model, "nvidia/z-ai/glm-5.3-flash");
+    } finally {
+      removeTempDir(warnHome);
+    }
+  });
+});

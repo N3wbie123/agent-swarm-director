@@ -29,6 +29,14 @@ import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { parseJsonc, removeTomlFence, upsertTomlFence, escapeTomlBasicString } from "../core/jsonc.ts";
+import {
+  discoverHarnessModels,
+  inspectOrRemapRoutingModels,
+  writeModelsDiskCache,
+  type HarnessModelCatalog,
+  type RoutingModelRemap,
+  type RoutingModelWarning,
+} from "../core/models.ts";
 import { evaluatePreToolUse } from "../core/policy.ts";
 import {
   normalizeAntigravityModel,
@@ -83,6 +91,10 @@ export interface SyncHarnessOptions {
   projectRoot?: string;
   asdCliPath?: string;
   noPath?: boolean;
+  discoverModels?: boolean;
+  refreshModels?: boolean;
+  skipModelDiscovery?: boolean;
+  modelCatalogOverride?: HarnessModelCatalog;
 }
 
 export interface HarnessSyncStatus {
@@ -98,6 +110,9 @@ export interface SyncHarnessConfigsResult {
   configHash: string;
   harnesses: Record<HarnessId, HarnessSyncStatus>;
   cliShimsInstalled?: string[];
+  modelsBootstrapped?: RoutingModelRemap[];
+  modelsRemapped?: RoutingModelRemap[];
+  modelWarnings?: RoutingModelWarning[];
 }
 
 export interface UninstallHarnessOptions {
@@ -155,6 +170,7 @@ export interface AutoSyncOptions {
   homeDir?: string;
   projectRoot?: string;
   force?: boolean;
+  skipModelDiscovery?: boolean;
 }
 
 export interface AutoSyncResult {
@@ -658,7 +674,27 @@ function migrateLegacyAntigravityCliModels(routing: Record<string, unknown>): bo
   return changed;
 }
 
-function bootstrapGlobalPresets(homeDir: string): { routingPath: string; mcpPath: string } {
+function formatGlobalRoutingHeader(): string {
+  return [
+    `// ASD v${ASD_VERSION} global user model routing configuration (~/.asd/routing.jsonc).`,
+    `// 1. "lightSubagents": LIGHT mode (in-harness native subagent delegation) model tier & fallback mapping.`,
+    `// 2. "agents" & "categories": HEAVY mode (external CLI parallel_spawn & cross-harness blind debate).`,
+  ].join("\n");
+}
+
+function bootstrapGlobalPresets(
+  homeDir: string,
+  modelOptions?: {
+    catalog?: HarnessModelCatalog;
+    refreshModels?: boolean;
+    strictSingleEntryCatalogs?: boolean;
+  }
+): {
+  routingPath: string;
+  mcpPath: string;
+  modelsBootstrapped: RoutingModelRemap[];
+  modelsRemapped: RoutingModelRemap[];
+} {
   const asdHome = path.join(homeDir, ".asd");
   ensureDir(asdHome);
   ensureDir(path.join(asdHome, "state"));
@@ -670,13 +706,42 @@ function bootstrapGlobalPresets(homeDir: string): { routingPath: string; mcpPath
   const presetRouting = path.join(asdRoot, "presets", "default-routing.jsonc");
   const presetMcp = path.join(asdRoot, "presets", "default-mcp.jsonc");
 
+  let modelsBootstrapped: RoutingModelRemap[] = [];
+  let modelsRemapped: RoutingModelRemap[] = [];
+
   if (!fs.existsSync(routingPath)) {
     if (fs.existsSync(presetRouting)) {
       const content = fs
         .readFileSync(presetRouting, "utf8")
         .replace(/\bASD v\d+\.\d+(?:\.\d+)?\b/g, `ASD v${ASD_VERSION}`)
         .replace(/"_asdVersion":\s*"[^"]*"/g, `"_asdVersion": "${ASD_VERSION}"`);
-      safeWriteText(routingPath, content);
+
+      let writtenViaDiscovery = false;
+      if (modelOptions?.catalog) {
+        try {
+          const parsedPreset = parseJsonc<Record<string, unknown>>(content);
+          if (parsedPreset && typeof parsedPreset === "object") {
+            const subRes = inspectOrRemapRoutingModels(parsedPreset, modelOptions.catalog, {
+              applyRemap: true,
+              strictSingleEntryCatalogs: Boolean(modelOptions.strictSingleEntryCatalogs),
+            });
+            if (subRes.changed) {
+              modelsBootstrapped = subRes.remapped;
+              safeWriteText(
+                routingPath,
+                `${formatGlobalRoutingHeader()}\n${JSON.stringify(parsedPreset, null, 2)}\n`
+              );
+              writtenViaDiscovery = true;
+            }
+          }
+        } catch {
+          // Fall back to static preset text
+        }
+      }
+
+      if (!writtenViaDiscovery) {
+        safeWriteText(routingPath, content);
+      }
     } else {
       safeWriteText(routingPath, `// ASD Default Routing\n{\n  "_asdVersion": "${ASD_VERSION}"\n}\n`);
     }
@@ -691,7 +756,19 @@ function bootstrapGlobalPresets(homeDir: string): { routingPath: string; mcpPath
         const parsedRec = parsed as unknown as Record<string, unknown>;
         const modelsMigrated = migrateLegacyAntigravityCliModels(parsedRec);
 
-        if (needsVersionUpgrade || modelsMigrated) {
+        let explicitRefreshChanged = false;
+        if (modelOptions?.refreshModels && modelOptions.catalog) {
+          const refreshRes = inspectOrRemapRoutingModels(parsedRec, modelOptions.catalog, {
+            applyRemap: true,
+            strictSingleEntryCatalogs: Boolean(modelOptions.strictSingleEntryCatalogs),
+          });
+          if (refreshRes.changed) {
+            explicitRefreshChanged = true;
+            modelsRemapped = refreshRes.remapped;
+          }
+        }
+
+        if (needsVersionUpgrade || modelsMigrated || explicitRefreshChanged) {
           let presetLightSubagents: RoutingConfig["lightSubagents"] | undefined;
           if (needsVersionUpgrade && fs.existsSync(presetRouting)) {
             try {
@@ -711,7 +788,7 @@ function bootstrapGlobalPresets(homeDir: string): { routingPath: string; mcpPath
             ? parsed.lightSubagents
               ? { ...(presetLightSubagents ?? {}), ...parsed.lightSubagents }
               : presetLightSubagents
-            : parsed.lightSubagents;
+            : (parsedRec.lightSubagents as RoutingConfig["lightSubagents"]);
           if (mergedLightSubagents) {
             migrated.lightSubagents = mergedLightSubagents;
           }
@@ -720,12 +797,10 @@ function bootstrapGlobalPresets(homeDir: string): { routingPath: string; mcpPath
             migrated[key] = val;
           }
 
-          const header = [
-            `// ASD v${ASD_VERSION} global user model routing configuration (~/.asd/routing.jsonc).`,
-            `// 1. "lightSubagents": LIGHT mode (in-harness native subagent delegation) model tier & fallback mapping.`,
-            `// 2. "agents" & "categories": HEAVY mode (external CLI parallel_spawn & cross-harness blind debate).`,
-          ].join("\n");
-          safeWriteText(routingPath, `${header}\n${JSON.stringify(migrated, null, 2)}\n`);
+          safeWriteText(
+            routingPath,
+            `${formatGlobalRoutingHeader()}\n${JSON.stringify(migrated, null, 2)}\n`
+          );
         }
       }
     } catch {
@@ -764,7 +839,7 @@ function bootstrapGlobalPresets(homeDir: string): { routingPath: string; mcpPath
     }
   }
 
-  return { routingPath, mcpPath };
+  return { routingPath, mcpPath, modelsBootstrapped, modelsRemapped };
 }
 
 function computeConfigHash(
@@ -1212,7 +1287,72 @@ export async function syncHarnessConfigs(
   const asdCliPath =
     options?.asdCliPath || path.join(asdRoot, "src", "cli", "index.ts");
 
-  // 1. Bootstrap presets, load catalog & native capabilities, and compute config hash
+  // 1. Discover available models (pre-warming ~/.asd/state/models-cache.json),
+  //    bootstrap presets (auto-substituting missing preset models ONLY on initial creation
+  //    or explicit --refresh-models), and compute config hash.
+  let discoveredCatalog: HarnessModelCatalog | undefined;
+  const strictSingleEntryCatalogs = Boolean(options?.modelCatalogOverride);
+  if (options?.modelCatalogOverride) {
+    discoveredCatalog = options.modelCatalogOverride;
+    writeModelsDiskCache(homeDir, discoveredCatalog, true);
+  } else if (!options?.skipModelDiscovery) {
+    const isInitialBootstrap = !fs.existsSync(path.join(homeDir, ".asd", "routing.jsonc"));
+    const isRealHome = path.resolve(homeDir) === path.resolve(os.homedir());
+    const shouldProbeClis = Boolean(
+      options?.discoverModels || options?.refreshModels || (isInitialBootstrap && isRealHome)
+    );
+    try {
+      discoveredCatalog = await discoverHarnessModels({
+        homeDir,
+        projectRoot: options?.projectRoot,
+        forceRefresh: shouldProbeClis,
+        skipCliSpawn: !shouldProbeClis,
+        cliTimeoutMs: 2500,
+        persistCache: true,
+        excludeAsdRouting: true,
+        enableGatewayProbe: shouldProbeClis ? "trusted-only" : false,
+      });
+    } catch {
+      discoveredCatalog = undefined;
+    }
+  }
+
+  const presetBootstrap = bootstrapGlobalPresets(homeDir, {
+    catalog: discoveredCatalog,
+    refreshModels: options?.refreshModels,
+    strictSingleEntryCatalogs,
+  });
+
+  // Also support --refresh-models when a project-local .asd/routing.jsonc override is active
+  const modelsRemapped: RoutingModelRemap[] = [...presetBootstrap.modelsRemapped];
+  if (options?.refreshModels && discoveredCatalog && options?.projectRoot) {
+    const localRoutingPath = path.join(options.projectRoot, ".asd", "routing.jsonc");
+    if (fs.existsSync(localRoutingPath)) {
+      try {
+        const localParsed = parseJsonc<Record<string, unknown>>(
+          fs.readFileSync(localRoutingPath, "utf8")
+        );
+        if (localParsed && typeof localParsed === "object") {
+          const localRes = inspectOrRemapRoutingModels(localParsed, discoveredCatalog, {
+            applyRemap: true,
+            strictSingleEntryCatalogs,
+          });
+          if (localRes.changed) {
+            safeWriteText(
+              localRoutingPath,
+              `// Project-Scoped ASD Routing Override (.asd/routing.jsonc)\n${JSON.stringify(localParsed, null, 2)}\n`
+            );
+            for (const item of localRes.remapped) {
+              modelsRemapped.push({ ...item, location: `project:${item.location}` });
+            }
+          }
+        }
+      } catch {
+        // Ignore unparseable local routing override
+      }
+    }
+  }
+
   const configHash = computeConfigHash(homeDir, options?.projectRoot, asdCliPath);
   const lastSync = loadLastSync(homeDir);
   const nativeCapabilitiesMap = loadHarnessNativeCapabilities();
@@ -1232,6 +1372,19 @@ export async function syncHarnessConfigs(
     }
   } catch {
     routingConfig = null;
+  }
+
+  let modelWarnings: RoutingModelWarning[] = [];
+  if (discoveredCatalog && routingConfig && typeof routingConfig === "object") {
+    const checkRes = inspectOrRemapRoutingModels(
+      routingConfig as unknown as Record<string, unknown>,
+      discoveredCatalog,
+      {
+        applyRemap: false,
+        strictSingleEntryCatalogs,
+      }
+    );
+    modelWarnings = checkRes.warnings;
   }
 
   const harnessResults: Record<HarnessId, HarnessSyncStatus> = {
@@ -1845,6 +1998,11 @@ export async function syncHarnessConfigs(
     configHash,
     harnesses: harnessResults,
     cliShimsInstalled,
+    ...(presetBootstrap.modelsBootstrapped.length > 0
+      ? { modelsBootstrapped: presetBootstrap.modelsBootstrapped }
+      : {}),
+    ...(modelsRemapped.length > 0 ? { modelsRemapped } : {}),
+    ...(modelWarnings.length > 0 ? { modelWarnings } : {}),
   };
 }
 
@@ -1864,7 +2022,10 @@ export async function autoSyncIfNeeded(options?: AutoSyncOptions): Promise<AutoS
     };
   }
 
-  const syncResult = await syncHarnessConfigs(options);
+  const syncResult = await syncHarnessConfigs({
+    ...options,
+    skipModelDiscovery: options?.skipModelDiscovery ?? true,
+  });
   return {
     synced: syncResult.status === "updated",
     skipped: syncResult.status === "skipped",
