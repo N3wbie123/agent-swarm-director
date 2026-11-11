@@ -35,11 +35,14 @@ function isLikelyCodeIdentifierOrType(val: string): boolean {
  * Redact secrets from input text (used for logs and session summaries).
  * Patterns covered:
  * - AWS keys: AKIA[0-9A-Z]{16} and ASIA[0-9A-Z]{16}
+ * - AWS secret access keys: 40-char base64-ish in key=value context
  * - JWT tokens: eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+
  * - PEM private key blocks: -----BEGIN [A-Z ]*PRIVATE KEY-----...-----END [A-Z ]*PRIVATE KEY-----
- * - OpenAI/Anthropic-style: sk-[A-Za-z0-9_-]{16,}
- * - GitHub: ghp_[A-Za-z0-9]{20,}
- * - Google: AIza[0-9A-Za-z_-]{35}
+ * - OpenAI/Anthropic-style: sk-[A-Za-z0-9_-]{16,}, sk-proj-[A-Za-z0-9_-]{40,}, sk-ant-[A-Za-z0-9_-]{40,}
+ * - GitHub: ghp_[A-Za-z0-9]{20,}, gho_/ghu_/ghs_/ghr_[A-Za-z0-9]{36,}
+ * - Google: AIza[0-9A-Za-z_-]{35}, ya29\.[A-Za-z0-9_-]{20,}
+ * - npm: npm_[A-Za-z0-9]{30,}
+ * - PyPI: pypi-[A-Za-z0-9_-]{30,}
  * - Generic assignments: password, secret, token, api_key key-value assignments
  */
 export function redactSecrets(input: string): string {
@@ -47,6 +50,12 @@ export function redactSecrets(input: string): string {
 
   // AWS Access Key IDs (AKIA/ASIA)
   result = result.replace(/\b(AKIA|ASIA)[0-9A-Z]{16}\b/g, REDACTED);
+
+  // AWS Secret Access Keys (40-char base64-ish) in key=value context (with optional quotes)
+  result = result.replace(
+    /\b(aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[:=]\s*["']?[A-Za-z0-9+/=]{40}["']?\b/g,
+    (match) => match.replace(/["']?[A-Za-z0-9+/=]{40}["']?$/, REDACTED)
+  );
 
   // JWT tokens (three base64url parts separated by dots)
   result = result.replace(
@@ -60,14 +69,30 @@ export function redactSecrets(input: string): string {
     REDACTED
   );
 
-  // OpenAI/Anthropic-style keys (sk-...)
+  // OpenAI/Anthropic-style keys: sk-proj-, sk-ant- (including sk-ant-api03-), then generic sk-
+  // Order matters: specific prefixes first, then generic sk- to avoid double-redaction
+  result = result.replace(/\bsk-proj-[A-Za-z0-9_-]{40,}\b/g, REDACTED);
+  result = result.replace(/\bsk-ant-[A-Za-z0-9_-]{40,}\b/g, REDACTED);
   result = result.replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, REDACTED);
 
-  // GitHub personal access tokens (ghp_...)
+  // GitHub tokens: gho_, ghu_, ghs_, ghr_ (36+ chars), then ghp_ (20+ chars)
+  result = result.replace(/\bgho_[A-Za-z0-9]{36,}\b/g, REDACTED);
+  result = result.replace(/\bghu_[A-Za-z0-9]{36,}\b/g, REDACTED);
+  result = result.replace(/\bghs_[A-Za-z0-9]{36,}\b/g, REDACTED);
+  result = result.replace(/\bghr_[A-Za-z0-9]{36,}\b/g, REDACTED);
   result = result.replace(/\bghp_[A-Za-z0-9]{20,}\b/g, REDACTED);
 
   // Google API keys (AIza...)
   result = result.replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, REDACTED);
+
+  // Google OAuth tokens (ya29.)
+  result = result.replace(/\bya29\.[A-Za-z0-9_-]{20,}\b/g, REDACTED);
+
+  // npm tokens (npm_)
+  result = result.replace(/\bnpm_[A-Za-z0-9]{30,}\b/g, REDACTED);
+
+  // PyPI tokens (pypi-)
+  result = result.replace(/\bpypi-[A-Za-z0-9_-]{30,}\b/g, REDACTED);
 
   const quotedPatterns = [
     /(\bpassword["']?\s*[:=]\s*)(["'])([^"']+)\2/gi,
@@ -122,6 +147,11 @@ export function hasLeakedSecrets(content: string): boolean {
   }
   if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(stripped)) return true;
 
+  // AWS Secret Access Key in key=value context (with optional quotes)
+  if (/\b(aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[:=]\s*["']?[A-Za-z0-9+/=]{40}["']?\b/.test(stripped)) {
+    return true;
+  }
+
   const skMatches = stripped.match(/\bsk-[A-Za-z0-9_-]{16,}\b/g);
   if (skMatches) {
     for (const token of skMatches) {
@@ -134,8 +164,24 @@ export function hasLeakedSecrets(content: string): boolean {
     }
   }
 
+  // GitHub tokens: gho_, ghu_, ghs_, ghr_ (36+ chars), ghp_ (20+ chars)
+  if (/\bgho_[A-Za-z0-9]{36,}\b/.test(stripped)) return true;
+  if (/\bghu_[A-Za-z0-9]{36,}\b/.test(stripped)) return true;
+  if (/\bghs_[A-Za-z0-9]{36,}\b/.test(stripped)) return true;
+  if (/\bghr_[A-Za-z0-9]{36,}\b/.test(stripped)) return true;
   if (/\bghp_[A-Za-z0-9]{20,}\b/.test(stripped)) return true;
+
+  // Google API keys (AIza...)
   if (/\bAIza[0-9A-Za-z_-]{35}\b/.test(stripped)) return true;
+
+  // Google OAuth tokens (ya29.)
+  if (/\bya29\.[A-Za-z0-9_-]{20,}\b/.test(stripped)) return true;
+
+  // npm tokens (npm_)
+  if (/\bnpm_[A-Za-z0-9]{30,}\b/.test(stripped)) return true;
+
+  // PyPI tokens (pypi-)
+  if (/\bpypi-[A-Za-z0-9_-]{30,}\b/.test(stripped)) return true;
 
   return false;
 }
