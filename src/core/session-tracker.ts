@@ -439,20 +439,83 @@ export function buildSessionDemotion(
 
 /**
  * Extracts a native harness session ID from headless JSON or JSONL stdout/stderr output.
+ * Only extracts from known harness envelope shapes to avoid tool-result pollution.
  */
 export function extractHarnessSessionIdFromOutput(
   rawOutput: string,
-  _harness?: HarnessId
+  harness?: HarnessId
 ): string | null {
   if (!rawOutput || typeof rawOutput !== "string") return null;
 
-  // 1. Check line-by-line JSON objects (NDJSON from codex --json, opencode --format json, claudejson)
   const lines = rawOutput.split(/\r?\n/);
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line.startsWith("{") || !line.endsWith("}")) continue;
+    let obj: Record<string, unknown>;
     try {
-      const obj = JSON.parse(line) as Record<string, unknown>;
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    const lineType = typeof obj.type === "string" ? obj.type : "";
+    const event = typeof obj.event === "string" ? obj.event : "";
+
+    // Known harness envelope type/event values
+    const isKnownEnvelopeType =
+      lineType === "result" ||
+      lineType === "init" ||
+      lineType === "session_configured" ||
+      lineType === "PLANNER_RESPONSE" ||
+      lineType === "USER_INPUT" ||
+      lineType === "TOOL_RESPONSE" ||
+      lineType === "GENERIC" ||
+      event === "init" ||
+      event === "result" ||
+      event === "step_update" ||
+      event === "tool_call";
+
+    // 1. Harness-specific envelope shapes (high confidence)
+    // Claude Code: {"type":"result"|"init", "session_id":"...", ...}
+    if ((lineType === "result" || lineType === "init") && typeof obj.session_id === "string" && obj.session_id.trim()) {
+      return obj.session_id.trim();
+    }
+
+    // Codex: {"type":"session_configured","payload":{"id":"...",...}}
+    if (lineType === "session_configured" && obj.payload && typeof obj.payload === "object") {
+      const payload = obj.payload as Record<string, unknown>;
+      if (typeof payload.id === "string" && payload.id.trim()) {
+        return payload.id.trim();
+      }
+    }
+
+    // OpenCode: {"part":{"session_id":"...",...}} or direct {"session_id":"..."} with part wrapper
+    if (obj.part && typeof obj.part === "object") {
+      const part = obj.part as Record<string, unknown>;
+      const partSid = part.sessionID ?? part.session_id ?? part.sessionId;
+      if (typeof partSid === "string" && partSid.trim().length > 0) {
+        return partSid.trim();
+      }
+    }
+
+    // Antigravity: {"event":"init"|"result","session_id":"...",...}
+    if ((event === "init" || event === "result") && typeof obj.session_id === "string" && obj.session_id.trim()) {
+      return obj.session_id.trim();
+    }
+
+    // 2. Generic direct keys for any non-tool-result JSON line.
+    // Harnesses announce sessions in varied shapes ({"type":"system"|"thread.started"|"step_start"|none, ...}),
+    // so we cannot whitelist type values. The S3 guard is the tool-result skip below:
+    // lines that are clearly tool results/responses must NOT be treated as session announcements.
+    const isToolResult =
+      lineType === "tool_result" ||
+      lineType === "tool_response" ||
+      lineType === "function_call_output" ||
+      lineType === "custom_tool_call_output" ||
+      event === "tool_call" ||
+      (typeof obj.tool_name === "string" && (typeof obj.content === "string" || typeof obj.output === "string" || typeof obj.error === "string"));
+
+    if (!isToolResult) {
       const directCandidate =
         obj.session_id ??
         obj.sessionID ??
@@ -466,24 +529,18 @@ export function extractHarnessSessionIdFromOutput(
       if (typeof directCandidate === "string" && directCandidate.trim().length > 0) {
         return directCandidate.trim();
       }
-      if (obj.part && typeof obj.part === "object") {
-        const part = obj.part as Record<string, unknown>;
-        const partSid = part.sessionID ?? part.session_id ?? part.sessionId;
-        if (typeof partSid === "string" && partSid.trim().length > 0) {
-          return partSid.trim();
-        }
-      }
-    } catch {
-      // Ignore non-JSON lines
     }
   }
 
-  // 2. Fallback regex scan for embedded JSON keys
-  const regexMatch = rawOutput.match(
-    /"(?:session_id|sessionID|sessionId|thread_id|conversation_id|chat_id)"\s*:\s*"([^"\s]+)"/
-  );
-  if (regexMatch?.[1]?.trim()) {
-    return regexMatch[1].trim();
+  // 3. Fallback regex scan ONLY for output with harness envelope markers (not generic JSON)
+  const envelopeMarkerRegex = /"(?:type|event)"\s*:\s*"(?:result|init|session_configured|PLANNER_RESPONSE|USER_INPUT|TOOL_RESPONSE|GENERIC|step_update|tool_call)"/;
+  if (envelopeMarkerRegex.test(rawOutput)) {
+    const regexMatch = rawOutput.match(
+      /"(?:session_id|sessionID|sessionId|thread_id|conversation_id|chat_id)"\s*:\s*"([^"\s]+)"/
+    );
+    if (regexMatch?.[1]?.trim()) {
+      return regexMatch[1].trim();
+    }
   }
 
   return null;

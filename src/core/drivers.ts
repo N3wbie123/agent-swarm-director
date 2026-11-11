@@ -616,9 +616,9 @@ export function createStreamParser(ctx: StreamParserOptions): TypedStatefulStrea
     { id?: string; name: string; partialJson: string }
   >();
 
-  // Deduplication state for Cursor assistant text
+  // Deduplication state for Cursor assistant text (consecutive only)
   let cursorAccumulatedText = "";
-  const cursorEmittedTexts = new Set<string>();
+  let cursorLastEmittedText = "";
 
   function processParsedLine(rawLine: string): DriverStreamEvent[] {
     const trimmed = rawLine.trim();
@@ -705,13 +705,11 @@ export function createStreamParser(ctx: StreamParserOptions): TypedStatefulStrea
       return [];
     }
 
-    // 5. Cursor duplicate block deduplication
+    // 5. Cursor duplicate block deduplication (consecutive only)
     if (harness === "cursor") {
       if (lineType === "result" && typeof obj.result === "string") {
         const resText = obj.result.trim();
-        const isDuplicate =
-          (resText.length > 0 && resText === cursorAccumulatedText.trim()) ||
-          cursorEmittedTexts.has(resText);
+        const isDuplicate = resText.length > 0 && resText === cursorLastEmittedText;
         if (isDuplicate) {
           if (typeof obj.session_id === "string" && obj.session_id) {
             return [
@@ -732,11 +730,17 @@ export function createStreamParser(ctx: StreamParserOptions): TypedStatefulStrea
     const events = parseDriverStreamLine(trimmed, harness, getNow());
 
     if (harness === "cursor") {
+      let emittedText = false;
       for (const ev of events) {
         if (ev.type === "text" && ev.text) {
           cursorAccumulatedText += ev.text;
-          cursorEmittedTexts.add(ev.text.trim());
+          cursorLastEmittedText = ev.text.trim();
+          emittedText = true;
         }
+      }
+      // Reset consecutive duplicate tracking on non-text events
+      if (!emittedText && events.length > 0) {
+        cursorLastEmittedText = "";
       }
     }
 
@@ -1181,6 +1185,52 @@ export function parseDriverStreamLine(
     }
     if (obj.event === "init") {
       return [];
+    }
+    if (obj.event === "tool_call") {
+      const tc =
+        obj.tool_call && typeof obj.tool_call === "object"
+          ? (obj.tool_call as Record<string, unknown>)
+          : undefined;
+      const callId =
+        typeof obj.call_id === "string"
+          ? obj.call_id
+          : typeof obj.id === "string"
+            ? obj.id
+            : undefined;
+      const subtype = typeof obj.subtype === "string" ? obj.subtype : "";
+      const toolName = tc && typeof tc.name === "string" ? tc.name : "tool";
+      const toolInput =
+        tc && (tc.args !== undefined || tc.input !== undefined)
+          ? typeof tc.args === "string"
+            ? tc.args
+            : typeof tc.input === "string"
+              ? tc.input
+              : JSON.stringify(tc.args ?? tc.input)
+          : undefined;
+      const toolOutput =
+        tc && typeof tc.result === "string" ? tc.result : undefined;
+
+      if (subtype === "completed" || toolOutput !== undefined) {
+        events.push({
+          type: "tool_result",
+          harness,
+          toolName,
+          ...(callId ? { toolId: callId } : {}),
+          ...(toolOutput !== undefined ? { toolOutput } : {}),
+          timestamp: now,
+        });
+        return events;
+      }
+
+      events.push({
+        type: "tool_use",
+        harness,
+        toolName,
+        ...(callId ? { toolId: callId } : {}),
+        ...(toolInput !== undefined ? { toolInput } : {}),
+        timestamp: now,
+      });
+      return events;
     }
   }
 

@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -9,6 +9,7 @@ import { openProjectDb } from "../src/core/db.ts";
 import {
   buildSessionDemotion,
   discoverProjectCliSessions,
+  extractHarnessSessionIdFromOutput,
   getCliRecentSessionsPath,
   linkHarnessSessionToAsdSession,
   listKnownProjects,
@@ -478,8 +479,82 @@ test("F17: concurrent child processes calling recordCliRecentSession preserve al
         child.on("close", (code) => {
           if (code === 0) resolve();
           else reject(new Error(`Child ${workerPrefix} exited with ${code}: ${stderr}`));
-        });
-      });
+});
+});
+
+describe("S3: extractHarnessSessionIdFromOutput - tool result echoes should not pollute session IDs", () => {
+  it("S3: tool result echo containing session_id should NOT be extracted as harness session id", () => {
+    const toolResultEcho = JSON.stringify({
+      type: "tool_result",
+      tool_name: "get_session_info",
+      content: JSON.stringify({ session_id: "fake-session-from-tool-result", data: "..." }),
+      tool_call_id: "call-abc",
+    });
+
+    const extracted = extractHarnessSessionIdFromOutput(toolResultEcho, "claude-code");
+    assert.equal(extracted, null, "Tool result echo with session_id should not be extracted");
+  });
+
+  it("S3: real Claude Code result/init envelope with session_id SHOULD be extracted", () => {
+    const realEnvelope = JSON.stringify({
+      type: "result",
+      result: "Task completed.",
+      session_id: "real-claude-session-123",
+    });
+
+    const extracted = extractHarnessSessionIdFromOutput(realEnvelope, "claude-code");
+    assert.equal(extracted, "real-claude-session-123", "Real Claude envelope session_id should be extracted");
+  });
+
+  it("S3: real Codex session_configured envelope with id SHOULD be extracted", () => {
+    const realEnvelope = JSON.stringify({
+      type: "session_configured",
+      payload: { id: "codex-thread-456", cwd: "/project", model: "gpt-5" },
+    });
+
+    const extracted = extractHarnessSessionIdFromOutput(realEnvelope, "codex");
+    assert.equal(extracted, "codex-thread-456", "Real Codex session_configured id should be extracted");
+  });
+
+  it("S3: real OpenCode part envelope with session_id SHOULD be extracted", () => {
+    const realEnvelope = JSON.stringify({
+      part: { type: "text", text: "Hello", session_id: "oc-sess-789" },
+    });
+
+    const extracted = extractHarnessSessionIdFromOutput(realEnvelope, "opencode");
+    assert.equal(extracted, "oc-sess-789", "Real OpenCode part session_id should be extracted");
+  });
+
+  it("S3: real Antigravity init/result envelope with session_id SHOULD be extracted", () => {
+    const realEnvelope = JSON.stringify({
+      event: "init",
+      session_id: "agy-conv-999",
+    });
+
+    const extracted = extractHarnessSessionIdFromOutput(realEnvelope, "antigravity");
+    assert.equal(extracted, "agy-conv-999", "Real Antigravity init session_id should be extracted");
+  });
+
+  it("S3: bare session announcement JSON without tool-result markers IS extracted (harness contract)", () => {
+    const bare = JSON.stringify({
+      type: "system",
+      session_id: "bare-session-123",
+    });
+
+    const extracted = extractHarnessSessionIdFromOutput(bare, "claude-code");
+    assert.equal(extracted, "bare-session-123", "Bare harness session announcements must be extracted (CR-03/F16 contract)");
+  });
+
+  it("S3: type-less session announcement JSON IS extracted", () => {
+    const typeless = JSON.stringify({
+      session_id: "cc-sess-001",
+      text: "output",
+    });
+
+    const extracted = extractHarnessSessionIdFromOutput(typeless, "claude-code");
+    assert.equal(extracted, "cc-sess-001", "Type-less session announcements must be extracted");
+  });
+});
 
     const perProcessCount = 15;
     await Promise.all([

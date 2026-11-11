@@ -15,6 +15,8 @@ import {
   getActiveDriver,
   listDrivers,
   setDriverHarnessSessionId,
+  createStreamParser,
+  parseDriverStreamLine,
 } from "../src/core/drivers.ts";
 import { readCliRecentSessions, recordCliRecentSession } from "../src/core/session-tracker.ts";
 
@@ -317,5 +319,75 @@ describe("CR-01: session_drivers & Driver API", () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe("S1: Cursor duplicate dedup - non-adjacent repeated text should be emitted", () => {
+  it("S1: two identical assistant texts separated by other events should both be emitted", () => {
+    const parser = createStreamParser({ harness: "cursor", now: () => 1000 });
+
+    // First "Done." result
+    const events1 = parser.pushChunk('{"type":"result","result":"Done.","session_id":"sess-1"}\n');
+    const textEvents1 = events1.filter((e) => e.type === "text");
+    assert.equal(textEvents1.length, 1);
+    assert.equal(textEvents1[0]?.text, "Done.");
+
+    // Different event in between (thinking)
+    parser.pushChunk('{"type":"thinking","subtype":"delta","text":"thinking..."}\n');
+
+    // Second "Done." result (non-adjacent) - should NOT be dropped
+    const events2 = parser.pushChunk('{"type":"result","result":"Done.","session_id":"sess-1"}\n');
+    const textEvents2 = events2.filter((e) => e.type === "text");
+    assert.equal(textEvents2.length, 1, "Second non-adjacent 'Done.' should be emitted, not dropped");
+    assert.equal(textEvents2[0]?.text, "Done.");
+  });
+
+  it("S1: adjacent duplicate assistant texts should still be deduplicated", () => {
+    const parser = createStreamParser({ harness: "cursor", now: () => 1000 });
+
+    // First "Done." result
+    const events1 = parser.pushChunk('{"type":"result","result":"Done.","session_id":"sess-1"}\n');
+    const textEvents1 = events1.filter((e) => e.type === "text");
+    assert.equal(textEvents1.length, 1);
+    assert.equal(textEvents1[0]?.text, "Done.");
+
+    // Immediately another "Done." result (adjacent) - should be dropped
+    const events2 = parser.pushChunk('{"type":"result","result":"Done.","session_id":"sess-1"}\n');
+    const textEvents2 = events2.filter((e) => e.type === "text");
+    assert.equal(textEvents2.length, 0, "Adjacent duplicate 'Done.' should be dropped");
+  });
+});
+
+describe("S2: Antigravity tool_call events should emit tool_use DriverStreamEvent", () => {
+  it("S2: Antigravity tool_call event with name and args should emit tool_use", () => {
+    const line = JSON.stringify({
+      event: "tool_call",
+      tool_call: { name: "read_file", args: { path: "/tmp/test.txt" } },
+      call_id: "call-123",
+    });
+
+    const events = parseDriverStreamLine(line, "antigravity", 1000);
+    const toolUseEvents = events.filter((e) => e.type === "tool_use");
+    assert.equal(toolUseEvents.length, 1, "Should emit tool_use event for Antigravity tool_call");
+    assert.equal(toolUseEvents[0]?.toolName, "read_file");
+    assert.equal(toolUseEvents[0]?.toolId, "call-123");
+    assert.ok(toolUseEvents[0]?.toolInput?.includes("path"));
+    assert.ok(toolUseEvents[0]?.toolInput?.includes("test.txt"));
+  });
+
+  it("S2: Antigravity tool_call event with subtype completed should emit tool_result", () => {
+    const line = JSON.stringify({
+      event: "tool_call",
+      tool_call: { name: "read_file", args: { path: "/tmp/test.txt" }, result: "file content" },
+      call_id: "call-123",
+      subtype: "completed",
+    });
+
+    const events = parseDriverStreamLine(line, "antigravity", 1000);
+    const toolResultEvents = events.filter((e) => e.type === "tool_result");
+    assert.equal(toolResultEvents.length, 1, "Should emit tool_result event for completed tool_call");
+    assert.equal(toolResultEvents[0]?.toolName, "read_file");
+    assert.equal(toolResultEvents[0]?.toolId, "call-123");
+    assert.equal(toolResultEvents[0]?.toolOutput, "file content");
   });
 });
