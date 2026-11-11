@@ -1,9 +1,9 @@
 ---
 name: handoff
-description: Multi-harness session handoff skill for ASD v2.4.1. Summarizes conversation history, SQLite session/task state, progressBoard, and multi-harness routing context into handoff.md for seamless continuation across Claude Code, OpenCode, Codex CLI, Antigravity, and Cursor CLI.
+description: Multi-harness session handoff skill for ASD v2.5.0. Summarizes conversation history, SQLite session/task state, progressBoard, and multi-harness routing context into handoff.md for seamless continuation across Claude Code, OpenCode, Codex CLI, Antigravity, and Cursor CLI.
 ---
 
-# ASD Multi-Harness Session Handoff (`/handoff`, `/asd-handoff`)
+# ASD v2.5.0 — Multi-Harness Session Handoff (`/handoff`, `/asd-handoff`)
 
 You are generating a structured, high-signal session handoff document (`handoff.md`) so the user or another AI coding harness (**Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, or **Cursor CLI**) can seamlessly resume work in a new session without losing context.
 
@@ -17,12 +17,16 @@ You are generating a structured, high-signal session handoff document (`handoff.
 
 ### Step 1: Gather Current Project & Multi-Harness State (Read-Only)
 Before writing `handoff.md`, inspect the live repository and ASD state:
-1. Run `asd status` (or `node --no-warnings src/cli/index.ts status`) to inspect the active SQLite session, `progressBoard` (`### 📊 ASD TODO 진행 현황`), and any unapplied auto-stash warnings.
+1. Generate the initial secret-redacted baseline via the official CLI command:
+   ```bash
+   asd handoff [--output <path>] [--print|-p] [--json]
+   ```
+   *(Or inspect manually with `asd status` / `node --no-warnings src/cli/index.ts status` to check the active SQLite session, `progressBoard`, and auto-stash warnings).*
 2. Check `.asd/PLAN.md` and `.asd/sessions/` (if present) for active or pending tasks (`[ ]`), auto-created cross-scope tasks (`[Cross-Scope ...]`), escalated tasks (`[~]`), completed tasks (`[x]`), deferred cross-scope requests, and subagent logs.
 3. Run `git status --short` and `git log -n 5 --oneline` to capture current branch, recent commits, and any uncommitted or untracked files.
 
-### Step 2: Write `handoff.md` in the Exact Standard Format
-Write (or overwrite) `handoff.md` in the project root (`<projectRoot>/handoff.md`) using the exact section structure below. Keep every bullet concise, factual, and verifiable:
+### Step 2: Write or Enrich `handoff.md` in the Exact Standard Format
+Agents and users can run `asd handoff` to directly generate `handoff.md` with live SQLite session and Git state, then enrich it with conversational context using the exact section structure below. Keep every bullet concise, factual, and verifiable:
 
 ```markdown
 HANDOFF CONTEXT

@@ -14,20 +14,18 @@ Agent Swarm Director (**ASD v2.5.0**) is the universal multi-harness successor t
 ---
 
 > [!IMPORTANT]
-> ## 🚨 [For Legacy Users ≤ v2.3.2] Automatic SQLite DB Migration Tool
+> ## 🚨 [For Legacy Users ≤ v2.3.2] Built-in SQLite DB Migration (`asd migrate`)
 >
 > Starting in **ASD v2.3.3 / v2.4.0**, the per-project hash DB layout (`~/.asd/state/<12-hex-hash>/core.db`) was unified into a **single shared SQLite SSOT (`~/.asd/state/core.db`)**.
 >
-> If you used **ASD v2.3.2 or earlier** and want to automatically migrate all existing sessions, tasks, debates, and drivers into the new shared DB (with automatic backup and idempotent safety), download and run the official migration tool below:
->
-> ### 👉 **[📥 Download ASD DB Migration Tool (Google Drive)](https://drive.google.com/drive/u/0/folders/1knUQzIY8HDzIKYkxrhsCxgorQDn_B3nU)**
+> If you used **ASD v2.3.2 or earlier** and want to automatically migrate all existing sessions, tasks, debates, and drivers into the new shared DB (with automatic backup and idempotent safety), use the built-in official command `asd migrate`:
 >
 > ```bash
 > # Run migration (automatically backs up shared DB before importing)
-> node asd-db-migrate.mjs
+> asd migrate
 >
-> # Optional: rename migrated legacy hash folders to *.migrated after completion
-> node asd-db-migrate.mjs --prune
+> # Optional: remove migrated legacy core.db files after completion
+> asd migrate --clean-legacy
 > ```
 
 ---
@@ -84,6 +82,8 @@ asd dispatch --turn 1
 asd verify --task T1.1 --files "src/index.ts" --summary "Implemented feature"
 asd debate --topic "Architecture" --proposal "Use SQLite WAL mode"
 asd resume
+asd handoff
+asd migrate
 asd logs
 asd logs T1.1
 asd ui
@@ -105,6 +105,8 @@ node --no-warnings src/cli/index.ts dispatch --turn 1
 node --no-warnings src/cli/index.ts verify --task T1.1 --files "src/index.ts" --summary "Implemented feature"
 node --no-warnings src/cli/index.ts debate --topic "Architecture" --proposal "Use SQLite WAL mode"
 node --no-warnings src/cli/index.ts resume
+node --no-warnings src/cli/index.ts handoff
+node --no-warnings src/cli/index.ts migrate
 node --no-warnings src/cli/index.ts logs
 node --no-warnings src/cli/index.ts ui
 ```
@@ -127,7 +129,7 @@ Once `asd sync` has been run, you can invoke these slash skills directly inside 
 | **`/asd-run`** | **Execute / Resume `.asd/PLAN.md`** | Reverse-syncs any manual edits from `.asd/PLAN.md` (`asd plan sync_from_md`), confirms execution mode (`LIGHT` vs `HEAVY`), and runs all pending `[ ]` or escalated `[~]` tasks across turns until completion. |
 | **`/asd-debug <symptom>`** | **Hypothesis-Driven Debugging** | Investigates logs/stack traces read-only, presents a single pre-fix briefing, writes a deterministic failing reproduction test first (**Rule Zero**), applies the minimal fix, and verifies zero regressions via `asd verify`. |
 | **`/asd-debate <topic>`** | **Adversarial Architecture Debate** | Summarizes the design proposal and runs blind cross-model critique (`HEAVY` multi-harness or `LIGHT` single-harness), synthesizes a binding verdict (`APPROVE` / `MINOR_AMEND` / `REJECT`), and injects hard constraints into `.asd/PLAN.md`. |
-| **`/handoff`** (or **`/asd-handoff`**) | **Multi-Harness Session Handoff** | Inspects conversation history, git state, `.asd/PLAN.md`, and active SQLite session/task progress (`asd status`), then generates `handoff.md` so any of the 5 harnesses can seamlessly resume work in a new session. |
+| **`/handoff`** (or **`/asd-handoff`**) | **Multi-Harness Session Handoff** | Generates `handoff.md` (or invokes `asd handoff`) using active SQLite session/task progress (`asd status`), git state, and conversation history so any of the 5 harnesses can seamlessly resume work in a new session. |
 
 ### Execution Mode Comparison (`LIGHT` vs `HEAVY`)
 
@@ -144,18 +146,20 @@ Once `asd sync` has been run, you can invoke these slash skills directly inside 
 
 | Command (with `PATH`) | Command (without `PATH`) | Description |
 | :--- | :--- | :--- |
-| `asd sync [--force] [--no-path]` | `node --no-warnings src/cli/index.ts sync [--force] [--no-path]` | Synchronizes global skills, 5 core agents, hooks, missing MCP tools across all 5 harnesses, and installs the `asd` CLI shim to global `PATH`. |
-| `asd plan [create\|get\|update\|sync_from_md]` | `node --no-warnings src/cli/index.ts plan [create\|get\|update\|sync_from_md]` | Creates, queries, updates, or reverse-syncs `.asd/PLAN.md` with the 4-table SQLite SSOT (`~/.asd/state/core.db`). |
+| `asd sync [--force] [--no-path] [--no-update-check]` | `node --no-warnings src/cli/index.ts sync [--force] [--no-path] [--no-update-check]` | Synchronizes global skills, 5 core agents, hooks, missing MCP tools across all 5 harnesses, and installs the `asd` CLI shim to global `PATH` (pass `--no-update-check` or set `ASD_NO_UPDATE_CHECK=1` to disable version update checks). |
+| `asd plan [create\|get\|update\|sync_from_md] [--file <path>]` | `node --no-warnings src/cli/index.ts plan [create\|get\|update\|sync_from_md] [--file <path>]` | Creates, queries, updates, or reverse-syncs `.asd/PLAN.md` with the 4-table SQLite SSOT (`~/.asd/state/core.db`). |
 | `asd dispatch [--turn <n>] [--mode <m>]` | `node --no-warnings src/cli/index.ts dispatch [--turn <n>] [--mode <m>]` | Concurrently dispatches wave tasks (`parallel_spawn` or `claim_only`) with automatic upstream `DoneClaim` context injection and zero MCP timeout limits. |
-| `asd verify --task <id> [--files <csv>]` | `node --no-warnings src/cli/index.ts verify --task <id> [--files <csv>]` | Enforces `allowedFiles` boundaries, secret redaction checks, test command verification, and LIGHT commit / HEAVY worktree merge. |
-| `asd debate --topic <t> --proposal <p>` | `node --no-warnings src/cli/index.ts debate --topic <t> --proposal <p>` | Executes parallel blind cross-model critiques and synthesizes binding arbiter verdicts with real-time progress streaming. |
+| `asd verify --task <id> [--files <csv>] [--file <path>]` | `node --no-warnings src/cli/index.ts verify --task <id> [--files <csv>] [--file <path>]` | Enforces `allowedFiles` boundaries, secret redaction checks, test command verification, and LIGHT commit / HEAVY worktree merge. |
+| `asd debate --topic <t> --proposal <p> [--file <path>]` | `node --no-warnings src/cli/index.ts debate --topic <t> --proposal <p> [--file <path>]` | Executes parallel blind cross-model critiques and synthesizes binding arbiter verdicts with real-time progress streaming. |
 | `asd status [--json]` | `node --no-warnings src/cli/index.ts status [--json]` | Displays the current project's SQLite session state, live TODO progress board, and any unapplied auto-stash warnings. |
 | `asd resume [--session <id>] [--print]` | `node --no-warnings src/cli/index.ts resume [--session <id>] [--print]` | Demotes the active ASD session (`demoteAsdSession`) and resumes the native interactive harness CLI (`--print` outputs the command string, `--json` outputs full metadata). |
+| `asd handoff [--output <path>] [--print\|-p] [--json]` | `node --no-warnings src/cli/index.ts handoff [--output <path>] [--print\|-p] [--json]` | Generates a structured, secret-redacted session handoff document (default: `handoff.md`) capturing SQLite session progress, git status, and resume instructions directly via CLI before adding conversational context. |
+| `asd migrate [--clean-legacy] [--json]` | `node --no-warnings src/cli/index.ts migrate [--clean-legacy] [--json]` | Migrates legacy per-project hash `core.db` databases into the shared SSOT (`~/.asd/state/core.db`) with automatic backup (`--clean-legacy` removes old databases after successful migration). |
 | `asd logs [taskId] [--json]` | `node --no-warnings src/cli/index.ts logs [taskId] [--json]` | Displays the most recent subagent prompt & execution log automatically, or inspects a specific task (`T1.1`, `t1.2`, etc.). |
 | `asd ui [--port <num>]` | `node --no-warnings src/cli/index.ts ui [--port <num>]` | Launches a zero-dependency bilingual (Korean/English) local web dashboard (`http://127.0.0.1:3847`) with fast disk-cached model discovery (`~/.asd/state/models-cache.json`). |
 | — | — | **Principle:** `asd ui` web dashboard is feature-frozen — new UI features go to the GUI repo (asd-gui). Core retains CLI + core management + minimal SDK only (see CORE_GUI_BOUNDARY_AUDIT.md). |
 | `asd doctor [--json]` | `node --no-warnings src/cli/index.ts doctor [--json]` | Runs a fast (<100ms) zero-token health check (Node version, SQLite WAL, Git repo, 5 harness CLI binary paths, synthetic `PreToolUse` security probe). |
-| `asd clean [--pop] [--all]` | `node --no-warnings src/cli/index.ts clean [--pop] [--all]` | Removes leftover `.asd/wt/*` worktrees, prunes `asd/*` branches, and optionally restores auto-stashed changes (`--pop`). |
+| `asd clean [--pop] [--all] [--purge-orphans]` | `node --no-warnings src/cli/index.ts clean [--pop] [--all] [--purge-orphans]` | Removes leftover `.asd/wt/*` worktrees, prunes `asd/*` branches, optionally restores auto-stashed changes (`--pop`), and purges non-existent project sessions from the global DB (`--purge-orphans`). |
 | `asd uninstall` | `node --no-warnings src/cli/index.ts uninstall` | Surgically removes all ASD-managed global hooks, TOML fences, skills, agents, `PATH` shims, and `_asdManaged` MCP entries while preserving user configs 100%. |
 
 ---

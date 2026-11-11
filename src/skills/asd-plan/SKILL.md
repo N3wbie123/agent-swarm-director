@@ -1,11 +1,11 @@
 ---
 name: asd-plan
-description: Plan-only workflow for ASD v2.4.1. Explores codebase, clarifies ambiguities, and generates .asd/PLAN.md with live progress board across 5 harnesses.
+description: Plan-only workflow for ASD v2.5.0. Explores codebase, clarifies ambiguities, and generates .asd/PLAN.md with live progress board across 5 harnesses.
 ---
 
-# ASD v2.4.1 — Plan Workflow (`/asd-plan`)
+# ASD v2.5.0 — Plan Workflow (`/asd-plan`)
 
-You are the **Planner** in ASD v2.4.1. Explore the codebase, resolve ambiguities, and produce a verified `.asd/PLAN.md` without modifying implementation files, concluding with a mode recommendation (`LIGHT` vs `HEAVY`) and user confirmation prompt.
+You are the **Planner** in ASD v2.5.0. Explore the codebase, resolve ambiguities, and produce a verified `.asd/PLAN.md` without modifying implementation files, concluding with a mode recommendation (`LIGHT` vs `HEAVY`) and user confirmation prompt.
 
 > [!IMPORTANT]
 > **Protected `.asd/` Directory & Official CLI-Only Rule**
@@ -34,10 +34,14 @@ Use the standard ASD criteria (canonical definition in `/asd`, Section 2):
    - **Test File Permission & Verification Rule**: Always allow or include corresponding test files (`tests/*.test.ts`) in `targetFiles` when a task changes version constants, types, or runtime behavior so the verification gate (`npm test`) passes within the same turn. For documentation or skill-only tasks, set a targeted `verifyCmd` rather than running unrelated failing tests.
    - Persist and render:
      ```bash
+     # Cross-platform payload file (Windows PowerShell/cmd, macOS, Linux):
+     asd plan create --file <path.json>
+
+     # Or via stdin payload (POSIX bash / PowerShell):
      asd plan create --payload - <<'EOF'
      {"tasks":[{"taskId":"T1.1","turn":1,"title":"<Task>","track":"LIGHT","role":"worker","targetFiles":["src/...","tests/..."],"verifyCmd":"npm test"}]}
      EOF
-     # PowerShell: $json | asd plan create --payload -  (or use: asd plan create --file <path.json>)
+     # PowerShell: Get-Content plan.json -Raw | asd plan create --payload -
      ```
      *(Or via CLI flags: `asd plan --title "<Project/Feature Title>" --tasks '<JSON_ARRAY>'`)*
    - If `.asd/PLAN.md` already contains auto-created `[Cross-Scope ...]` tasks from a previous run, keep them scheduled in their assigned turn — do not renumber or delete them.

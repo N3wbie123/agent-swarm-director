@@ -1,9 +1,9 @@
 ---
 name: asd-debate
-description: Cross-harness adversarial debate workflow for ASD v2.4.2. Conducts multi-model blind debate and synthesizes binding consensus across 5 harnesses.
+description: Cross-harness adversarial debate workflow for ASD v2.5.0. Conducts multi-model blind debate and synthesizes binding consensus across 5 harnesses.
 ---
 
-# ASD v2.4.2 — Adversarial Debate Workflow (`/asd-debate`)
+# ASD v2.5.0 — Adversarial Debate Workflow (`/asd-debate`)
 
 You are the **Debate Broker** coordinating a hostile design review before committing to a major architectural or implementation decision.
 
@@ -53,6 +53,12 @@ Use the standard ASD criteria (canonical definition in `/asd`, Section 2):
      - If `asd-critic` returns `REJECT` or reviewers conflict, invoke `asd-architect` via the internal subagent tool to issue a binding synthesis.
    - **`HEAVY` Confirmed (Multi-Harness External CLI Debate)**:
      - Invoke the cross-harness CLI debate broker according to the user's participant choice, passing `--files "path[:start-end],..."` and/or `--diff` so Node.js embeds ground-truth source slices directly into reviewer prompts (zero Main Agent token overhead):
+       - **Cross-platform payload / proposal file (Windows PowerShell/cmd, macOS, Linux — avoids shell quoting issues)**:
+         ```bash
+         asd debate --file <debate.json>
+         # Or with proposal file:
+         asd debate --topic "<topic>" --proposal-file proposal.md --harnesses "opencode,codex,claude-code" --files "src/path/file.ts:10-120" --diff
+         ```
        - **User-Specified Harnesses**:
          ```bash
          asd debate --topic "<topic>" --proposal "<proposal>" --harnesses "opencode,codex,claude-code" --files "src/path/file.ts:10-120" --diff

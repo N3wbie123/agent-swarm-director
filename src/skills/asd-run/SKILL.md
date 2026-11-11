@@ -1,11 +1,11 @@
 ---
 name: asd-run
-description: Execution & resume workflow for ASD v2.4.1. Synchronizes .asd/PLAN.md, dispatches tasks across turns, handles cross-scope auto-created tasks, and renders live progress boards across 5 harnesses.
+description: Execution & resume workflow for ASD v2.5.0. Synchronizes .asd/PLAN.md, dispatches tasks across turns, handles cross-scope auto-created tasks, and renders live progress boards across 5 harnesses.
 ---
 
-# ASD v2.4.1 — Execution & Resume Workflow (`/asd-run`)
+# ASD v2.5.0 — Execution & Resume Workflow (`/asd-run`)
 
-You are executing or resuming an existing `.asd/PLAN.md` across dependency turns (waves) in ASD v2.4.1.
+You are executing or resuming an existing `.asd/PLAN.md` across dependency turns (waves) in ASD v2.5.0.
 
 > [!IMPORTANT]
 > **Protected `.asd/` Directory & Official CLI-Only Rule**
@@ -53,7 +53,10 @@ Use the standard ASD criteria (canonical definition in `/asd`, Section 2):
 4. **Step 4: Gate Verification (`asd verify`)**
    - After each task (or wave):
      ```bash
+     # Cross-platform (Windows / macOS / Linux):
      asd verify --task <T-ID> --cmd "<verifyCmd>"
+     # Or with verify payload file (or inline JSON payload):
+     asd verify --file <verify.json>
      ```
    - Parse the dispatch/verify output for **cross-scope results**:
      - `autoCreatedTasks`: up to **2** cross-scope requests per subagent task were auto-accepted and created as `[Cross-Scope ...]` tasks for the next turn (with the requester's changed files bundled as `dependsOn`). Render them on the `progressBoard` and run them in the next wave.

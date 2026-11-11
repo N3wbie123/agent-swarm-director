@@ -89,7 +89,7 @@ ASD v2.4.0은 프로젝트 폴더 오염을 막고 멀티 프로젝트·멀티 �
 
 ### 3.1 글로벌 상태 디렉토리 (`~/.asd`)
 - **`~/.asd/state/core.db` (단일 공유 SQLite SSOT)**:
-  - 구버전(v2.3.2 이하)에서는 프로젝트마다 `~/.asd/state/<projectHash>/core.db`를 별도로 생성했으나, v2.3.3 / v2.4.0부터는 **단 하나의 `~/.asd/state/core.db`** 파일에 모든 프로젝트의 세션을 저장하며 `sessions.project_root` 컬럼으로 프로젝트를 스코프 구분합니다 (구버전 DB 자동 마이그레이션 및 스키마 복구는 [공식 `asd-db-migrate` 도구](https://drive.google.com/drive/u/0/folders/1knUQzIY8HDzIKYkxrhsCxgorQDn_B3nU)로 수행).
+  - 구버전(v2.3.2 이하)에서는 프로젝트마다 `~/.asd/state/<projectHash>/core.db`를 별도로 생성했으나, v2.3.3 / v2.4.0부터는 **단 하나의 `~/.asd/state/core.db`** 파일에 모든 프로젝트의 세션을 저장하며 `sessions.project_root` 컬럼으로 프로젝트를 스코프 구분합니다 (구버전 DB 자동 마이그레이션 및 스키마 복구는 내장 공식 명령어 `asd migrate [--clean-legacy]`로 수행).
   - WAL(`journal_mode = WAL`), `busy_timeout = 5000`, `foreign_keys = ON`, `BEGIN IMMEDIATE` 트랜잭션으로 다중 프로세스 동시 접근 시에도 안전합니다.
   - 총 4개 테이블로 구성됩니다: `sessions`, `tasks`, `debates`, `session_drivers`.
 - **`~/.asd/state/cli-recent.json`**:
@@ -270,9 +270,11 @@ Git 작업 트리 보호, `LIGHT` 체크포인트 커밋/롤백, `HEAVY` 워크�
 
 #### ① [`src/cli/index.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts)
 터미널에서 실행되는 `asd` 명령어의 엔트리포인트입니다.
-- 지원 서브커맨드: `sync`, `update`, `status`, `resume`, `plan`, `dispatch`, `verify`, `debate`, `logs`, `ui`, `doctor`, `clean`, `uninstall`, `hook`, `mcp`.
+- 지원 서브커맨드: `sync`, `update`, `status`, `resume`, `handoff`, `migrate`, `plan`, `dispatch`, `verify`, `debate`, `logs`, `ui`, `doctor`, `clean`, `uninstall`, `hook`, `mcp`.
 - [`runHookCli(hookType, flags)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts#L530-L710): 5대 하네스의 `session-start`, `pre-invocation`, `pre-tool-use`, `stop` 훅 호출을 받아 `cli-recent.json`을 갱신하고 정책 평가 결과를 하네스별 규격 JSON으로 반환합니다.
 - [`runAsdResume(projectRoot, flags)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts#L715-L790): 활성 ASD 세션을 하강(`demoteAsdSession`)시키고 원래 하네스의 대화형 CLI를 즉시 실행(또는 `--print`/`--json` 출력)합니다.
+- [`runAsdHandoff(projectRoot, options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts): 활성 세션 상태 및 Git/태스크 정보를 시크릿 마스킹된 `handoff.md` 문서로 생성(또는 `--print` 출력)합니다.
+- [`runAsdMigrate(options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts): 구버전 분산 `core.db`를 단일 공유 `~/.asd/state/core.db`로 자동 통합합니다 (`--clean-legacy` 지원).
 
 #### ② [`src/cli/dashboard.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/dashboard.ts) (`asd ui` 상세 명세)
 외부 프런트엔드 빌드 도구 없이 `node:http`와 단일 인라인 HTML/CSS/JS로 동작하는 실시간 로컬 웹 대시보드(`http://127.0.0.1:3847`)입니다. v2.4.3부터 데이터 서비스(`collectDashboardSnapshot`, `discoverHarnessModels`, `saveSessionMemo`, `saveProjectRoutingConfig`, `runSubagentControlAction`, `scanSubagentLogs`)는 `src/core/`(`models.ts`, `session-services.ts`, `subagent-control.ts`, `subagent-logs.ts`, `router.ts`)로 이관되었으며 본 모듈은 HTTP 서버와 UI 렌더링만 담당합니다.

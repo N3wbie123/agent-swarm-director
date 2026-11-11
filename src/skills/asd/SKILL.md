@@ -1,9 +1,9 @@
 ---
 name: asd
-description: Universal end-to-end multi-agent autonomous workflow for ASD v2.4.1. Plans, executes across waves, displays live progress boards, and generates final summary across 5 harnesses (Claude Code, OpenCode, Codex CLI, Antigravity, Cursor).
+description: Universal end-to-end multi-agent autonomous workflow for ASD v2.5.0. Plans, executes across waves, displays live progress boards, and generates final summary across 5 harnesses (Claude Code, OpenCode, Codex CLI, Antigravity, Cursor).
 ---
 
-# ASD v2.4.1 — Universal Autonomous Workflow (`/asd`)
+# ASD v2.5.0 — Universal Autonomous Workflow (`/asd`)
 
 You are the **Director** orchestrating an end-to-end multi-agent software engineering workflow across **Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, and **Cursor CLI**.
 
@@ -15,7 +15,7 @@ You are the **Director** orchestrating an end-to-end multi-agent software engine
 
 ## 1. The 5 Core Roles
 
-ASD v2.4.1 defines exactly five specialist subagent roles (`AGENT_ROLES`), synced per harness into `asd-<role>` personas using the harness's highest-priority model from `routing.jsonc`:
+ASD v2.5.0 defines exactly five specialist subagent roles (`AGENT_ROLES`), synced per harness into `asd-<role>` personas using the harness's highest-priority model from `routing.jsonc`:
 
 | Role | Responsibility |
 | :--- | :--- |
@@ -48,10 +48,14 @@ ASD v2.4.1 defines exactly five specialist subagent roles (`AGENT_ROLES`), synce
      - **Test File Permission & Scoped Verification Rule**: When a task modifies constants, types, or behavior covered by existing tests, always include the relevant test files (`tests/*.test.ts`) in `targetFiles` (or allow test file updates) so the subagent can update test assertions in the same turn, and scope `verifyCmd` to the relevant test file (or non-code verification command for docs/skills tasks) so unrelated tests do not cause false-negative rollbacks.
    - Persist to the SQLite SSOT and `.asd/PLAN.md`:
      ```bash
+     # Cross-platform payload file (Windows PowerShell/cmd, macOS, Linux):
+     asd plan create --file <path.json>
+
+     # Or via stdin payload (POSIX bash / PowerShell):
      asd plan create --payload - <<'EOF'
      {"tasks":[{"taskId":"T1.1","turn":1,"title":"<Task>","track":"LIGHT","role":"worker","targetFiles":["src/...","tests/..."],"verifyCmd":"npm test"}]}
      EOF
-     # PowerShell: $json | asd plan create --payload -  (or use: asd plan create --file <path.json>)
+     # PowerShell: Get-Content plan.json -Raw | asd plan create --payload -
      ```
      *(Or via CLI flags: `asd plan --title "<Goal>" --tasks '<JSON_ARRAY>'`)*
    - Render the initial `progressBoard`.
@@ -69,11 +73,12 @@ ASD v2.4.1 defines exactly five specialist subagent roles (`AGENT_ROLES`), synce
        asd dispatch --turn <N> --mode claim_only
        ```
      - Delegate each task via the **current harness's native subagent tool** (`task(subagent_type="asd-<role>")` in OpenCode, `Agent`/`Task` in Claude Code, `invoke_subagent(TypeName="asd-<role>", Model="flash"|"flash_lite"|"pro")` in Antigravity according to `lightSubagents.antigravity` — `scout`=`"flash_lite"`, `worker`/`planner`=`"flash"`, `architect`/`critic`=`"pro"`, **never `"inherit"`**; Codex CLI and Cursor CLI: use native subagent support or execute directly within `allowedFiles` — Cursor personas are synced to `~/.cursor/agents/asd-<role>.md`).
-     - After each task, gate verification: `asd verify --task <T-ID> --cmd "<verifyCmd>"`.
+     - After each task, gate verification: `asd verify --task <T-ID> --cmd "<verifyCmd>"` (or cross-platform: `asd verify --file <path.json>`).
    - **`HEAVY` Confirmed (Multi-Harness External CLI & Worktree Spawn)**:
      ```bash
      asd dispatch --turn <N> --mode parallel_spawn
      asd verify --task <T-ID> --cmd "<verifyCmd>"
+     # Or cross-platform payload: asd verify --file <path.json>
      ```
    - Render the updated `progressBoard` after every wave.
 

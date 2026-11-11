@@ -7,7 +7,7 @@
 ## 📋 복사해서 바로 쓰는 AI 작업 프롬프트 (Copy & Paste)
 
 ```markdown
-너는 지금 `asd-multiagent` (Agent Swarm Director v2.4.0) 프로젝트를 수정/개발하는 엔지니어다.
+너는 지금 `asd-multiagent` (Agent Swarm Director v2.5.0) 프로젝트를 수정/개발하는 엔지니어다.
 작업 시작 전 반드시 아래 규칙과 절차를 끝까지 준수해라.
 
 ### 1. 필수 사전 숙지 문서 (작업 전 먼저 읽을 것)
@@ -38,6 +38,7 @@
 3. **격리 테스트 및 타입 검증**:
    - 수정한 모듈에 대응하는 단위 테스트를 추가/수정한 뒤 `npm test` (내부적으로 `node --no-warnings scripts/run-tests.mjs` 실행) 또는 `node scripts/run-tests.mjs tests/<대상>.test.ts`를 실행해 100% 통과를 확인해라.
    - 타입이나 인터페이스를 건드린 경우 `npx tsc --noEmit`으로 외부 소비 패키지(`asd-gui` 등)에서 컴파일 에러가 없는지 함께 검증해라.
+   - **크로스 플랫폼 CLI 페이로드 규칙**: `asd plan`, `asd verify`, `asd debate`에 JSON/설계안을 전달할 때 셸 이스케이프 오류를 방지하기 위해 윈도우 PowerShell, cmd.exe, macOS, Linux 공통으로 동작하는 `--file <path.json>` (또는 `--proposal-file <path>`)을 우선 사용해라.
 4. **문서 최신화 및 커밋/푸시**:
    - 함수 시그니처나 기능이 추가/변경되면 `PROJECT_STATUS.md`, `EXTERNAL_SDK_REFERENCE.md`, `PATCH_NOTES.md`, `PATCH_NOTES_ko.md`를 최신 상태로 반영해라.
    - 사용자가 커밋/푸시를 지시한 경우 `Co-Authored-By` 없이 깔끔하게 커밋하고 `git push origin main`을 수행해라.

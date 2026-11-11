@@ -14,20 +14,18 @@
 ---
 
 > [!IMPORTANT]
-> ## 🚨 [구버전(v2.3.2 이하) 사용자 필수 안내] DB 자동 마이그레이션 툴 배포
+> ## 🚨 [구버전(v2.3.2 이하) 사용자 안내] 내장 DB 자동 마이그레이션 (`asd migrate`)
 >
 > **ASD v2.3.3 / v2.4.0**부터 기존 프로젝트 해시별 분산 DB(`~/.asd/state/<12자리해시>/core.db`) 구조가 **단일 공유 SQLite DB(`~/.asd/state/core.db`)** 구조로 통합되었습니다.
 >
-> **v2.3.2 이하 구버전**을 사용 중이셨던 분들은 아래 구글 드라이브에서 **DB 자동 마이그레이션 툴(`asd-db-migrate.mjs`)**을 다운로드하여 실행하시면, 기존 세션·태스크·토론·드라이버 기록이 백업과 함께 최신 통합 DB로 안전하게 자동 이관됩니다.
->
-> ### 👉 **[📥 ASD DB 자동 마이그레이션 툴 다운로드 (Google Drive)](https://drive.google.com/drive/u/0/folders/1knUQzIY8HDzIKYkxrhsCxgorQDn_B3nU)**
+> **v2.3.2 이하 구버전**을 사용하셨던 분들은 내장 공식 명령어인 `asd migrate`를 실행하시면, 기존 세션·태스크·토론·드라이버 기록이 백업과 함께 최신 통합 DB로 안전하게 자동 이관됩니다:
 >
 > ```bash
 > # 기본 실행 (기존 공유 DB 자동 백업 후 레거시 DB 전체 자동 통합, 재실행 시 중복 자동 스킵)
-> node asd-db-migrate.mjs
+> asd migrate
 >
-> # 선택 옵션: 이관 성공 후 기존 해시 폴더를 *.migrated 로 이름 변경 정리
-> node asd-db-migrate.mjs --prune
+> # 선택 옵션: 이관 완료 후 마이그레이션된 레거시 core.db 파일 정리
+> asd migrate --clean-legacy
 > ```
 
 ---
@@ -54,7 +52,7 @@
   - **중복 방지(Gap-Filling) 주입**: 각 하네스가 기본 내장한 기능이나 사용자가 이미 등록해 둔 MCP는 건너뛰고, 해당 하네스에 없는 도구만 자동으로 채워 넣습니다.
 - **이중 트랙(Dual-Track) 실행 (`LIGHT` 현재 하네스 모드 vs `HEAVY` 다중 하네스 모드)**
   - **LIGHT 트랙 (현재 하네스 전용)**: 소규모 작업은 현재 메인 AI가 직접 인플레이스(In-place)로 처리하고, 다중 작업은 현재 하네스 내부의 자체 서브에이전트로 처리(`claim_only`)하며 외부 하네스 CLI를 띄우지 않습니다. 완료 시 자동 체크포인트 커밋을 생성하고 실패 시 해당 태스크 범위만 즉시 롤백합니다.
-  - **HEAVY 트랙 (다중 하네스 병렬)**: 독립된 Git 워크트리(`.asd/wt/<turn>-<taskId>`)를 생성하고 여러 외부 하네스를 동시에 스폰하여 병렬 실행한 뒤 프로세스 간 뮤텍스 잠금(`.asd/merge.lock`) 하에 안전하게 `--no-ff` 병합을 수행합니다.
+  - **HEAVY 트랙 (다중 하네스 병렬)**: 독립된 Git 워크트리(`.asd/wt/<turn>-<taskId>`)를 생성하고 여러 외부 하네스를 동시에 스폰해 병렬 실행한 뒤 프로세스 간 뮤텍스 잠금(`.asd/merge.lock`) 하에 안전하게 `--no-ff` 병합을 수행합니다.
 - **블라인드 교차 모델 적대적 토론 (`asd debate`)**
   - 서로 다른 모델 패밀리(`claude`, `gpt`, `gemini`, `glm`)를 병렬 호출하여 1라운드 블라인드 비평을 수행하고, 2라운드 심판(`arbiter`) 판결을 통해 도출된 필수 제약 사항을 작업 인수 조건(`acceptance`)에 자동 주입합니다.
 - **1ms Fail-Closed 보안 가드 & 서브에이전트 실드(Subagent Shield)**
@@ -84,6 +82,8 @@ asd dispatch --turn 1
 asd verify --task T1.1 --files "src/index.ts" --summary "기능 구현 완료"
 asd debate --topic "아키텍처 설계" --proposal "SQLite WAL 모드 도입"
 asd resume
+asd handoff
+asd migrate
 asd logs
 asd logs T1.1
 asd ui
@@ -105,6 +105,8 @@ node --no-warnings src/cli/index.ts dispatch --turn 1
 node --no-warnings src/cli/index.ts verify --task T1.1 --files "src/index.ts" --summary "기능 구현 완료"
 node --no-warnings src/cli/index.ts debate --topic "아키텍처 설계" --proposal "SQLite WAL 모드 도입"
 node --no-warnings src/cli/index.ts resume
+node --no-warnings src/cli/index.ts handoff
+node --no-warnings src/cli/index.ts migrate
 node --no-warnings src/cli/index.ts logs
 node --no-warnings src/cli/index.ts ui
 ```
@@ -129,7 +131,14 @@ node --no-warnings src/cli/index.ts ui
 | **`/asd-run`** | **생성된 `.asd/PLAN.md` 실행 및 재개** | 사용자가 `.asd/PLAN.md`에서 수정한 내용을 역동기화(`asd plan sync_from_md`)한 뒤, 실행할 작업 요약과 `LIGHT`/`HEAVY` 모드를 확인받고 미완료(`[ ]`) 또는 에스컬레이션(`[~]`)된 태스크들을 순서대로 실행합니다. |
 | **`/asd-debug <증상/오류>`** | **재현 우선 체계적 디버깅** | 에러 로그와 코드를 분석해 **1회 사전 브리핑**을 제시한 뒤, 실패를 재현하는 테스트를 먼저 작성(**Rule Zero**)하고 최소 수정 적용 및 전체 회귀 테스트 통과 후 `asd verify`로 체크포인트 커밋을 생성합니다. |
 | **`/asd-debate <주제/설계안>`** | **이기종 모델 블라인드 적대적 토론** | 논쟁이 되는 아키텍처/설계안을 요약하고 다중 하네스(`HEAVY`) 또는 현재 하네스(`LIGHT`)로 1라운드 블라인드 비평 및 2라운드 심판(`arbiter`) 판결을 수행하여 합의안과 필수 제약 사항을 도출합니다. |
-| **`/handoff`** (또는 **`/asd-handoff`**) | **다중 하네스 세션 인수인계 문서 생성** | 현재까지의 사용자 요청, 완료된 작업, Git 및 테스트 상태, 활성 ASD 세션/`.asd/PLAN.md` 진행 현황(`asd status`), 핵심 의사결정과 제약 사항을 정리하여 루트 경로에 `handoff.md`로 저장합니다. |
+| **`/handoff`** (또는 **`/asd-handoff`**) | **다중 하네스 세션 인수인계 문서 생성** | 활성 SQLite 세션/태스크 진행 현황(`asd status`), Git 상태, 대화 기록을 바탕으로 세션 인수인계 문서(`handoff.md`)를 생성합니다 (CLI 명령어 `asd handoff`로 시크릿 마스킹된 초안 즉시 생성 가능). |
+
+### Execution Mode Comparison (`LIGHT` vs `HEAVY`)
+
+| Mode | How Tasks Are Executed | Workspace Isolation | Best For |
+| :--- | :--- | :--- | :--- |
+| **`LIGHT` (Current Harness)** | Small tasks are edited directly by the main AI; larger subtasks use native subagents inside the current harness (`claim_only`). Never spawns external harness CLIs. | In-place on clean baseline with automatic per-task checkpoint commit & scoped rollback. | Daily features, bug fixes, single-harness workflows, avoiding multi-harness quota usage. |
+| **`HEAVY` (Multi-Harness)** | Spawns external harness CLIs (`claude`, `opencode`, `codex`, `cursor-agent`, `agy`) in parallel according to `routing.jsonc` (`parallel_spawn`). | Dedicated Git worktree per task (`.asd/wt/<turn>-<taskId>`) + mutex-locked merge. | Large full-stack features, parallel multi-domain implementation, cross-model blind review. |
 
 ---
 
@@ -139,18 +148,20 @@ node --no-warnings src/cli/index.ts ui
 
 | 명령어 (`PATH` 설정 시) | 명령어 (`PATH` 미설정 시) | 설명 |
 | :--- | :--- | :--- |
-| `asd sync [--force] [--no-path]` | `node --no-warnings src/cli/index.ts sync [--force] [--no-path]` | 5대 하네스의 글로벌 설정에 스킬, 5개 핵심 에이전트, 보안 훅, 부족한 MCP 도구를 동기화하고 전역 `PATH`에 `asd` 명령어를 자동 등록합니다. |
-| `asd plan [create\|get\|update\|sync_from_md]` | `node --no-warnings src/cli/index.ts plan [create\|get\|update\|sync_from_md]` | `.asd/PLAN.md`와 단일 공유 SQLite SSOT(`~/.asd/state/core.db`) 간의 계획 생성, 조회, 수정 및 양방향 동기화(`sync_from_md`)를 수행합니다. |
+| `asd sync [--force] [--no-path] [--no-update-check]` | `node --no-warnings src/cli/index.ts sync [--force] [--no-path] [--no-update-check]` | 5대 하네스의 글로벌 설정에 스킬, 5개 핵심 에이전트, 보안 훅, 부족한 MCP 도구를 동기화하고 전역 `PATH`에 `asd` 명령어를 자동 등록합니다 (--no-update-check 또는 ASD_NO_UPDATE_CHECK=1로 업데이트 검사 비활성화 가능). |
+| `asd plan [create\|get\|update\|sync_from_md] [--file <path>]` | `node --no-warnings src/cli/index.ts plan [create\|get\|update\|sync_from_md] [--file <path>]` | `.asd/PLAN.md`와 단일 공유 SQLite SSOT(`~/.asd/state/core.db`) 간의 계획 생성, 조회, 수정 및 양방향 동기화(`sync_from_md`)를 수행합니다. |
 | `asd dispatch [--turn <n>] [--mode <m>]` | `node --no-warnings src/cli/index.ts dispatch [--turn <n>] [--mode <m>]` | 선행 작업(`depends_on`)의 완료 결과(`DoneClaim`)를 컨텍스트로 자동 주입하며, MCP 타임아웃 없이 웨이브 단위로 서브에이전트를 병렬 디스패치합니다. |
-| `asd verify --task <id> [--files <csv>]` | `node --no-warnings src/cli/index.ts verify --task <id> [--files <csv>]` | 수정 파일 경계(`allowedFiles`) 검증, 시크릿 유출 차단, 테스트 명령 실행 후 LIGHT 체크포인트 커밋 또는 HEAVY 워크트리 병합을 수행합니다. |
-| `asd debate --topic <t> --proposal <p>` | `node --no-warnings src/cli/index.ts debate --topic <t> --proposal <p>` | 이기종 모델 간 병렬 블라인드 비평과 심판 합의를 실시간 진행 로그 스트리밍과 함께 수행합니다. |
+| `asd verify --task <id> [--files <csv>] [--file <path>]` | `node --no-warnings src/cli/index.ts verify --task <id> [--files <csv>] [--file <path>]` | 수정 파일 경계(`allowedFiles`) 검증, 시크릿 유출 차단, 테스트 명령 실행 후 LIGHT 체크포인트 커밋 또는 HEAVY 워크트리 병합을 수행합니다. |
+| `asd debate --topic <t> --proposal <p> [--file <path>]` | `node --no-warnings src/cli/index.ts debate --topic <t> --proposal <p> [--file <path>]` | 이기종 모델 간 병렬 블라인드 비평과 심판 합의를 실시간 진행 로그 스트리밍과 함께 수행합니다. |
 | `asd status [--json]` | `node --no-warnings src/cli/index.ts status [--json]` | 현재 프로젝트의 SQLite 세션 상태, 실시간 TODO 진행 보드, 미적용 자동 스태시(auto-stash) 경고를 출력합니다. |
 | `asd resume [--session <id>] [--print]` | `node --no-warnings src/cli/index.ts resume [--session <id>] [--print]` | 활성 ASD 세션을 하강(`demoteAsdSession`)시키고 원래 하네스의 대화형 CLI를 즉시 재개합니다 (`--print`는 명령어만 출력, `--json`은 메타데이터 출력). |
+| `asd handoff [--output <path>] [--print\|-p] [--json]` | `node --no-warnings src/cli/index.ts handoff [--output <path>] [--print\|-p] [--json]` | 활성 SQLite 세션, Git 상태, 재개 명령어가 포함된 시크릿 마스킹 세션 인수인계 문서(기본값: `handoff.md`)를 CLI에서 직접 생성합니다. |
+| `asd migrate [--clean-legacy] [--json]` | `node --no-warnings src/cli/index.ts migrate [--clean-legacy] [--json]` | 구버전 프로젝트 해시별 분산 `core.db` 데이터베이스를 자동 백업 후 최신 공유 DB(`~/.asd/state/core.db`)로 안전하게 자동 통합합니다 (`--clean-legacy` 지원). |
 | `asd logs [taskId] [--json]` | `node --no-warnings src/cli/index.ts logs [taskId] [--json]` | 가장 최근 서브에이전트 실행 로그를 자동 출력하거나, `T1.1`처럼 작업 번호를 지정해 해당 작업의 서브에이전트 로그를 조회합니다. |
 | `asd ui [--port <num>]` | `node --no-warnings src/cli/index.ts ui [--port <num>]` | 한국어/영어를 지원하는 경량 로컬 웹 대시보드(`http://127.0.0.1:3847`)를 실행합니다 (`~/.asd/state/models-cache.json` 디스크 캐시로 즉시 기동). |
 | — | — | **원칙:** `asd ui` 웹 대시보드는 기능 동결 — 새로운 UI 기능은 GUI 리포(asd-gui)에 구현합니다. Core는 CLI + 코어 관리 + 최소 SDK만 유지합니다 (CORE_GUI_BOUNDARY_AUDIT.md 참조). |
 | `asd doctor [--json]` | `node --no-warnings src/cli/index.ts doctor [--json]` | Node 버전, SQLite WAL, Git 저장소, 5대 하네스 CLI 바이너리 경로 및 Headless 지원 여부, `PreToolUse` 보안 차단 여부를 100ms 이내에 점검합니다. |
-| `asd clean [--pop] [--all]` | `node --no-warnings src/cli/index.ts clean [--pop] [--all]` | 잔여 `.asd/wt/*` 워크트리와 `asd/*` 브랜치를 정리하고, `--pop` 옵션 사용 시 자동 스태시된 변경사항을 복원합니다. |
+| `asd clean [--pop] [--all] [--purge-orphans]` | `node --no-warnings src/cli/index.ts clean [--pop] [--all] [--purge-orphans]` | 잔여 `.asd/wt/*` 워크트리와 `asd/*` 브랜치를 정리하고, `--pop` 옵션 사용 시 자동 스태시 복원 또는 `--purge-orphans`로 고아 세션을 정리합니다. |
 | `asd uninstall` | `node --no-warnings src/cli/index.ts uninstall` | ASD가 주입한 글로벌 훅, TOML 펜스 블록, 스킬, 에이전트, `PATH` 심(shim), `_asdManaged` MCP 항목만 외과적으로 제거하고 사용자의 기존 설정을 100% 보존합니다. |
 
 ---
