@@ -854,6 +854,7 @@ function computeConfigHash(
   if (asdCliPath) {
     hash.update(asdCliPath.replaceAll("\\", "/"));
     hash.update(`ag-hook-v2:${buildAntigravityHookSpec(asdCliPath).cliArg}`);
+    hash.update(generateOpencodeGuardPlugin(asdCliPath));
   }
   hash.update("no-ai-coauthor-v1");
 

@@ -1196,6 +1196,15 @@ describe("T1.3: Subagent tools frontmatter, quoted hooks, OpenCode plugin, and r
       const pluginSrc = fs.readFileSync(ocPluginPath, "utf8");
       assert.ok(pluginSrc.includes("tool.execute.before"), "OpenCode plugin must hook tool.execute.before");
       assert.ok(pluginSrc.includes(posixCli), "OpenCode plugin must reference configured CLI path");
+      assert.ok(
+        pluginSrc.includes("resolveNodeExecutable()"),
+        "OpenCode plugin must resolve Node binary instead of blindly spawning process.execPath (which is opencode.exe under Bun)"
+      );
+      assert.equal(
+        pluginSrc.includes("spawnSync(\n    process.execPath,"),
+        false,
+        "OpenCode plugin must never pass process.execPath directly to spawnSync"
+      );
 
       // Idempotency check
       const second = await syncHarnessConfigs({

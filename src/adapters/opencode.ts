@@ -75,26 +75,49 @@ export function createOpencodeConfig(
  * Generates an ASD-managed OpenCode plugin (`~/.config/opencode/plugin/asd-guard.js`)
  * that wires OpenCode's `"tool.execute.before"` and `"session.idle"` events to
  * `asd hook pre-tool-use` and `asd hook stop`.
+ *
+ * IMPORTANT: OpenCode is distributed as a standalone Bun executable (`opencode` / `opencode.exe`),
+ * so inside the plugin runtime `process.execPath` points to `opencode.exe` rather than `node`.
+ * Spawning `process.execPath` with `--no-warnings <asdCliPath>` invokes `opencode` itself,
+ * which prints the OpenCode CLI help text and exits with code 1, blocking every tool call.
+ * We therefore bake in the Node.js binary path from sync time (with a runtime fallback to `"node"`).
  */
-export function generateOpencodeGuardPlugin(asdCliPath: string): string {
+export function generateOpencodeGuardPlugin(
+  asdCliPath: string,
+  nodeExecPath: string = process.execPath
+): string {
   const normalizedCliPath = asdCliPath.replaceAll("\\", "/");
+  const isNodeExec = /(?:^|[\\/])node(?:\.exe)?$/i.test(nodeExecPath.trim());
+  const normalizedNodeBin = isNodeExec ? nodeExecPath.replaceAll("\\", "/") : "node";
   return `// ASD-MANAGED-OPENCODE-PLUGIN (v${ASD_VERSION})
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 
 const ASD_CLI_PATH = ${JSON.stringify(normalizedCliPath)};
+const ASD_NODE_BIN = ${JSON.stringify(normalizedNodeBin)};
+
+function resolveNodeExecutable() {
+  if (ASD_NODE_BIN !== "node" && fs.existsSync(ASD_NODE_BIN)) {
+    return ASD_NODE_BIN;
+  }
+  if (typeof process.execPath === "string" && /(?:^|[\\\\/])node(?:\\.exe)?$/i.test(process.execPath)) {
+    return process.execPath;
+  }
+  return "node";
+}
 
 function runAsdHook(hookName, payload) {
   if (!fs.existsSync(ASD_CLI_PATH)) {
     return { status: 0, stdout: "", stderr: "" };
   }
   return spawnSync(
-    process.execPath,
+    resolveNodeExecutable(),
     ["--no-warnings", ASD_CLI_PATH, "hook", hookName, "--harness", "opencode"],
     {
       input: JSON.stringify(payload),
       encoding: "utf8",
       timeout: 8000,
+      windowsHide: true,
     }
   );
 }
