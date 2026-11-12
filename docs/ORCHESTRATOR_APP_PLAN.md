@@ -2,6 +2,7 @@
 
 > 작성일: 2026-11-06 · 근거: 5개 하네스 로컬 실측 + 공식 문서 조사 + ASD v2.4.2 코드 검증
 > 상태: 기획 (구현 미착수)
+> 갱신 (2026-11-13, ASD v2.6.0 기준): §0 표의 스냅샷·명령 조립 위치를 최신 코드에 맞춤. 어댑터의 headless/resume/interactive 빌더 메서드는 v2.6.0에서 삭제되었고 명령 조립은 `src/core/session-tracker.ts`의 `buildSpawnSpec` 계열 단일 경로임. 부록 B 갭 1(zstd)은 해결 확인. GUI(TUI 포함) 리포는 ASD-Nexus를 완전히 새로 작성함.
 
 ---
 
@@ -16,10 +17,10 @@ ASD v2.4.2(`asd-multiagent`)에는 앱의 코어 로직 대부분이 이미 구�
 | 세션 기록 불러오기(4분류 파싱) | `readHarnessTranscript` | `src/core/transcripts.ts` |
 | 프로젝트 세션 자동 탐색 | `discoverProjectCliSessions` | `src/core/session-tracker.ts` |
 | ASD 진행도 보드 | `renderProgressBoard`, `asd status --json` | `src/core/render.ts`, `src/cli/index.ts` |
-| 전체 상태 스냅샷 | `collectDashboardSnapshot()` | `src/cli/dashboard.ts` |
+| 전체 상태 스냅샷 | `collectDashboardSnapshot()` | `src/core/session-services.ts` |
 | 웹 UI 원형 | `asd ui` (node:http, :3847) | `src/cli/dashboard.ts` |
 | 서브세션 스폰/로그 | `spawnSubagent`, `scanSubagentLogs` | `src/core/spawner.ts` |
-| 하네스 명령 조립 | 5종 어댑터 (headless/resume/interactive) | `src/adapters/*.ts` |
+| 하네스 명령 조립 | `buildSpawnSpec` / `buildHeadlessHarnessCommand` / `buildResumeHarnessCommand` / `buildInteractiveResumeHarnessCommand` | `src/core/session-tracker.ts` |
 | GUI 프로젝트 | ASD-Nexus (`yjsjs0987/ASD-Nexus`) | 별도 리포 |
 
 ---
@@ -157,7 +158,7 @@ $ claude -p "..." --output-format stream-json --verbose
 
 ## 부록 B. 알려진 갭/리스크
 
-1. Codex 구세션 `.jsonl.zst` — 히스토리 전체 로드 시 zstd 복원 필요 (파서 대응 여부 확인 필요).
+1. Codex 구세션 `.jsonl.zst` — 히스토리 전체 로드 시 zstd 복원 필요 (**해결 확인**: `core/transcripts.ts`의 `decompressZstdBuffer`가 `node:zlib` `zstdDecompressSync` + `zstd -dc` CLI 폴백으로 `.jsonl.zst`를 자동 복원함).
 2. Claude 세션 JSONL 공식 "포맷 불안정" — 파서 회귀테스트 필요.
 3. OpenCode `opencode.db` 2.29GB — 전체 로드 금지, 세션 스코프 쿼리만.
 4. agy 어댑터의 stream-json 플래그 미사용 — 라이브 실측으로 확정, 부록 C 참조.

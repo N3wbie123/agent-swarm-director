@@ -72,6 +72,8 @@
 
 **권고**: GUI 구현 삭제 → Core 어댑터 사용. 양방향 경계 원칙: "코어 로직 필요 시 GUI에서 구현하지 말고 Core에 요청(GUI_ARCHITECTURE.md ADR-01-3도 동일 원칙)".
 
+**갱신 (2026-11-13, v2.6.0)**: 위 어댑터 메서드(`buildHeadlessCommand`/`buildResumeCommand`/`buildInteractiveResumeCommand`)는 프로덕션 미호출로 확인되어 `HarnessAdapter` 인터페이스와 5개 어댑터에서 **삭제**됨. Core의 명령 조립 단일 경로는 `src/core/session-tracker.ts`의 `buildSpawnSpec` / `buildHeadlessHarnessCommand` / `buildResumeHarnessCommand` / `buildInteractiveResumeHarnessCommand`이며, GUI/TUI는 이 함수들(외부 SDK 문서의 `core/session-tracker` 표)을 직접 사용해야 함. §5의 어댑터 버그 발견 경위는 역사 기록으로 보존.
+
 ---
 
 ## 3. 유지 확정 목록 (검토했으나 위반 아님)
@@ -81,7 +83,7 @@
 | `src/mcp/server.ts` (78KB) + `mcp/stdio-rpc.ts` | asd_plan/dispatch/verify/debate + 드라이버 부착 | CLI·에이전트(하네스)용 코어 관리 |
 | `src/core/workspace.ts:1421-1942` | `getWorktreeDiff` / `approvePendingTask` / `rejectPendingTask` ("GUI Gate") | git worktree diff/머지/롤백 = **사용자 정의 코어 관리 기능**. 단 Core 내부 호출자 0개(grep 확인) — GUI 전용 호출 SDK임을 문서화할 것 |
 | `src/core/drivers.ts` | 드라이버 CRUD(`attachDriver` 등), `runDriverTurn`, `parseDriverStreamLine`, `buildDriverBriefing` | CRUD는 MCP 사용 / 스트리밍 턴·파서는 신규 앱의 최소 SDK (W3 표기 정리만) |
-| `src/core/transcripts.ts` (CR-10) | 5하네스 트랜스크립트 리더 | 세션 자동 로드용 최소 SDK. 갭: cursor는 `unsupported` (13행) — 별도 과제 |
+| `src/core/transcripts.ts` (CR-10) | 5하네스 트랜스크립트 리더 | 세션 자동 로드용 최소 SDK. cursor는 네이티브 포맷 미제공 → lossy JSONL 폴백(`~/.asd/transcripts/cursor/`, `~/.cursor/transcripts/`)만 존재, 폴백 부재 시 `unsupported` (갱신 2026-11-13) |
 | `src/cli/dashboard.ts` 서버+HTML | `asd ui` | **사용자 예외 허용**. 단 이후 기능 확장 금지 원칙 명문화 권장 (새 기능은 GUI 리포로) |
 | `src/core/{db,render,router,session-tracker,spawner,policy,debate,redact,jsonc,config}.ts`, `src/adapters/*`, `src/cli/index.ts` | 전부 CLI/코어 관리/SDK | GUI 흔적 grep 결과 0 (주석 1건 제외 전부 코어 관리 문언) |
 | `.asd/sessions/` 산출물 구조 | `drivers/<id>/runs/`, `subagents/<id>/` | GUI 턴 로그(`gui-turns`)는 GUI가 직접 기록·판독 (asd-gui `routes/transcripts.ts`) — Core 무관 ✅ |
@@ -95,7 +97,7 @@
 3. [x] **(P2)** W3: drivers.ts 정리 — **완료**. CR-03 주석·"GUI rendering" 문언 중립화, 브리핑 프롬프트 EN/KO GUI 문구 제거. 파일 내 "GUI" 문자열 0건 확인.
 4. [x] **(P2)** W4: asd-gui 중복 제거 — **완료 (경로 조정)**. 계획은 어댑터 사용이었으나 실행 중 어댑터 버그 발견(§5) → GUI 래퍼(30줄 no-op 정규화) 삭제 후 Core 상위 함수 `buildInteractiveResumeHarnessCommand`를 core-api.ts에서 직접 re-export. 4개 호출부 무변경.
 5. [x] **(P3)** W5: README/README_ko에 "asd ui 기능 동결 — 신규 UI 기능은 asd-gui로" 원칙 추가 — **완료**.
-6. [ ] **(P3)** cursor 트랜스크립트 리더 구현 (현재 `unsupported`) — 미착수, 별도 과제.
+6. [ ] **(P3)** cursor 트랜스크립트 리더 보강 — 네이티브 포맷이 하네스 측에서 미제공이라 현재 lossy JSONL 폴백만 존재. 폴백 파서 고도화는 별도 과제 (갱신 2026-11-13).
 
 ---
 
