@@ -167,48 +167,6 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = "claude-code";
   readonly supportsHeadlessSpawn: boolean = true;
 
-  buildHeadlessCommand(
-    prompt: string,
-    model: string,
-    _opts?: { reasoningEffort?: string }
-  ): { cmd: string; args: string[] } {
-    const args: string[] = ["-p", prompt, "--output-format", "json"];
-    if (model) {
-      args.push("--model", model);
-    }
-    return { cmd: "claude", args };
-  }
-
-  buildResumeCommand(
-    harnessSessionId: string,
-    prompt: string,
-    model?: string
-  ): { cmd: string; args: string[] } {
-    const args: string[] = [
-      "-p",
-      prompt,
-      "--resume",
-      harnessSessionId,
-      "--output-format",
-      "json",
-    ];
-    if (model) {
-      args.push("--model", model);
-    }
-    return { cmd: "claude", args };
-  }
-
-  buildInteractiveResumeCommand(
-    harnessSessionId: string,
-    model?: string
-  ): { cmd: string; args: string[] } {
-    const args: string[] = harnessSessionId ? ["--resume", harnessSessionId] : [];
-    if (model) {
-      args.push("--model", model);
-    }
-    return { cmd: "claude", args };
-  }
-
   formatPreToolUseDeny(reason: string): {
     exitCode: number;
     stdout?: string;

@@ -57,11 +57,6 @@ describe("Harness Adapters", () => {
       assert.equal(cx.harnessId, "codex");
       assert.equal(ag.harnessId, "antigravity");
 
-      assert.equal(typeof cc.buildHeadlessCommand, "function");
-      assert.equal(typeof oc.buildHeadlessCommand, "function");
-      assert.equal(typeof cx.buildHeadlessCommand, "function");
-      assert.equal(typeof ag.buildHeadlessCommand, "function");
-
       assert.equal(typeof cc.formatPreToolUseDeny, "function");
       assert.equal(typeof oc.formatPreToolUseDeny, "function");
       assert.equal(typeof cx.formatPreToolUseDeny, "function");
@@ -100,118 +95,6 @@ describe("Harness Adapters", () => {
 
       const agExplicitFalse = new AntigravityAdapter({ supportsHeadlessSpawn: false });
       assert.equal(agExplicitFalse.supportsHeadlessSpawn, false);
-    });
-  });
-
-  describe("2. Headless CLI Command Generation", () => {
-    test("claude-code: builds `claude -p <prompt> --output-format json --model <model>`", () => {
-      const adapter = new ClaudeCodeAdapter();
-      const res = adapter.buildHeadlessCommand("Analyze code", "claude-sonnet-4-6");
-
-      assert.equal(res.cmd, "claude");
-      assert.deepEqual(res.args, [
-        "-p",
-        "Analyze code",
-        "--output-format",
-        "json",
-        "--model",
-        "claude-sonnet-4-6",
-      ]);
-
-      const resNoModel = adapter.buildHeadlessCommand("Hello", "");
-      assert.deepEqual(resNoModel.args, ["-p", "Hello", "--output-format", "json"]);
-    });
-
-    test("opencode: builds `opencode run <prompt> --format json --model <model>`", () => {
-      const adapter = new OpencodeAdapter();
-      const res = adapter.buildHeadlessCommand("Implement feature", "glm-5");
-
-      assert.equal(res.cmd, "opencode");
-      assert.deepEqual(res.args, [
-        "run",
-        "Implement feature",
-        "--format",
-        "json",
-        "--model",
-        "glm-5",
-      ]);
-    });
-
-    test("codex: builds `codex exec <prompt> --json -m <model> -c model_reasoning_effort=<level>`", () => {
-      const adapter = new CodexAdapter();
-
-      // With model & reasoning effort
-      const resWithEffort = adapter.buildHeadlessCommand("Refactor tests", "gpt-5-codex", {
-        reasoningEffort: "high",
-      });
-      assert.equal(resWithEffort.cmd, "codex");
-      assert.deepEqual(resWithEffort.args, [
-        "exec",
-        "Refactor tests",
-        "--json",
-        "-m",
-        "gpt-5-codex",
-        "-c",
-        "model_reasoning_effort=high",
-      ]);
-
-      // Without reasoning effort
-      const resNoEffort = adapter.buildHeadlessCommand("Simple task", "gpt-5-codex");
-      assert.deepEqual(resNoEffort.args, [
-        "exec",
-        "Simple task",
-        "--json",
-        "-m",
-        "gpt-5-codex",
-      ]);
-    });
-
-    test("antigravity: builds `agy -p <prompt> --output-format json --model <model> --effort <level>`", () => {
-      const adapter = new AntigravityAdapter({ supportsHeadlessSpawn: true });
-
-      const res = adapter.buildHeadlessCommand("Scout repo", "gemini-3-flash", {
-        reasoningEffort: "low",
-      });
-      assert.equal(res.cmd, "agy");
-      assert.deepEqual(res.args, [
-        "-p",
-        "Scout repo",
-        "--output-format",
-        "json",
-        "--model",
-        "gemini-3-flash",
-        "--effort",
-        "low",
-      ]);
-
-      const resNoEffort = adapter.buildHeadlessCommand("Hello", "gemini-3-pro");
-      assert.deepEqual(resNoEffort.args, [
-        "-p",
-        "Hello",
-        "--output-format",
-        "json",
-        "--model",
-        "gemini-3-pro",
-      ]);
-    });
-
-    test("cursor: builds `agent -p <prompt> --force --output-format json --model <model>`", () => {
-      const adapter = new CursorAdapter({ binaryName: "agent" });
-      const res = adapter.buildHeadlessCommand("Fix bug", "claude-3.7-sonnet");
-
-      assert.equal(res.cmd, "agent");
-      assert.deepEqual(res.args, [
-        "-p",
-        "Fix bug",
-        "--force",
-        "--output-format",
-        "json",
-        "--model",
-        "claude-3.7-sonnet",
-      ]);
-
-      const resNoModel = adapter.buildHeadlessCommand("Fix bug", "");
-      assert.deepEqual(resNoModel.args, ["-p", "Fix bug", "--force", "--output-format", "json"]);
     });
   });
 

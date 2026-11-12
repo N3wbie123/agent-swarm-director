@@ -348,8 +348,6 @@ export function checkProtectedPath(relPath: string): ProtectedPathCheckResult {
   return { protected: false };
 }
 
-export const isProtectedPath = checkProtectedPath;
-
 // ============================================================================
 // 3. Glob & Prefix Matcher for allowedFiles
 // ============================================================================

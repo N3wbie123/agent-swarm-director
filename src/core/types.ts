@@ -437,21 +437,6 @@ export interface AsdDebateOutput {
 
 export interface HarnessAdapter {
   harnessId: HarnessId;
-  buildHeadlessCommand(
-    prompt: string,
-    model: string,
-    opts?: { reasoningEffort?: string }
-  ): { cmd: string; args: string[] };
-  buildResumeCommand?(
-    harnessSessionId: string,
-    prompt: string,
-    model?: string,
-    opts?: { reasoningEffort?: string }
-  ): { cmd: string; args: string[] };
-  buildInteractiveResumeCommand?(
-    harnessSessionId: string,
-    model?: string
-  ): { cmd: string; args: string[] };
   formatPreToolUseDeny(reason: string): {
     exitCode: number;
     stdout?: string;
@@ -552,9 +537,6 @@ export function getHarnessProvisionerPlugin(id: HarnessId): HarnessProvisionerPl
 export function listHarnessProvisionerPlugins(): HarnessProvisionerPlugin[] {
   return [...provisionerPluginRegistry.values()];
 }
-
-export const registerCoreHarnessProvisioner = registerHarnessProvisionerPlugin;
-export const getCoreHarnessProvisioner = getHarnessProvisionerPlugin;
 
 export function registerCoreInstallerHooks(hooks: CoreInstallerHooks): void {
   coreInstallerHooks = { ...(coreInstallerHooks ?? {}), ...hooks };

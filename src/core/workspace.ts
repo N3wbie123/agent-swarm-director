@@ -1259,8 +1259,7 @@ export function cleanStaleWorktreeLock(wtPath: string, maxAgeMs = 30_000): boole
 /**
  * Verifies if a process ID is alive and belongs to the expected process (HC-5).
  */
-export function verifyPidIdentity(pid: number, expectedStartedAt?: number): boolean {
-  void expectedStartedAt;
+export function verifyPidIdentity(pid: number): boolean {
   return isPidAlive(pid);
 }
 
@@ -1830,17 +1829,6 @@ export async function approvePendingTask(options: {
   };
 }
 
-/**
- * @public
- * External SDK and GUI gate alias for approvePendingTask.
- */
-export const approveTaskWorktree = approvePendingTask;
-
-/**
- * @public
- * Rejects and rolls back a task paused at `'verifying'` (or `'merge_conflict'`),
- * cleaning up its worktree or uncommitted changes and marking it `'failed'`.
- */
 export function rejectPendingTask(options: {
   projectRoot: string;
   sessionId: string;
@@ -1900,12 +1888,6 @@ export function rejectPendingTask(options: {
     ...(untouchedFiles !== undefined ? { untouchedFiles } : {}),
   };
 }
-
-/**
- * @public
- * External SDK and GUI gate alias for rejectPendingTask.
- */
-export const rejectTaskWorktree = rejectPendingTask;
 
 // ============================================================================
 // CR-12 & v2.5.0: Orphaned Task Recovery & Worktree Reconciliation (HC-3~HC-5)
@@ -2122,9 +2104,9 @@ export function recoverOrphanedTasks(input: {
     const subPid = typeof meta?.pid === "number" ? meta.pid : undefined;
     const ownerPid = typeof meta?.ownerPid === "number" ? meta.ownerPid : undefined;
     const startedAt = typeof meta?.startedAt === "number" ? meta.startedAt : undefined;
-    const subAlive = subPid !== undefined && subPid > 0 ? verifyPidIdentity(subPid, startedAt) : false;
+    const subAlive = subPid !== undefined && subPid > 0 ? verifyPidIdentity(subPid) : false;
     const ownerAlive =
-      ownerPid !== undefined && ownerPid > 0 ? verifyPidIdentity(ownerPid, startedAt) : false;
+      ownerPid !== undefined && ownerPid > 0 ? verifyPidIdentity(ownerPid) : false;
 
     let shouldFail = false;
     if (

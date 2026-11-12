@@ -35,57 +35,6 @@ export class AntigravityAdapter implements HarnessAdapter {
     }
   }
 
-  buildHeadlessCommand(
-    prompt: string,
-    model: string,
-    opts?: { reasoningEffort?: string }
-  ): { cmd: string; args: string[] } {
-    const args: string[] = ["-p", prompt, "--output-format", "json"];
-    if (model) {
-      args.push("--model", model);
-    }
-    if (opts?.reasoningEffort) {
-      args.push("--effort", opts.reasoningEffort);
-    }
-    return { cmd: "agy", args };
-  }
-
-  buildResumeCommand(
-    harnessSessionId: string,
-    prompt: string,
-    model?: string,
-    opts?: { reasoningEffort?: string }
-  ): { cmd: string; args: string[] } {
-    const args: string[] = [
-      "-p",
-      prompt,
-      "--conversation",
-      harnessSessionId,
-      "--output-format",
-      "json",
-    ];
-    if (model) {
-      args.push("--model", model);
-    }
-    if (opts?.reasoningEffort) {
-      args.push("--effort", opts.reasoningEffort);
-    }
-    return { cmd: "agy", args };
-  }
-
-  buildInteractiveResumeCommand(
-    harnessSessionId: string,
-    model?: string
-  ): { cmd: string; args: string[] } {
-    const args: string[] = harnessSessionId
-      ? ["--conversation", harnessSessionId]
-      : [];
-    if (model) {
-      args.push("--model", model);
-    }
-    return { cmd: "agy", args };
-  }
-
   formatPreToolUseDeny(reason: string): {
     exitCode: number;
     stdout?: string;

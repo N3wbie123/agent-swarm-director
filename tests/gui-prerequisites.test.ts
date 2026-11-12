@@ -2,7 +2,7 @@
  * GUI Prerequisites & Unified Session Management Tests (tests/gui-prerequisites.test.ts)
  *
  * Verifies all core/CLI enhancements required for external `asd-gui` integration:
- * 1. Barrel exports (`src/index.ts`) and 5-adapter resume command builders.
+ * 1. Barrel exports (`src/index.ts`) and options-object session resume command builders.
  * 2. Two-tier session storage:
  *    - All native CLI sessions recorded in `.asd/sessions/cli-recent.json` with 0-token summary.
  *    - Only `/asd` orchestration sessions create `.asd/sessions/<asd-id>/` folders and auto-link `harnessSessionId`.
@@ -21,20 +21,15 @@ import * as asdPublicApi from "../src/index.ts";
 import {
   approvePendingTask,
   AsdMcpServer,
-  antigravityAdapter,
   buildInteractiveResumeHarnessCommand,
   buildResumeHarnessCommand,
-  claudeCodeAdapter,
-  codexAdapter,
   collectDashboardSnapshot,
   createTaskWorktree,
-  cursorAdapter,
   extractHarnessSessionIdFromOutput,
   extractHookSessionInfo,
   getWorktreeDiff,
   listKnownProjects,
   openProjectDb,
-  opencodeAdapter,
   prepareBaseline,
   readCliRecentSessions,
   recordCliRecentSession,
@@ -99,90 +94,13 @@ describe("GUI Prerequisites & Session Architecture", () => {
     assert.equal(typeof mcpServer.AsdMcpServer, "function");
   });
 
-  test("2. All 5 adapters implement buildResumeCommand and buildInteractiveResumeCommand", () => {
-    const ccResume = claudeCodeAdapter.buildResumeCommand!(
-      "cc-uuid-123",
-      "Fix edge case",
-      "claude-sonnet-4-6"
-    );
-    assert.equal(ccResume.cmd, "claude");
-    assert.deepEqual(ccResume.args, [
-      "-p",
-      "Fix edge case",
-      "--resume",
-      "cc-uuid-123",
-      "--output-format",
-      "json",
-      "--model",
-      "claude-sonnet-4-6",
-    ]);
-
-    const cxResume = codexAdapter.buildResumeCommand!(
-      "thread-cx-99",
-      "Add unit test",
-      "gpt-5.4",
-      { reasoningEffort: "high" }
-    );
-    assert.equal(cxResume.cmd, "codex");
-    assert.deepEqual(cxResume.args, [
-      "exec",
-      "resume",
-      "thread-cx-99",
-      "Add unit test",
-      "--json",
-      "-m",
-      "gpt-5.4",
-      "-c",
-      "model_reasoning_effort=high",
-    ]);
-
-    const ocResume = opencodeAdapter.buildResumeCommand!(
-      "ses_oc_777",
-      "Continue refactor",
-      "glm-5"
-    );
-    assert.equal(ocResume.cmd, "opencode");
-    assert.deepEqual(ocResume.args, [
-      "run",
-      "Continue refactor",
-      "--session",
-      "ses_oc_777",
-      "--format",
-      "json",
-      "--model",
-      "glm-5",
-    ]);
-
-    const agResume = antigravityAdapter.buildResumeCommand!(
-      "agy-conv-42",
-      "Check UI",
-      "gemini-3-pro"
-    );
-    assert.equal(agResume.cmd, "agy");
-    assert.ok(agResume.args.includes("--conversation"));
-    assert.ok(agResume.args.includes("agy-conv-42"));
-
-    const crResume = cursorAdapter.buildResumeCommand!(
-      "cursor-chat-11",
-      "Update styles",
-      "composer-2"
-    );
-    assert.ok(crResume.args.includes("--resume"));
-    assert.ok(crResume.args.includes("cursor-chat-11"));
-
-    const interactive = buildInteractiveResumeHarnessCommand(
-      "claude-code",
-      "cc-uuid-123",
-      "claude-opus-4-6"
-    );
-    assert.equal(interactive.cliString, "claude --resume cc-uuid-123 --model claude-opus-4-6");
-
-    const helperResume = buildResumeHarnessCommand(
-      "codex",
-      "thread-cx-99",
-      "Follow up",
-      "gpt-5.4"
-    );
+  test("2. Session resume command builders work via options-object form", () => {
+    const helperResume = buildResumeHarnessCommand({
+      harness: "codex",
+      harnessSessionId: "thread-cx-99",
+      prompt: "Follow up",
+      model: "gpt-5.4",
+    });
     assert.equal(helperResume.command, "codex");
     assert.deepEqual(helperResume.args.slice(0, 4), [
       "exec",
@@ -190,14 +108,6 @@ describe("GUI Prerequisites & Session Architecture", () => {
       "thread-cx-99",
       "Follow up",
     ]);
-
-    const helperResumeObj = buildResumeHarnessCommand({
-      harness: "codex",
-      harnessSessionId: "thread-cx-99",
-      prompt: "Follow up",
-      model: "gpt-5.4",
-    });
-    assert.deepEqual(helperResumeObj, helperResume);
 
     const interactiveObj = buildInteractiveResumeHarnessCommand({
       harness: "claude-code",

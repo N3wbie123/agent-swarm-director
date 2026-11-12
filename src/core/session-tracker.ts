@@ -165,33 +165,16 @@ export interface ResumeHarnessCommandOptions {
 /**
  * Builds headless resume commands (`--resume` / `exec resume` / `--session`)
  * for sending a follow-up prompt to an existing native harness session.
- * Supports both positional arguments and a single options object.
  */
 export function buildResumeHarnessCommand(
-  harnessOrOptions: HarnessId | ResumeHarnessCommandOptions,
-  harnessSessionId?: string,
-  prompt?: string,
-  model?: string | null,
-  thinkingEffort?: string | null
+  options: ResumeHarnessCommandOptions
 ): { command: string; args: string[] } {
-  const harness: HarnessId =
-    typeof harnessOrOptions === "object" ? harnessOrOptions.harness : harnessOrOptions;
-  const sid =
-    typeof harnessOrOptions === "object"
-      ? harnessOrOptions.harnessSessionId
-      : (harnessSessionId ?? "");
-  const textPrompt =
-    typeof harnessOrOptions === "object" ? harnessOrOptions.prompt : (prompt ?? "");
-  const resolvedModel =
-    typeof harnessOrOptions === "object" ? harnessOrOptions.model : model;
-  const resolvedEffort =
-    typeof harnessOrOptions === "object"
-      ? (harnessOrOptions.thinkingEffort ?? harnessOrOptions.reasoningEffort)
-      : thinkingEffort;
-  const streaming =
-    typeof harnessOrOptions === "object"
-      ? (harnessOrOptions.streaming ?? false)
-      : false;
+  const harness: HarnessId = options.harness;
+  const sid = options.harnessSessionId ?? "";
+  const textPrompt = options.prompt ?? "";
+  const resolvedModel = options.model;
+  const resolvedEffort = options.thinkingEffort ?? options.reasoningEffort ?? null;
+  const streaming = options.streaming ?? false;
 
   switch (harness) {
     case "claude-code": {

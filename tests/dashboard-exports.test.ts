@@ -8,13 +8,11 @@ import { test } from "node:test";
 import { openProjectDb } from "../src/core/db.ts";
 import {
   approvePendingTask,
-  approveTaskWorktree,
   collectDashboardSnapshot,
   discoverHarnessModels,
   getModelsDiskCachePath,
   getWorktreeDiff,
   rejectPendingTask,
-  rejectTaskWorktree,
   saveSessionMemo,
 } from "../src/index.ts";
 
@@ -100,10 +98,6 @@ test("T2.1: public API exports across src/index.ts, models.ts, session-services.
   assert.equal(typeof getWorktreeDiff, "function");
   assert.equal(typeof approvePendingTask, "function");
   assert.equal(typeof rejectPendingTask, "function");
-  assert.equal(typeof approveTaskWorktree, "function");
-  assert.equal(typeof rejectTaskWorktree, "function");
-  assert.equal(approveTaskWorktree, approvePendingTask);
-  assert.equal(rejectTaskWorktree, rejectPendingTask);
 
   const sessionServicesMod = await import("../src/core/session-services.ts");
   assert.equal(typeof sessionServicesMod.collectDashboardSnapshot, "function");

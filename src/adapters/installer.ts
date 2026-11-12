@@ -1276,10 +1276,6 @@ function removeCliPathShims(homeDir: string, removedFiles: string[]): void {
 // Core Synchronizer: Strictly Global-Only
 // ============================================================================
 
-export function syncRepoVersionStrings(_asdRoot = getAsdRoot()): void {
-  // No-op by design: sync must never mutate tracked repository source files or historical docs in-place.
-}
-
 export async function syncHarnessConfigs(
   options?: SyncHarnessOptions
 ): Promise<SyncHarnessConfigsResult> {
@@ -2008,7 +2004,6 @@ export async function syncHarnessConfigs(
 }
 
 export const runAsdSync = syncHarnessConfigs;
-export const installGlobalConfigs = syncHarnessConfigs;
 
 // ============================================================================
 // Main-Session Auto-Sync

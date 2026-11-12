@@ -153,48 +153,6 @@ export class OpencodeAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = "opencode";
   readonly supportsHeadlessSpawn: boolean = true;
 
-  buildHeadlessCommand(
-    prompt: string,
-    model: string,
-    _opts?: { reasoningEffort?: string }
-  ): { cmd: string; args: string[] } {
-    const args: string[] = ["run", prompt, "--format", "json"];
-    if (model) {
-      args.push("--model", model);
-    }
-    return { cmd: "opencode", args };
-  }
-
-  buildResumeCommand(
-    harnessSessionId: string,
-    prompt: string,
-    model?: string
-  ): { cmd: string; args: string[] } {
-    const args: string[] = [
-      "run",
-      prompt,
-      "--session",
-      harnessSessionId,
-      "--format",
-      "json",
-    ];
-    if (model) {
-      args.push("--model", model);
-    }
-    return { cmd: "opencode", args };
-  }
-
-  buildInteractiveResumeCommand(
-    harnessSessionId: string,
-    model?: string
-  ): { cmd: string; args: string[] } {
-    const args: string[] = harnessSessionId ? ["--session", harnessSessionId] : [];
-    if (model) {
-      args.push("--model", model);
-    }
-    return { cmd: "opencode", args };
-  }
-
   abortSession(options: OpencodeSessionAbortOptions): void {
     abortOpencodeSession(options);
   }

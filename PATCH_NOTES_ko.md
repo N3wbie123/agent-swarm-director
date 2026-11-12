@@ -1,12 +1,23 @@
-# 패치 노트 (`agent-swarm-director` / ASD v2.5.0)
+# 패치 노트 (`agent-swarm-director` / ASD v2.6.0)
 
 [English](./PATCH_NOTES.md) | **한국어** | [📖 README로 돌아가기](./README_ko.md) | [🏛️ 아키텍처 및 파일·함수 레퍼런스](./PROJECT_STATUS.md) | [🔌 외부 SDK 레퍼런스](./EXTERNAL_SDK_REFERENCE.md)
 
-**Agent Swarm Director (ASD v2.5.0)**의 초기 아키텍처 구축부터 최신 기능 업데이트까지의 전체 패치 내역을 최신순으로 정리한 문서입니다.
+**Agent Swarm Director (ASD v2.6.0)**의 초기 아키텍처 구축부터 최신 기능 업데이트까지의 전체 패치 내역을 최신순으로 정리한 문서입니다.
 
 ---
 
-## 1. 하네스 네이티브 스트리밍, Core–GUI 경계 리팩터링 및 `ses_` 세션 속성 보정 (v2.4.3)
+## 1. SDK 표면 정리 (v2.6.0)
+
+### `v2.6.0` — SDK 죽은 표면 제거 (호환성 깨짐: `agent-swarm-director/adapters/claude` 서브패스 제거)
+- ASD-Nexus 재작성 전 SDK 죽은 심볼 제거 (`docs/SDK_SURFACE_CLEANUP_PLAN.md` #2~#6, #9): `installGlobalConfigs`, `syncRepoVersionStrings` (`adapters/installer.ts`), `registerCoreHarnessProvisioner`/`getCoreHarnessProvisioner` 별칭 (`core/types.ts`), `approveTaskWorktree`/`rejectTaskWorktree` 별칭 (`core/workspace.ts`), `isProtectedPath` 별칭 (`core/policy.ts`), `src/adapters/claude.ts` (5줄 re-export).
+- 프로덕션 미호출인 `buildHeadlessCommand` / `buildResumeCommand` / `buildInteractiveResumeCommand` 메서드를 `HarnessAdapter` 인터페이스와 5개 어댑터에서 제거 — 명령 생성은 `core/session-tracker.ts`(`buildSpawnSpec`) 단일 경로로 통일되어 명령 테이블 드리프트 위험이 사라짐. hook 번역(`formatPreToolUseDeny`/`formatStopBlock`)과 `globalConfigTargets`는 어댑터 계약에 유지.
+- `buildResumeHarnessCommand`는 options 객체 형태만 지원 (positional 오버로드 제거, 내부 호출부 `core/subagent-control.ts` 전환).
+- `verifyPidIdentity(pid)`에서 무시되던 `expectedStartedAt` 스텁 파라미터 제거 (`SDK_SURFACE_CLEANUP_PLAN.md` #8, (b)안).
+- 버전 `2.6.0` 상향 (마이너; `adapters/claude` 서브패스 제거는 breaking).
+
+---
+
+## 2. 하네스 네이티브 스트리밍, Core–GUI 경계 리팩터링 및 `ses_` 세션 속성 보정 (v2.4.3)
 
 ### `v2.5.0` — 오케스트레이터 CLI/GUI 분리 개발을 위한 버전 상향 (코드 변경 없음)
 - `ASD_VERSION` / 패키지 버전을 `2.5.0`으로 상향했습니다. 예정된 오케스트레이터 CLI/GUI 앱 분리의 기준 버전입니다 (계획: `ORCHESTRATOR_APP_PLAN.md`, 하네스 통합 가이드: `HARNESS_INTEGRATION_REFERENCE.md`).

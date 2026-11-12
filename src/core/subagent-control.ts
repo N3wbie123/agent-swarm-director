@@ -481,12 +481,12 @@ export async function runSubagentControlAction(options: {
 
   const cmdInfo =
     options.action === "resume" && target.harnessSessionId
-      ? buildResumeHarnessCommand(
-          nextHarness,
-          target.harnessSessionId,
-          promptText,
-          nextModel
-        )
+      ? buildResumeHarnessCommand({
+          harness: nextHarness,
+          harnessSessionId: target.harnessSessionId,
+          prompt: promptText,
+          model: nextModel,
+        })
       : buildDefaultHarnessCommand(nextHarness, promptText, nextModel);
 
   const runPromise = spawnSubagent({

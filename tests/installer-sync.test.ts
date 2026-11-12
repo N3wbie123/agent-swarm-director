@@ -30,7 +30,6 @@ import {
   runAsdUninstall,
   syncAgentModelsIfNeeded,
   syncHarnessConfigs,
-  syncRepoVersionStrings,
   uninstallHarnessConfigs,
   syncJsonMcpConfigFile,
   mergeJsonMcpServersForHarness,
@@ -483,7 +482,7 @@ describe("Installer & Sync Engine", () => {
       assert.ok(withCustomNotify.includes("[mcp_servers.context7]"));
     });
 
-    test("syncRepoVersionStrings and syncHarnessConfigs never mutate repo README.md, README_ko.md, or historical version strings", async () => {
+    test("syncHarnessConfigs never mutates repo README.md, README_ko.md, or historical version strings", async () => {
       const fixtureRepo = createTempDir("asd-test-repo-fixture-");
       const fixtureHome = createTempDir("asd-test-repo-home-");
       try {
@@ -491,11 +490,6 @@ describe("Installer & Sync Engine", () => {
         const readmeKoContent = "# ASD 한국어\n> **버전**: `2.1.0`\n이전 버전 ASD v2.1.0 (v2.2.0) 기록\n";
         fs.writeFileSync(path.join(fixtureRepo, "README.md"), readmeContent, "utf8");
         fs.writeFileSync(path.join(fixtureRepo, "README_ko.md"), readmeKoContent, "utf8");
-
-        syncRepoVersionStrings(fixtureRepo);
-
-        assert.equal(fs.readFileSync(path.join(fixtureRepo, "README.md"), "utf8"), readmeContent);
-        assert.equal(fs.readFileSync(path.join(fixtureRepo, "README_ko.md"), "utf8"), readmeKoContent);
 
         const realReadmePath = path.resolve(process.cwd(), "README.md");
         const realReadmeKoPath = path.resolve(process.cwd(), "README_ko.md");
@@ -723,7 +717,7 @@ test("v2.4.3 Auto-Migration: syncHarnessConfigs upgrades legacy (< 2.4.2) ~/.asd
         .filter((line) => !line.trim().startsWith("//"))
         .join("\n")
     );
-    assert.equal(migrated._asdVersion, "2.5.0");
+    assert.equal(migrated._asdVersion, ASD_VERSION);
     assert.ok(migrated.lightSubagents, "Migrated routing.jsonc must include lightSubagents block");
     assert.ok(migrated.lightSubagents.antigravity, "Migrated lightSubagents must include antigravity");
     assert.equal(
@@ -1333,7 +1327,7 @@ describe("Model Discovery Integration on Bootstrap & asd sync", () => {
       fs.mkdirSync(asdDir, { recursive: true });
       const routingPath = path.join(asdDir, "routing.jsonc");
       const userRouting = {
-        _asdVersion: "2.5.0",
+        _asdVersion: ASD_VERSION,
         lightSubagents: {
           antigravity: {
             scout: "flash_lite",

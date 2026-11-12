@@ -1,12 +1,23 @@
-# Patch Notes (`agent-swarm-director` / ASD v2.5.0)
+# Patch Notes (`agent-swarm-director` / ASD v2.6.0)
 
 **English** | [한국어](./PATCH_NOTES_ko.md) | [📖 Back to README](./README.md) | [🏛️ Architecture & Code Reference](./PROJECT_STATUS.md) | [🔌 External SDK Reference](./EXTERNAL_SDK_REFERENCE.md)
 
-Complete chronological patch history for **Agent Swarm Director (ASD v2.5.0)**, organized from the latest updates to the initial foundation.
+Complete chronological patch history for **Agent Swarm Director (ASD v2.6.0)**, organized from the latest updates to the initial foundation.
 
 ---
 
-## 1. Harness-Native Streaming, Core–GUI Boundary & Session Attribution (v2.4.3)
+## 1. SDK Surface Cleanup (v2.6.0)
+
+### `v2.6.0` — SDK Dead-Surface Removal (breaking: subpath `agent-swarm-director/adapters/claude` removed)
+- Removed dead SDK symbols ahead of the ASD-Nexus rewrite (`docs/SDK_SURFACE_CLEANUP_PLAN.md` #2~#6, #9): `installGlobalConfigs`, `syncRepoVersionStrings` (`adapters/installer.ts`), `registerCoreHarnessProvisioner`/`getCoreHarnessProvisioner` aliases (`core/types.ts`), `approveTaskWorktree`/`rejectTaskWorktree` aliases (`core/workspace.ts`), `isProtectedPath` alias (`core/policy.ts`), and `src/adapters/claude.ts` (5-line re-export).
+- Removed the production-unused `buildHeadlessCommand` / `buildResumeCommand` / `buildInteractiveResumeCommand` methods from `HarnessAdapter` and all 5 adapters — command building now lives solely in `core/session-tracker.ts` (`buildSpawnSpec`), eliminating the command-table drift risk. Hook translation (`formatPreToolUseDeny`/`formatStopBlock`) and `globalConfigTargets` remain on the adapter contract.
+- `buildResumeHarnessCommand` now accepts the options-object form only (positional overload removed; the internal caller in `core/subagent-control.ts` migrated to the options object).
+- `verifyPidIdentity(pid)` dropped the ignored `expectedStartedAt` stub parameter (`SDK_SURFACE_CLEANUP_PLAN.md` #8, option b).
+- Version bumped to `2.6.0` (minor; the `adapters/claude` subpath removal is breaking).
+
+---
+
+## 2. Harness-Native Streaming, Core–GUI Boundary & Session Attribution (v2.4.3)
 
 ### `v2.5.0` — Version Bump for Orchestrator CLI/GUI Separation (no code changes)
 - Bumped `ASD_VERSION` / package version to `2.5.0` as the baseline for the upcoming orchestrator CLI/GUI app separation (plan: `ORCHESTRATOR_APP_PLAN.md`; harness integration guide: `HARNESS_INTEGRATION_REFERENCE.md`).

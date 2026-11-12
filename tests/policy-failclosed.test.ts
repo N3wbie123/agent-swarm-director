@@ -12,7 +12,6 @@ import * as path from "node:path";
 import {
   resolveSafeTargetPath,
   checkProtectedPath,
-  isProtectedPath,
   matchGlobOrPrefix,
   isPathAllowed,
   evaluatePreToolUse,
