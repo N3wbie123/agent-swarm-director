@@ -1413,3 +1413,100 @@ describe("Model Discovery Integration on Bootstrap & asd sync", () => {
     }
   });
 });
+
+describe("ACP Readiness & Bridge Setup Guidance (`runAsdDoctor` & `runAsdSync`)", () => {
+  test("reports native ACP for opencode/antigravity/cursor and non-fatal bridge setup guidance for claude-code & codex", async () => {
+    const fakeBinDir = createTempDir("asd-acp-bins-");
+    const acpHome = createTempDir("asd-acp-home-");
+    const ext = process.platform === "win32" ? ".cmd" : "";
+    const writeStub = (name: string) => {
+      const p = path.join(fakeBinDir, `${name}${ext}`);
+      fs.writeFileSync(p, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n", {
+        encoding: "utf8",
+        mode: 0o755,
+      });
+    };
+
+    try {
+      for (const bin of ["opencode", "agy", "cursor-agent", "claude", "codex"]) {
+        writeStub(bin);
+      }
+
+      const isolatedEnv = { PATH: fakeBinDir, Path: fakeBinDir };
+
+      // 1. Bridges missing -> doctor stays ok=true, reports native ready + bridge install guidance
+      const docMissing = await runAsdDoctor({
+        homeDir: acpHome,
+        projectRoot: process.cwd(),
+        env: isolatedEnv,
+      });
+      assert.equal(docMissing.ok, true, "Missing optional ACP bridges must never fail doctor");
+      assert.equal(docMissing.errors.length, 0);
+
+      assert.equal(docMissing.harnesses.opencode.acp?.supported, true);
+      assert.equal(docMissing.harnesses.opencode.acp?.mode, "native");
+      assert.equal(docMissing.harnesses.antigravity.acp?.supported, true);
+      assert.equal(docMissing.harnesses.antigravity.acp?.mode, "native");
+      assert.equal(docMissing.harnesses.cursor.acp?.supported, true);
+      assert.equal(docMissing.harnesses.cursor.acp?.mode, "native");
+
+      assert.equal(docMissing.harnesses["claude-code"].installed, true);
+      assert.equal(docMissing.harnesses["claude-code"].acp?.supported, false);
+      assert.equal(docMissing.harnesses["claude-code"].acp?.mode, "missing-bridge");
+      assert.ok(
+        docMissing.harnesses["claude-code"].acp?.installHint?.includes(
+          "@agentclientprotocol/claude-agent-acp"
+        )
+      );
+
+      assert.equal(docMissing.harnesses.codex.installed, true);
+      assert.equal(docMissing.harnesses.codex.acp?.supported, false);
+      assert.equal(docMissing.harnesses.codex.acp?.mode, "missing-bridge");
+      assert.ok(
+        docMissing.harnesses.codex.acp?.installHint?.includes(
+          "@agentclientprotocol/codex-acp"
+        )
+      );
+
+      assert.ok(docMissing.acpBridgeHints && docMissing.acpBridgeHints.length >= 2);
+      assert.ok(
+        docMissing.acpBridgeHints.some((h) =>
+          h.includes("npm i -g @agentclientprotocol/claude-agent-acp @agentclientprotocol/codex-acp")
+        )
+      );
+      const acpCheck = docMissing.checks.find((c) => c.name === "acp_readiness");
+      assert.ok(acpCheck && acpCheck.ok);
+      assert.ok(acpCheck.message?.includes("streaming CLI fallback active"));
+
+      // Sync summary also exposes acpReadiness & acpBridgeHints without breaking idempotency
+      const syncRes = await runAsdSync({
+        homeDir: acpHome,
+        noPath: true,
+        skipModelDiscovery: true,
+        env: isolatedEnv,
+      });
+      assert.equal(syncRes.acpReadiness?.opencode.supported, true);
+      assert.equal(syncRes.acpReadiness?.["claude-code"].supported, false);
+      assert.ok(syncRes.acpBridgeHints && syncRes.acpBridgeHints.length >= 2);
+
+      // 2. Install bridge stubs -> doctor reports bridge ACP ready and clears hints
+      writeStub("claude-agent-acp");
+      writeStub("codex-acp");
+
+      const docReady = await runAsdDoctor({
+        homeDir: acpHome,
+        projectRoot: process.cwd(),
+        env: isolatedEnv,
+      });
+      assert.equal(docReady.ok, true);
+      assert.equal(docReady.harnesses["claude-code"].acp?.supported, true);
+      assert.equal(docReady.harnesses["claude-code"].acp?.mode, "bridge");
+      assert.equal(docReady.harnesses.codex.acp?.supported, true);
+      assert.equal(docReady.harnesses.codex.acp?.mode, "bridge");
+      assert.equal(docReady.acpBridgeHints, undefined);
+    } finally {
+      removeTempDir(fakeBinDir);
+      removeTempDir(acpHome);
+    }
+  });
+});

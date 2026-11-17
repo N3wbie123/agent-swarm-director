@@ -28,6 +28,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
+import { probeAcpCapability } from "../core/acp-client.ts";
 import { parseJsonc, removeTomlFence, upsertTomlFence, escapeTomlBasicString } from "../core/jsonc.ts";
 import {
   discoverHarnessModels,
@@ -48,6 +49,7 @@ import {
   AGENT_ROLES,
   ASD_VERSION,
   registerCoreInstallerHooks,
+  type AcpHarnessReadiness,
   type AgentRole,
   type HarnessAdapter,
   type HarnessId,
@@ -95,6 +97,7 @@ export interface SyncHarnessOptions {
   refreshModels?: boolean;
   skipModelDiscovery?: boolean;
   modelCatalogOverride?: HarnessModelCatalog;
+  env?: Record<string, string | undefined>;
 }
 
 export interface HarnessSyncStatus {
@@ -113,6 +116,8 @@ export interface SyncHarnessConfigsResult {
   modelsBootstrapped?: RoutingModelRemap[];
   modelsRemapped?: RoutingModelRemap[];
   modelWarnings?: RoutingModelWarning[];
+  acpReadiness?: Record<HarnessId, AcpHarnessReadiness>;
+  acpBridgeHints?: string[];
 }
 
 export interface UninstallHarnessOptions {
@@ -134,6 +139,7 @@ export interface UninstallHarnessConfigsResult {
 export interface DoctorProbeOptions {
   homeDir?: string;
   projectRoot?: string;
+  env?: Record<string, string | undefined>;
 }
 
 export interface DoctorCheck {
@@ -160,8 +166,10 @@ export interface DoctorProbeResult {
         preToolUse: "native-hook" | "plugin-hook" | "sandbox-only";
         stop: "native-hook" | "plugin-hook";
       };
+      acp?: AcpHarnessReadiness;
     }
   >;
+  acpBridgeHints?: string[];
   policyProbe: { ok: boolean; gitBlocked: boolean; envBlocked: boolean; message?: string };
   errors: string[];
 }
@@ -201,6 +209,64 @@ const DEFAULT_HARNESS_IDS: readonly HarnessId[] = [
 
 function getAsdRoot(): string {
   return path.resolve(import.meta.dirname, "..", "..");
+}
+
+function probeAllHarnessesAcp(
+  env: Record<string, string | undefined> = process.env
+): {
+  acpReadiness: Record<HarnessId, AcpHarnessReadiness>;
+  acpBridgeHints: string[];
+  installedClis: Record<HarnessId, { binary: string; resolvedPath: string | null }>;
+} {
+  const claudePath = resolveBinaryOnPath("claude", env);
+  const opencodePath = resolveBinaryOnPath("opencode", env);
+  const codexPath = resolveBinaryOnPath("codex", env);
+  const agyPath = resolveBinaryOnPath("agy", env);
+  const cursorBin = resolveCursorBinaryName(env);
+  const cursorPath = resolveBinaryOnPath(cursorBin, env);
+
+  const installedClis: Record<HarnessId, { binary: string; resolvedPath: string | null }> = {
+    "claude-code": { binary: "claude", resolvedPath: claudePath },
+    opencode: { binary: "opencode", resolvedPath: opencodePath },
+    codex: { binary: "codex", resolvedPath: codexPath },
+    antigravity: { binary: "agy", resolvedPath: agyPath },
+    cursor: { binary: cursorBin, resolvedPath: cursorPath },
+  };
+
+  const acpReadiness: Record<HarnessId, AcpHarnessReadiness> = {
+    "claude-code": probeAcpCapability("claude-code", env),
+    opencode: probeAcpCapability("opencode", env),
+    codex: probeAcpCapability("codex", env),
+    antigravity: probeAcpCapability("antigravity", env),
+    cursor: probeAcpCapability("cursor", env),
+  };
+
+  const acpBridgeHints: string[] = [];
+  const missingBridgePackages: string[] = [];
+  if (claudePath && !acpReadiness["claude-code"].supported) {
+    missingBridgePackages.push("@agentclientprotocol/claude-agent-acp");
+    acpBridgeHints.push(
+      `claude-code: ACP bridge not found (streaming CLI fallback remains active). Optional setup: ${
+        acpReadiness["claude-code"].installHint ??
+        "npm install -g @agentclientprotocol/claude-agent-acp"
+      }`
+    );
+  }
+  if (codexPath && !acpReadiness.codex.supported) {
+    missingBridgePackages.push("@agentclientprotocol/codex-acp");
+    acpBridgeHints.push(
+      `codex: ACP bridge not found (streaming CLI fallback remains active). Optional setup: ${
+        acpReadiness.codex.installHint ?? "npm install -g @agentclientprotocol/codex-acp"
+      }`
+    );
+  }
+  if (missingBridgePackages.length === 2) {
+    acpBridgeHints.push(
+      `Install both ACP bridges at once: npm i -g ${missingBridgePackages.join(" ")}`
+    );
+  }
+
+  return { acpReadiness, acpBridgeHints, installedClis };
 }
 
 export interface AntigravityHookSpec {
@@ -1989,12 +2055,18 @@ export async function syncHarnessConfigs(
     ? []
     : installCliPathShims(homeDir, asdCliPath);
 
+  const acpSummary = probeAllHarnessesAcp(options?.env ?? process.env);
+
   return {
     status: anyUpdated ? "updated" : "skipped",
     skipped: !anyUpdated,
     configHash,
     harnesses: harnessResults,
     cliShimsInstalled,
+    acpReadiness: acpSummary.acpReadiness,
+    ...(acpSummary.acpBridgeHints.length > 0
+      ? { acpBridgeHints: acpSummary.acpBridgeHints }
+      : {}),
     ...(presetBootstrap.modelsBootstrapped.length > 0
       ? { modelsBootstrapped: presetBootstrap.modelsBootstrapped }
       : {}),
@@ -2709,13 +2781,15 @@ export async function doctorProbe(
     message: isGitRepo ? `Git repository detected at ${projectRoot}` : `Not a git repository (${projectRoot})`,
   });
 
-  // 4. Harness CLIs availability
-  const claudePath = resolveBinaryOnPath("claude");
-  const opencodePath = resolveBinaryOnPath("opencode");
-  const codexPath = resolveBinaryOnPath("codex");
-  const agyPath = resolveBinaryOnPath("agy");
-  const cursorBin = resolveCursorBinaryName();
-  const cursorPath = resolveBinaryOnPath(cursorBin);
+  // 4. Harness CLIs & ACP readiness availability
+  const probeEnv = options?.env ?? process.env;
+  const { acpReadiness, acpBridgeHints, installedClis } = probeAllHarnessesAcp(probeEnv);
+  const claudePath = installedClis["claude-code"].resolvedPath;
+  const opencodePath = installedClis.opencode.resolvedPath;
+  const codexPath = installedClis.codex.resolvedPath;
+  const agyPath = installedClis.antigravity.resolvedPath;
+  const cursorBin = installedClis.cursor.binary;
+  const cursorPath = installedClis.cursor.resolvedPath;
   const harnesses: DoctorProbeResult["harnesses"] = {
     "claude-code": {
       installed: Boolean(claudePath),
@@ -2723,6 +2797,7 @@ export async function doctorProbe(
       binary: "claude",
       resolvedPath: claudePath,
       hookCoverage: { preToolUse: "native-hook", stop: "native-hook" },
+      acp: acpReadiness["claude-code"],
     },
     opencode: {
       installed: Boolean(opencodePath),
@@ -2730,6 +2805,7 @@ export async function doctorProbe(
       binary: "opencode",
       resolvedPath: opencodePath,
       hookCoverage: { preToolUse: "plugin-hook", stop: "plugin-hook" },
+      acp: acpReadiness.opencode,
     },
     codex: {
       installed: Boolean(codexPath),
@@ -2737,6 +2813,7 @@ export async function doctorProbe(
       binary: "codex",
       resolvedPath: codexPath,
       hookCoverage: { preToolUse: "sandbox-only", stop: "native-hook" },
+      acp: acpReadiness.codex,
     },
     antigravity: {
       installed: Boolean(agyPath),
@@ -2744,6 +2821,7 @@ export async function doctorProbe(
       binary: "agy",
       resolvedPath: agyPath,
       hookCoverage: { preToolUse: "native-hook", stop: "native-hook" },
+      acp: acpReadiness.antigravity,
     },
     cursor: {
       installed: Boolean(cursorPath),
@@ -2751,6 +2829,7 @@ export async function doctorProbe(
       binary: cursorBin,
       resolvedPath: cursorPath,
       hookCoverage: { preToolUse: "native-hook", stop: "native-hook" },
+      acp: acpReadiness.cursor,
     },
   };
   checks.push({
@@ -2759,6 +2838,24 @@ export async function doctorProbe(
     message: Object.entries(harnesses)
       .map(([k, v]) => `${k}: ${v.installed ? `installed (${v.resolvedPath})` : "not found"}`)
       .join(", "),
+  });
+  const acpCheckSegments = DEFAULT_HARNESS_IDS.map((id) => {
+    const h = harnesses[id];
+    const acp = acpReadiness[id];
+    if (!h.installed && !acp.supported) {
+      return `${id}: CLI not installed`;
+    }
+    if (acp.supported) {
+      return `${id}: ${acp.mode} ACP ready (${acp.command}${acp.args.length ? ` ${acp.args.join(" ")}` : ""})`;
+    }
+    return `${id}: missing ${acp.command} -> streaming CLI fallback active`;
+  });
+  checks.push({
+    name: "acp_readiness",
+    ok: true,
+    message:
+      acpCheckSegments.join(", ") +
+      (acpBridgeHints.length > 0 ? ` | Hints: ${acpBridgeHints.join(" | ")}` : ""),
   });
   checks.push({
     name: "hook_coverage",
@@ -2836,6 +2933,7 @@ export async function doctorProbe(
       message: isGitRepo ? "Git repository confirmed" : "Non-git directory",
     },
     harnesses,
+    ...(acpBridgeHints.length > 0 ? { acpBridgeHints } : {}),
     policyProbe: {
       ok: policyOk,
       gitBlocked,

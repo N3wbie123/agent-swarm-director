@@ -11,9 +11,11 @@
  */
 
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, test } from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   AntigravityAdapter,
@@ -36,6 +38,7 @@ import {
   OpencodeAdapter,
   opencodeAdapter,
   createOpencodeConfig,
+  generateOpencodeGuardPlugin,
 } from "../src/adapters/opencode.ts";
 import {
   CursorAdapter,
@@ -386,6 +389,153 @@ describe("Harness Adapters", () => {
         decision: "block",
         reason: "Continue working",
       });
+    });
+  });
+
+  describe("7. OpenCode Async Dispatch Plugin (`generateOpencodeGuardPlugin`)", () => {
+    test("captures OpenCode sessionID, polls async-dispatch.json, defers while busy, and calls client.session.prompt once without duplicates", async () => {
+      const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asd-oc-plugin-test-"));
+      try {
+        // Point CLI path to a non-existent path so runAsdHook fast-paths with status 0 during unit test
+        const nonExistentCli = path.join(tmpRoot, "missing-cli.ts");
+        const pluginSource = generateOpencodeGuardPlugin(nonExistentCli, process.execPath, 25);
+        const pluginFile = path.join(tmpRoot, "asd-guard.mjs");
+        fs.writeFileSync(pluginFile, pluginSource, "utf8");
+
+        const mod = (await import(pathToFileURL(pluginFile).href)) as {
+          AsdPolicyGuardPlugin: (ctx?: {
+            client?: {
+              session?: {
+                prompt?: (arg: {
+                  path: { id: string };
+                  body: { noReply: boolean; parts: Array<{ type: string; text: string }> };
+                }) => Promise<unknown>;
+              };
+            };
+            directory?: string;
+          }) => Promise<{
+            "tool.execute.before": (input: Record<string, unknown>, output?: Record<string, unknown>) => Promise<void>;
+            event: (arg?: { event?: Record<string, unknown> }) => Promise<void>;
+          }>;
+        };
+
+        const promptCalls: Array<{
+          path: { id: string };
+          body: { noReply: boolean; parts: Array<{ type: string; text: string }> };
+        }> = [];
+
+        const plugin = await mod.AsdPolicyGuardPlugin({
+          directory: tmpRoot,
+          client: {
+            session: {
+              prompt: async (payload) => {
+                promptCalls.push(payload);
+                return {};
+              },
+            },
+          },
+        });
+
+        const sessionDir = path.join(tmpRoot, ".asd", "sessions", "asd-wave-1");
+        fs.mkdirSync(sessionDir, { recursive: true });
+        const jobPath = path.join(sessionDir, "async-dispatch.json");
+        fs.writeFileSync(
+          jobPath,
+          JSON.stringify(
+            {
+              jobId: "job-1",
+              sessionId: "asd-wave-1",
+              turn: 2,
+              status: "running",
+              workerPid: 12345,
+              startedAt: Date.now(),
+            },
+            null,
+            2
+          ),
+          "utf8"
+        );
+
+        // 1. Mark session busy while OpenCode executes bash `asd dispatch --async`
+        await plugin.event({
+          event: {
+            type: "session.status",
+            properties: { sessionID: "oc-session-abc", status: { type: "busy" } },
+          },
+        });
+        await plugin["tool.execute.before"](
+          {
+            tool: "bash",
+            sessionID: "oc-session-abc",
+            args: { command: "asd dispatch --turn 2 --mode parallel_spawn --async" },
+          },
+          {
+            args: { command: "asd dispatch --turn 2 --mode parallel_spawn --async" },
+          }
+        );
+
+        // 2. Async worker completes while main session is STILL busy -> must defer prompt
+        fs.writeFileSync(
+          jobPath,
+          JSON.stringify(
+            {
+              jobId: "job-1",
+              sessionId: "asd-wave-1",
+              turn: 2,
+              status: "done",
+              workerPid: 12345,
+              startedAt: Date.now() - 500,
+              finishedAt: Date.now(),
+              summary: "Turn 2 completed (2/2 tasks done).",
+              progressBoard: "## Progress\n- [x] T2.1\n- [x] T2.2",
+            },
+            null,
+            2
+          ),
+          "utf8"
+        );
+        await new Promise((r) => setTimeout(r, 70));
+        assert.equal(promptCalls.length, 0, "Must wait until OpenCode session becomes idle");
+
+        // 3. OpenCode transitions to session.idle -> delivers immediately once
+        await plugin.event({
+          event: {
+            type: "session.idle",
+            properties: { sessionID: "oc-session-abc" },
+          },
+        });
+
+        assert.equal(promptCalls.length, 1);
+        assert.equal(promptCalls[0]?.path.id, "oc-session-abc");
+        assert.equal(promptCalls[0]?.body.noReply, false);
+        assert.ok(promptCalls[0]?.body.parts[0]?.text.includes("[ASD Async Dispatch DONE]"));
+        assert.ok(promptCalls[0]?.body.parts[0]?.text.includes("Turn 2 completed"));
+
+        const updatedJob = JSON.parse(fs.readFileSync(jobPath, "utf8")) as {
+          notified?: boolean;
+          openCodeSessionId?: string;
+        };
+        assert.equal(updatedJob.notified, true);
+        assert.equal(updatedJob.openCodeSessionId, "oc-session-abc");
+
+        // 4. Subsequent idle events or poll ticks must NOT re-notify
+        await plugin.event({
+          event: {
+            type: "session.idle",
+            properties: { sessionID: "oc-session-abc" },
+          },
+        });
+        await new Promise((r) => setTimeout(r, 60));
+        assert.equal(promptCalls.length, 1, "Must never emit duplicate notifications");
+
+        // 5. Never crashes when client is absent
+        const headlessPlugin = await mod.AsdPolicyGuardPlugin({ directory: tmpRoot });
+        await headlessPlugin.event({
+          event: { type: "session.idle", properties: { sessionID: "oc-no-client" } },
+        });
+      } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+      }
     });
   });
 });
