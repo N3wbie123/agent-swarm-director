@@ -45,10 +45,18 @@ Use the standard ASD criteria (canonical definition in `/asd`, Section 2):
        - **Claude Code**: `Agent` / `Task` tool with `subagent_type: "asd-<role>"`.
        - **Antigravity**: `invoke_subagent` with `TypeName: "asd-<role>"` and explicit `Model` tier from `lightSubagents.antigravity` (`"flash_lite"` for `asd-scout`, `"flash"` for `asd-worker`/`asd-planner`, `"pro"` for `asd-architect`/`asd-critic` — **never use `Model: "inherit"`**).
        - **Codex CLI / Cursor CLI**: use native subagent delegation or execute directly within `allowedFiles` (Cursor personas are synced to `~/.cursor/agents/asd-<role>.md`).
-   - **`HEAVY` Confirmed (Multi-Harness External CLI & Worktree Spawn)**:
-     ```bash
-     asd dispatch --turn <N> --mode parallel_spawn
-     ```
+   - **`HEAVY` Confirmed (Multi-Harness External CLI/ACP & Worktree Spawn)**:
+     - **OpenCode Non-Blocking Rule**: In **OpenCode**, **ALWAYS** pass `--async` so the main OpenCode session does not freeze waiting for external subagents; the `asd-guard.js` plugin will automatically push the wave completion report back into your active OpenCode session (`client.session.prompt`) as soon as verification finishes:
+       ```bash
+       # OpenCode (non-blocking detached wave):
+       asd dispatch --turn <N> --mode parallel_spawn --async
+       # Optional status / blocking wait: asd status | asd wait --timeout 600000
+       ```
+     - **Claude Code / Antigravity / Codex / Cursor (synchronous or background task)**:
+       ```bash
+       asd dispatch --turn <N> --mode parallel_spawn
+       # Optional transport override: --transport <auto|acp|cli> (default: auto = ACP primary + streaming CLI fallback)
+       ```
 
 4. **Step 4: Gate Verification (`asd verify`)**
    - After each task (or wave):

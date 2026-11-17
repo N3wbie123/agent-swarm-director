@@ -26,6 +26,7 @@
 | `EXTERNAL_SDK_REFERENCE.md` | SDK 함수 시그니처, `core.db` 스키마, CLI 서브커맨드, `asd ui` HTTP API |
 | `PROJECT_STATUS.md` | Core 전체 아키텍처 + 파일별 레퍼런스 |
 | `docs/ORCHESTRATOR_APP_PLAN.md` | 앱 아키텍처 계획(코어 서버 + TUI/GUI 클라이언트), 하네스 스트리밍 실측 매트릭스(부록 C) |
+| `docs/ACP_ROADMAP.md` | **Core ACP v1/v2 하이브리드 아키텍처, OpenCode `--async` 콜백 구조, 추후 GUI(`runDriverTurn`) ACP 연동 체크리스트** |
 | `docs/CORE_GUI_BOUNDARY_AUDIT.md` | Core–GUI 경계 원칙과 위반 판정 사례 — 앱이 Core에 요구하지 말아야 할 것의 기준 |
 | `ROUTING_GUIDE.md` | 모델 라우팅 설정(하네스·모델 선택 UI 구현 시) |
 | (asd-gui 기반 시) asd-gui의 `src/shared/protocol.ts`, `GUI_ARCHITECTURE.md` | 기존 REST/WS 계약과 ADR |

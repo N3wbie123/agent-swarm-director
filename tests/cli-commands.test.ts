@@ -20,6 +20,7 @@ import {
 } from "../src/cli/index.ts";
 import { checkForRemoteUpdate, isUpdateCheckDisabled } from "../src/core/config.ts";
 import { openProjectDb } from "../src/core/db.ts";
+import { writeAsyncDispatchJob } from "../src/core/subagent-control.ts";
 import { runGit } from "../src/core/workspace.ts";
 
 const cliPath = path.resolve(import.meta.dirname, "../src/cli/index.ts");
@@ -346,6 +347,133 @@ describe("CLI Parser, Hook Latency, Clean Safety, Handoff, Migrate & Update Chec
       }
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  test("8. parseCliArgs supports --async, --transport, --timeout and 'asd wait' resolves async-dispatch.json", async () => {
+    const asyncArgs = parseCliArgs([
+      "dispatch",
+      "--turn",
+      "2",
+      "--mode",
+      "parallel_spawn",
+      "--async",
+      "--transport",
+      "acp",
+      "--opencode-session",
+      "ses_oc_99",
+    ]);
+    assert.equal(asyncArgs.parseError, undefined);
+    assert.equal(asyncArgs.command, "dispatch");
+    assert.equal(asyncArgs.flags.async, true);
+    assert.equal(asyncArgs.options.transport, "acp");
+    assert.equal(asyncArgs.options.openCodeSession, "ses_oc_99");
+
+    const waitArgs = parseCliArgs(["wait", "--session", "sess-1", "--timeout", "5000"]);
+    assert.equal(waitArgs.parseError, undefined);
+    assert.equal(waitArgs.command, "wait");
+    assert.equal(waitArgs.options.session, "sess-1");
+    assert.equal(waitArgs.options.timeout, 5000);
+
+    assert.ok(
+      parseCliArgs(["dispatch", "--transport", "bogus"]).parseError?.includes("Invalid --transport")
+    );
+    assert.ok(
+      parseCliArgs(["wait", "--timeout", "0"]).parseError?.includes("Invalid --timeout")
+    );
+
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "asd-wait-home-"));
+    const tmpProj = fs.mkdtempSync(path.join(os.tmpdir(), "asd-wait-proj-"));
+    initGitRepo(tmpProj);
+
+    try {
+      const db = openProjectDb(tmpProj, tmpHome);
+      db.createOrGetSession({
+        sessionId: "sess-wait-cli",
+        projectRoot: tmpProj,
+        mainHarness: "opencode",
+      });
+      db.close();
+
+      writeAsyncDispatchJob(
+        tmpProj,
+        {
+          jobId: "async-sess-wait-cli-t1",
+          sessionId: "sess-wait-cli",
+          turn: 1,
+          status: "running",
+          workerPid: process.pid,
+          startedAt: Date.now(),
+        },
+        tmpHome
+      );
+
+      setTimeout(() => {
+        writeAsyncDispatchJob(
+          tmpProj,
+          {
+            jobId: "async-sess-wait-cli-t1",
+            sessionId: "sess-wait-cli",
+            turn: 1,
+            status: "done",
+            workerPid: process.pid,
+            startedAt: Date.now() - 50,
+            finishedAt: Date.now(),
+            summary: "- T1.1: done (@opencode/glm-5)",
+            progressBoard: "### 📊 ASD TODO 진행 현황",
+          },
+          tmpHome
+        );
+      }, 60);
+
+      const exitDone = await main([
+        "wait",
+        "--session",
+        "sess-wait-cli",
+        "--project-root",
+        tmpProj,
+        "--home",
+        tmpHome,
+        "--timeout",
+        "3000",
+        "--json",
+      ]);
+      assert.equal(exitDone, 0);
+
+      writeAsyncDispatchJob(
+        tmpProj,
+        {
+          jobId: "async-sess-wait-cli-t2",
+          sessionId: "sess-wait-cli",
+          turn: 2,
+          status: "failed",
+          workerPid: process.pid,
+          startedAt: Date.now() - 20,
+          finishedAt: Date.now(),
+          error: "Verification failed",
+        },
+        tmpHome
+      );
+      const exitFailed = await main([
+        "wait",
+        "--project-root",
+        tmpProj,
+        "--home",
+        tmpHome,
+        "--timeout",
+        "1000",
+        "--json",
+      ]);
+      assert.equal(exitFailed, 1);
+
+      const roadmapPath = path.resolve(import.meta.dirname, "../docs/ACP_ROADMAP.md");
+      assert.equal(fs.existsSync(roadmapPath), true);
+      const roadmapText = fs.readFileSync(roadmapPath, "utf8");
+      assert.ok(roadmapText.includes("runDriverTurn"));
+      assert.ok(roadmapText.includes("ASD-Nexus"));
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(tmpProj, { recursive: true, force: true });
     }
   });
 });

@@ -70,6 +70,7 @@ import {
   ASD_VERSION,
   type AgentRole,
   type HarnessId,
+  type SubagentTransportMode,
 } from "../core/types.ts";
 import {
   buildSessionDemotion,
@@ -78,6 +79,11 @@ import {
   linkHarnessSessionToAsdSession,
   recordCliRecentSession,
 } from "../core/session-tracker.ts";
+import {
+  readAsyncDispatchJob,
+  waitForAsyncDispatch,
+  writeAsyncDispatchJob,
+} from "../core/subagent-control.ts";
 import { cleanupWorktree, recoverOrphanedTasks, runGit } from "../core/workspace.ts";
 import { scanSubagentLogs, type SubagentLogRecord } from "../core/subagent-logs.ts";
 
@@ -104,6 +110,7 @@ export interface CliArgs {
     fromMarkdown?: boolean;
     diff?: boolean;
     print?: boolean;
+    async?: boolean;
   };
   options: {
     home?: string;
@@ -117,6 +124,9 @@ export interface CliArgs {
     task?: string;
     turn?: number;
     mode?: string;
+    transport?: SubagentTransportMode;
+    timeout?: number;
+    openCodeSession?: string;
     action?: string;
     title?: string;
     tasks?: string;
@@ -148,6 +158,10 @@ const VALUE_OPTIONS = new Set([
   "--task-id",
   "--turn",
   "--mode",
+  "--transport",
+  "--timeout",
+  "--open-code-session",
+  "--opencode-session",
   "--action",
   "--title",
   "--tasks",
@@ -253,6 +267,8 @@ export function parseCliArgs(args: string[]): CliArgs {
       flags.diff = true;
     } else if (arg === "--print") {
       flags.print = true;
+    } else if (arg === "--async") {
+      flags.async = true;
     } else if (arg === "-p" || arg.startsWith("-p=")) {
       const inlinePort = arg.startsWith("-p=") ? arg.substring(3) : undefined;
       const isPortCmd = firstCommand === "ui" || firstCommand === "dashboard";
@@ -293,6 +309,35 @@ export function parseCliArgs(args: string[]): CliArgs {
       }
     } else if (arg === "--mode" || arg.startsWith("--mode=")) {
       options.mode = readOptVal(arg, "--mode", next);
+    } else if (arg === "--transport" || arg.startsWith("--transport=")) {
+      const rawTransport = readOptVal(arg, "--transport", next)?.trim().toLowerCase();
+      if (rawTransport === "auto" || rawTransport === "acp" || rawTransport === "cli") {
+        options.transport = rawTransport;
+      } else {
+        setError(
+          `Invalid --transport value '${rawTransport ?? ""}': expected auto, acp, or cli.`
+        );
+      }
+    } else if (arg === "--timeout" || arg.startsWith("--timeout=")) {
+      const rawTimeout = readOptVal(arg, "--timeout", next);
+      const ms = parseStrictInt(rawTimeout);
+      if (ms === null || ms < 1) {
+        setError(
+          `Invalid --timeout value '${rawTimeout ?? ""}': expected positive integer milliseconds (>= 1).`
+        );
+      } else {
+        options.timeout = ms;
+      }
+    } else if (
+      arg === "--open-code-session" ||
+      arg.startsWith("--open-code-session=") ||
+      arg === "--opencode-session" ||
+      arg.startsWith("--opencode-session=")
+    ) {
+      const prefix = arg.startsWith("--opencode-session")
+        ? "--opencode-session"
+        : "--open-code-session";
+      options.openCodeSession = readOptVal(arg, prefix, next);
     } else if (arg === "--action" || arg.startsWith("--action=")) {
       options.action = readOptVal(arg, "--action", next);
     } else if (arg === "--title" || arg.startsWith("--title=")) {
@@ -934,7 +979,8 @@ Usage:
 
 Commands:
   plan [create|get|update|sync_from_md]  Create, query, or sync .asd/PLAN.md & SQLite tasks
-  dispatch [--turn <n>] [--mode <m>]     Dispatch wave tasks in parallel_spawn or claim_only mode
+  dispatch [--turn <n>] [--mode <m>] [--async] Dispatch wave tasks (ACP-first + CLI fallback)
+  wait [--session <id>] [--timeout <ms>] Wait for a detached 'asd dispatch --async' wave
   verify --task <id> [--summary <s>]     Verify task boundaries, run tests, and commit/merge
   debate --topic <t> --proposal <p>      Run zero-timeout cross-model blind debate via CLI
   sync [--force] [--refresh-models]      Sync ASD harnesses globally and install 'asd' CLI to PATH
@@ -962,6 +1008,9 @@ Options:
       --task <id>                    Target task ID (or comma-separated IDs for dispatch)
       --turn <num>                   Target wave/turn number for dispatch
       --mode <mode>                  Dispatch mode (parallel_spawn|claim_only)
+      --async                        Detach parallel_spawn wave into a non-blocking background worker
+      --transport <auto|acp|cli>     Subagent transport selection (default: auto = ACP primary + CLI fallback)
+      --timeout <ms>                 Timeout in milliseconds for 'asd wait'
       --action <act>                 Plan action (create|get|update|sync_from_md)
       --topic <text>                 Debate topic for 'asd debate'
       --proposal <text>              Debate proposal text for 'asd debate'
@@ -1131,6 +1180,12 @@ export async function main(
                 `  Tip: Run 'asd sync --refresh-models' to automatically remap missing models in routing.jsonc.`
               );
             }
+            if (res.acpBridgeHints && res.acpBridgeHints.length > 0) {
+              console.log(`ACP Bridge Setup Guidance (optional):`);
+              for (const hint of res.acpBridgeHints) {
+                console.log(`  - ${hint}`);
+              }
+            }
             await printUpdateBannerIfAvailable();
           }
           return 0;
@@ -1169,6 +1224,10 @@ export async function main(
             }
           }
 
+          const asyncJob = session
+            ? readAsyncDispatchJob(projectRoot, session.session_id, homeDir)
+            : null;
+
           if (flags.json) {
             console.log(
               JSON.stringify(
@@ -1176,6 +1235,7 @@ export async function main(
                   session: session ?? null,
                   tasks,
                   hasStashedWork: !!session?.stashed_work_sha,
+                  ...(asyncJob ? { asyncJob } : {}),
                 },
                 null,
                 2
@@ -1194,6 +1254,11 @@ export async function main(
 
           const board = renderProgressBoard(session, tasks);
           console.log(board);
+          if (asyncJob && asyncJob.status === "running") {
+            console.log(
+              `\nAsync Dispatch Running: ${asyncJob.jobId} (Turn ${asyncJob.turn}, Worker PID ${asyncJob.workerPid})`
+            );
+          }
           await printUpdateBannerIfAvailable();
 
           if (session.stashed_work_sha) {
@@ -1202,6 +1267,52 @@ export async function main(
             );
           }
           return 0;
+        }
+
+        case "wait": {
+          if (process.env.ASD_SESSION_ROLE === "subagent") {
+            throw new Error("Subagents cannot invoke orchestration tools");
+          }
+          let targetSessionId = options.session || subcommand || "";
+          if (!targetSessionId) {
+            const paths = resolveAsdPaths(projectRoot, homeDir);
+            if (fs.existsSync(paths.dbPath)) {
+              let db: SqliteDriver | undefined;
+              try {
+                db = openProjectDb(projectRoot, homeDir);
+                const s = resolveDefaultSession(db, projectRoot, homeDir);
+                if (s) targetSessionId = s.session_id;
+              } finally {
+                db?.close();
+              }
+            }
+          }
+          if (!targetSessionId) {
+            throw new Error(
+              "No active ASD session found. Specify --session <sessionId>."
+            );
+          }
+          const job = await waitForAsyncDispatch(projectRoot, targetSessionId, {
+            homeDir,
+            ...(options.timeout !== undefined ? { timeoutMs: options.timeout } : {}),
+          });
+          if (flags.json) {
+            console.log(JSON.stringify(job, null, 2));
+          } else {
+            if (job.progressBoard) {
+              console.log(job.progressBoard);
+            }
+            console.log(
+              `\nAsync Dispatch [${job.jobId}]: ${job.status.toUpperCase()} (Turn ${job.turn})`
+            );
+            if (job.summary) {
+              console.log(job.summary);
+            }
+            if (job.error) {
+              console.error(`Error: ${job.error}`);
+            }
+          }
+          return job.status === "done" ? 0 : 1;
         }
 
         case "resume": {
@@ -1329,10 +1440,23 @@ export async function main(
           console.log(`Policy Probe: ${res.policyProbe.ok ? "OK" : "FAIL"}`);
           console.log("Harness CLI Availability:");
           for (const [h, info] of Object.entries(res.harnesses)) {
+            const acpSuffix = info.acp
+              ? info.acp.supported
+                ? ` [ACP: ${info.acp.mode} ready]`
+                : info.installed
+                  ? ` [ACP: missing ${info.acp.command} -> CLI stream fallback]`
+                  : ""
+              : "";
             const detail = info.installed
-              ? `Available (${info.resolvedPath ?? info.binary}) [Headless: ${info.headlessSupported ? "Yes" : "No"}]`
+              ? `Available (${info.resolvedPath ?? info.binary}) [Headless: ${info.headlessSupported ? "Yes" : "No"}]${acpSuffix}`
               : "Not found";
             console.log(`  - ${h}: ${detail}`);
+          }
+          if (res.acpBridgeHints && res.acpBridgeHints.length > 0) {
+            console.log("ACP Bridge Setup Guidance (optional):");
+            for (const hint of res.acpBridgeHints) {
+              console.log(`  - ${hint}`);
+            }
           }
           console.log(`Duration: ${res.durationMs.toFixed(1)}ms`);
           if (!res.ok) {
@@ -1796,11 +1920,53 @@ export async function main(
               ...(options.turn !== undefined ? { turn: options.turn } : {}),
               ...(options.mode ? { mode: options.mode } : {}),
               ...(options.harness ? { harness: options.harness } : {}),
+              ...(options.transport ? { transport: options.transport } : {}),
+              ...(options.openCodeSession ? { openCodeSessionId: options.openCodeSession } : {}),
+              ...(flags.async ? { async: true } : {}),
               ...(taskIdsFromOpt ? { taskIds: taskIdsFromOpt } : {}),
             };
-            const res = await server.handleDispatch(input as Parameters<typeof server.handleDispatch>[0]);
+            let res: Awaited<ReturnType<typeof server.handleDispatch>>;
+            try {
+              res = await server.handleDispatch(
+                input as Parameters<typeof server.handleDispatch>[0],
+                undefined,
+                { detachAsyncWorker: Boolean(flags.async) }
+              );
+            } catch (dispatchErr: unknown) {
+              if (process.env.ASD_ASYNC_WORKER_ACTIVE === "1" && input.sessionId) {
+                const existingJob = readAsyncDispatchJob(
+                  projectRoot,
+                  input.sessionId,
+                  homeDir
+                );
+                if (existingJob) {
+                  writeAsyncDispatchJob(
+                    projectRoot,
+                    {
+                      ...existingJob,
+                      status: "failed",
+                      finishedAt: Date.now(),
+                      error:
+                        dispatchErr instanceof Error
+                          ? dispatchErr.message
+                          : String(dispatchErr),
+                    },
+                    homeDir
+                  );
+                }
+              }
+              throw dispatchErr;
+            }
             if (flags.json) {
               console.log(JSON.stringify(res, null, 2));
+            } else if (res.async && res.asyncJob) {
+              console.log(res.progressBoard);
+              console.log(
+                `\nAsync Dispatch Started: ${res.asyncJob.jobId} (Turn ${res.turn}, Worker PID: ${res.asyncJob.workerPid})`
+              );
+              console.log(
+                `Check status via 'asd status' or block until completion via 'asd wait --session ${res.sessionId}'.`
+              );
             } else {
               console.log(res.progressBoard);
               for (const r of res.results) {

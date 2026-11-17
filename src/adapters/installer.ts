@@ -28,7 +28,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
-import { probeAcpCapability } from "../core/acp-client.ts";
+import { CLAUDE_ACP_INSTALL_HINT, CODEX_ACP_INSTALL_HINT } from "../core/acp-client.ts";
 import { parseJsonc, removeTomlFence, upsertTomlFence, escapeTomlBasicString } from "../core/jsonc.ts";
 import {
   discoverHarnessModels,
@@ -211,6 +211,57 @@ function getAsdRoot(): string {
   return path.resolve(import.meta.dirname, "..", "..");
 }
 
+function resolveMultipleBinariesOnPath(
+  binaryNames: readonly string[],
+  env: Record<string, string | undefined> = process.env
+): Record<string, string | null> {
+  const result: Record<string, string | null> = {};
+  for (const name of binaryNames) {
+    result[name] = null;
+  }
+
+  const pathEnv = env.PATH || env.Path || process.env.PATH || process.env.Path || "";
+  const dirs = pathEnv.split(path.delimiter).filter(Boolean);
+  const extensions =
+    process.platform === "win32" ? [".exe", ".cmd", ".bat", ".ps1", ""] : [""];
+  const caseInsensitive = process.platform === "win32";
+  let remaining = binaryNames.length;
+
+  for (const dir of dirs) {
+    if (remaining <= 0) break;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const fileMap = new Map<string, string>();
+    for (const entry of entries) {
+      if (entry.isFile() || entry.isSymbolicLink()) {
+        const key = caseInsensitive ? entry.name.toLowerCase() : entry.name;
+        if (!fileMap.has(key)) {
+          fileMap.set(key, entry.name);
+        }
+      }
+    }
+    for (const bin of binaryNames) {
+      if (result[bin] !== null) continue;
+      for (const ext of extensions) {
+        const candidate = `${bin}${ext}`;
+        const key = caseInsensitive ? candidate.toLowerCase() : candidate;
+        const actualName = fileMap.get(key);
+        if (actualName) {
+          result[bin] = path.join(dir, actualName);
+          remaining--;
+          break;
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
 function probeAllHarnessesAcp(
   env: Record<string, string | undefined> = process.env
 ): {
@@ -218,12 +269,29 @@ function probeAllHarnessesAcp(
   acpBridgeHints: string[];
   installedClis: Record<HarnessId, { binary: string; resolvedPath: string | null }>;
 } {
-  const claudePath = resolveBinaryOnPath("claude", env);
-  const opencodePath = resolveBinaryOnPath("opencode", env);
-  const codexPath = resolveBinaryOnPath("codex", env);
-  const agyPath = resolveBinaryOnPath("agy", env);
-  const cursorBin = resolveCursorBinaryName(env);
-  const cursorPath = resolveBinaryOnPath(cursorBin, env);
+  const bins = resolveMultipleBinariesOnPath(
+    [
+      "claude",
+      "opencode",
+      "codex",
+      "agy",
+      "cursor-agent",
+      "agent",
+      "claude-agent-acp",
+      "claude-code-acp",
+      "codex-acp",
+    ],
+    env
+  );
+
+  const claudePath = bins["claude"] ?? null;
+  const opencodePath = bins["opencode"] ?? null;
+  const codexPath = bins["codex"] ?? null;
+  const agyPath = bins["agy"] ?? null;
+  const cursorAgentPath = bins["cursor-agent"] ?? null;
+  const agentPath = bins["agent"] ?? null;
+  const cursorBin = cursorAgentPath ? "cursor-agent" : "agent";
+  const cursorPath = cursorAgentPath ?? agentPath;
 
   const installedClis: Record<HarnessId, { binary: string; resolvedPath: string | null }> = {
     "claude-code": { binary: "claude", resolvedPath: claudePath },
@@ -233,12 +301,80 @@ function probeAllHarnessesAcp(
     cursor: { binary: cursorBin, resolvedPath: cursorPath },
   };
 
+  const claudeBridgePrimary = bins["claude-agent-acp"] ?? null;
+  const claudeBridgeLegacy = bins["claude-code-acp"] ?? null;
+  const codexBridge = bins["codex-acp"] ?? null;
+
   const acpReadiness: Record<HarnessId, AcpHarnessReadiness> = {
-    "claude-code": probeAcpCapability("claude-code", env),
-    opencode: probeAcpCapability("opencode", env),
-    codex: probeAcpCapability("codex", env),
-    antigravity: probeAcpCapability("antigravity", env),
-    cursor: probeAcpCapability("cursor", env),
+    "claude-code": claudeBridgePrimary
+      ? {
+          harness: "claude-code",
+          supported: true,
+          mode: "bridge",
+          command: "claude-agent-acp",
+          args: [],
+          resolvedPath: claudeBridgePrimary,
+        }
+      : claudeBridgeLegacy
+        ? {
+            harness: "claude-code",
+            supported: true,
+            mode: "bridge",
+            command: "claude-code-acp",
+            args: [],
+            resolvedPath: claudeBridgeLegacy,
+          }
+        : {
+            harness: "claude-code",
+            supported: false,
+            mode: "missing-bridge",
+            command: "claude-agent-acp",
+            args: [],
+            resolvedPath: null,
+            installHint: CLAUDE_ACP_INSTALL_HINT,
+          },
+    opencode: {
+      harness: "opencode",
+      supported: Boolean(opencodePath),
+      mode: "native",
+      command: "opencode",
+      args: ["acp", "--pure"],
+      resolvedPath: opencodePath,
+    },
+    codex: codexBridge
+      ? {
+          harness: "codex",
+          supported: true,
+          mode: "bridge",
+          command: "codex-acp",
+          args: [],
+          resolvedPath: codexBridge,
+        }
+      : {
+          harness: "codex",
+          supported: false,
+          mode: "missing-bridge",
+          command: "codex-acp",
+          args: [],
+          resolvedPath: null,
+          installHint: CODEX_ACP_INSTALL_HINT,
+        },
+    antigravity: {
+      harness: "antigravity",
+      supported: Boolean(agyPath),
+      mode: "native",
+      command: "agy",
+      args: ["acp", "--dangerously-skip-permissions"],
+      resolvedPath: agyPath,
+    },
+    cursor: {
+      harness: "cursor",
+      supported: Boolean(cursorPath),
+      mode: "native",
+      command: cursorBin,
+      args: ["acp"],
+      resolvedPath: cursorPath,
+    },
   };
 
   const acpBridgeHints: string[] = [];
@@ -246,18 +382,13 @@ function probeAllHarnessesAcp(
   if (claudePath && !acpReadiness["claude-code"].supported) {
     missingBridgePackages.push("@agentclientprotocol/claude-agent-acp");
     acpBridgeHints.push(
-      `claude-code: ACP bridge not found (streaming CLI fallback remains active). Optional setup: ${
-        acpReadiness["claude-code"].installHint ??
-        "npm install -g @agentclientprotocol/claude-agent-acp"
-      }`
+      `claude-code: ACP bridge not found (streaming CLI fallback remains active). Optional setup: ${CLAUDE_ACP_INSTALL_HINT}`
     );
   }
   if (codexPath && !acpReadiness.codex.supported) {
     missingBridgePackages.push("@agentclientprotocol/codex-acp");
     acpBridgeHints.push(
-      `codex: ACP bridge not found (streaming CLI fallback remains active). Optional setup: ${
-        acpReadiness.codex.installHint ?? "npm install -g @agentclientprotocol/codex-acp"
-      }`
+      `codex: ACP bridge not found (streaming CLI fallback remains active). Optional setup: ${CODEX_ACP_INSTALL_HINT}`
     );
   }
   if (missingBridgePackages.length === 2) {

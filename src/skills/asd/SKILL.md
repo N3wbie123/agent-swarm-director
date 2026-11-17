@@ -74,12 +74,20 @@ ASD v2.5.0 defines exactly five specialist subagent roles (`AGENT_ROLES`), synce
        ```
      - Delegate each task via the **current harness's native subagent tool** (`task(subagent_type="asd-<role>")` in OpenCode, `Agent`/`Task` in Claude Code, `invoke_subagent(TypeName="asd-<role>", Model="flash"|"flash_lite"|"pro")` in Antigravity according to `lightSubagents.antigravity` — `scout`=`"flash_lite"`, `worker`/`planner`=`"flash"`, `architect`/`critic`=`"pro"`, **never `"inherit"`**; Codex CLI and Cursor CLI: use native subagent support or execute directly within `allowedFiles` — Cursor personas are synced to `~/.cursor/agents/asd-<role>.md`).
      - After each task, gate verification: `asd verify --task <T-ID> --cmd "<verifyCmd>"` (or cross-platform: `asd verify --file <path.json>`).
-   - **`HEAVY` Confirmed (Multi-Harness External CLI & Worktree Spawn)**:
-     ```bash
-     asd dispatch --turn <N> --mode parallel_spawn
-     asd verify --task <T-ID> --cmd "<verifyCmd>"
-     # Or cross-platform payload: asd verify --file <path.json>
-     ```
+   - **`HEAVY` Confirmed (Multi-Harness External CLI/ACP & Worktree Spawn)**:
+     - **OpenCode Non-Blocking Rule**: Because OpenCode lacks background shell tasks and freezes its main session while a synchronous Bash command runs, in **OpenCode** you **MUST** pass `--async` so dispatch returns immediately (<100ms) while `asd-guard.js` automatically injects the wave completion report via `client.session.prompt` once done:
+       ```bash
+       # OpenCode (non-blocking detached wave):
+       asd dispatch --turn <N> --mode parallel_spawn --async
+       # (Optional manual check/block if needed: asd status | asd wait)
+       ```
+     - **Other Harnesses (or synchronous execution)**:
+       ```bash
+       asd dispatch --turn <N> --mode parallel_spawn
+       asd verify --task <T-ID> --cmd "<verifyCmd>"
+       # Optional transport override: --transport <auto|acp|cli> (default: auto = ACP primary + streaming CLI fallback)
+       # Or cross-platform payload: asd verify --file <path.json>
+       ```
    - Render the updated `progressBoard` after every wave.
 
 5. **Step 5: Cross-Scope Requests (autoCreatedTasks & deferredCrossScopeRequests)**
