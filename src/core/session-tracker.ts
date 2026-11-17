@@ -52,6 +52,19 @@ export {
 
 const MAX_RECENT_CLI_SESSIONS = 100;
 
+function normalizeHarnessModelArg(
+  harness: HarnessId,
+  model?: string | null
+): string | null {
+  if (!model) return null;
+  const trimmed = model.trim();
+  if (!trimmed) return null;
+  if (harness !== "cursor" && trimmed.toLowerCase() === "default") {
+    return null;
+  }
+  return trimmed;
+}
+
 export interface HeadlessHarnessCommandOptions {
   harness: HarnessId;
   prompt: string;
@@ -60,11 +73,16 @@ export interface HeadlessHarnessCommandOptions {
   reasoningEffort?: string | null;
   /** Emit the harness's streaming event format (NDJSON) instead of a single final JSON payload. */
   streaming?: boolean;
+  /** Pass `--pure` for OpenCode headless runs to isolate external TUI plugins. */
+  pure?: boolean;
+  /** Pass non-interactive permission/sandbox flags (`--dangerously-skip-permissions` / `--full-auto`). */
+  skipPermissions?: boolean;
 }
 
 /**
  * Builds high-level spawn specifications handling long prompt stdin offloading,
- * dangerous permission skipping, and platform-specific stdin closure.
+ * streaming NDJSON output by default, dangerous permission skipping, `--pure` isolation,
+ * and platform-specific stdin closure.
  */
 export function buildSpawnSpec(
   options: HeadlessHarnessCommandOptions & { resumeSessionId?: string }
@@ -75,6 +93,13 @@ export function buildSpawnSpec(
   closeStdinOnSpawn?: boolean;
   promptFilePath?: string;
 } {
+  const effectiveStreaming =
+    options.harness === "antigravity"
+      ? (options.streaming ?? true)
+      : (options.streaming ?? false);
+  const effectivePure =
+    options.harness === "opencode" ? (options.pure ?? true) : options.pure;
+
   const base = options.resumeSessionId
     ? buildResumeHarnessCommand({
         harness: options.harness,
@@ -83,9 +108,14 @@ export function buildSpawnSpec(
         model: options.model,
         thinkingEffort: options.thinkingEffort,
         reasoningEffort: options.reasoningEffort,
-        streaming: options.streaming,
+        streaming: effectiveStreaming,
+        pure: effectivePure,
       })
-    : buildHeadlessHarnessCommand(options);
+    : buildHeadlessHarnessCommand({
+        ...options,
+        streaming: effectiveStreaming,
+        pure: effectivePure,
+      });
 
   const spec = buildSpawnCommand(
     options.harness,
@@ -94,11 +124,34 @@ export function buildSpawnSpec(
     options.prompt ?? ""
   );
 
+  const allowAutoPerms = options.skipPermissions !== false;
+
   if (options.harness === "claude-code") {
-    if (!spec.args.includes("--dangerously-skip-permissions")) {
+    if (allowAutoPerms && !spec.args.includes("--dangerously-skip-permissions")) {
       spec.args.push("--dangerously-skip-permissions");
     }
+    if (spec.stdinPayload !== undefined) {
+      spec.closeStdinOnSpawn = true;
+    }
+  } else if (options.harness === "antigravity") {
+    if (allowAutoPerms && !spec.args.includes("--dangerously-skip-permissions")) {
+      spec.args.push("--dangerously-skip-permissions");
+    }
+    spec.closeStdinOnSpawn = true;
+  } else if (options.harness === "opencode") {
+    spec.closeStdinOnSpawn = true;
   } else if (options.harness === "codex") {
+    if (
+      allowAutoPerms &&
+      !spec.args.includes("--full-auto") &&
+      !spec.args.includes("--sandbox") &&
+      !spec.args.includes("-s") &&
+      !spec.args.includes("--dangerously-bypass-approvals-and-sandbox")
+    ) {
+      spec.args.push("--full-auto");
+    }
+    spec.closeStdinOnSpawn = true;
+  } else if (options.harness === "cursor") {
     spec.closeStdinOnSpawn = true;
   }
 
@@ -112,7 +165,7 @@ export function buildHeadlessHarnessCommand(
   options: HeadlessHarnessCommandOptions
 ): { command: string; args: string[] } {
   const textPrompt = options.prompt ?? "";
-  const resolvedModel = options.model ?? null;
+  const resolvedModel = normalizeHarnessModelArg(options.harness, options.model);
   const resolvedEffort = options.thinkingEffort ?? options.reasoningEffort ?? null;
 
   switch (options.harness) {
@@ -124,6 +177,7 @@ export function buildHeadlessHarnessCommand(
     }
     case "opencode": {
       const args = ["run", textPrompt, "--format", "json"];
+      if (options.pure) args.push("--pure");
       if (resolvedModel) args.push("--model", resolvedModel);
       return { command: "opencode", args };
     }
@@ -158,6 +212,8 @@ export interface ResumeHarnessCommandOptions {
   reasoningEffort?: string | null;
   /** Emit the harness's streaming event format (NDJSON) instead of a single final JSON payload. */
   streaming?: boolean;
+  /** Pass `--pure` for OpenCode headless resume runs. */
+  pure?: boolean;
   cwd?: string;
   env?: Record<string, string>;
 }
@@ -172,7 +228,7 @@ export function buildResumeHarnessCommand(
   const harness: HarnessId = options.harness;
   const sid = options.harnessSessionId ?? "";
   const textPrompt = options.prompt ?? "";
-  const resolvedModel = options.model;
+  const resolvedModel = normalizeHarnessModelArg(harness, options.model);
   const resolvedEffort = options.thinkingEffort ?? options.reasoningEffort ?? null;
   const streaming = options.streaming ?? false;
 
@@ -199,6 +255,7 @@ export function buildResumeHarnessCommand(
         "--format",
         "json",
       ];
+      if (options.pure) args.push("--pure");
       if (resolvedModel) args.push("--model", resolvedModel);
       return { command: "opencode", args };
     }

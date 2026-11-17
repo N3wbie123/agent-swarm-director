@@ -96,6 +96,7 @@ describe("Spawner & Stream Audit (T1.1)", () => {
     });
 
     assert.equal(res.timedOut, true);
+    assert.equal(res.timeoutReason, "wall_clock");
     assert.equal(res.status, "failed");
     const logContent = fs.readFileSync(logPath, "utf8");
     assert.ok(
@@ -139,6 +140,7 @@ describe("Spawner & Stream Audit (T1.1)", () => {
     });
 
     assert.equal(res.timedOut, true);
+    assert.equal(res.timeoutReason, "idle");
     assert.equal(res.status, "failed");
     const logContent = fs.readFileSync(logPath, "utf8");
     assert.ok(
@@ -197,5 +199,57 @@ describe("Spawner & Stream Audit (T1.1)", () => {
       assert.equal(res.shell, false);
       assert.equal(res.command, cmdPath);
     }
+  });
+
+  test("6. Windows .ps1 shim resolves via powershell -File with shell: false", () => {
+    const tmp = makeTempDir();
+    const ps1Path = path.join(tmp, "cursor-agent.ps1");
+    fs.writeFileSync(ps1Path, "Write-Output 'ok'\r\n", "utf8");
+
+    const res = resolveSpawnCommand(
+      "cursor-agent",
+      ["-p", "hello", "--force"],
+      { PATH: tmp, Path: tmp },
+      "win32"
+    );
+    assert.equal(res.shell, false);
+    assert.ok(res.args.includes("-File"));
+    assert.ok(res.args.includes(ps1Path));
+    assert.equal(res.args.at(-1), "--force");
+  });
+
+  test("7. allowSlidingTimeout extends wall-clock timeout while output streams and caps at maxDurationMs", async () => {
+    const tmp = makeTempDir();
+    const logPath = path.join(tmp, "sliding-output.log");
+
+    // Emits chunks every 80ms for 260ms total: exceeds initial timeoutMs (150ms)
+    // but stays well within sliding window (150ms per chunk) and maxDurationMs (1000ms).
+    const res = await executeHarnessProcess({
+      command: "mock-sliding",
+      args: [],
+      cwd: tmp,
+      env: { ...process.env } as Record<string, string>,
+      harness: "opencode",
+      logPath,
+      timeoutMs: 150,
+      maxDurationMs: 1000,
+      idleTimeoutMs: 300,
+      allowSlidingTimeout: true,
+      commandRunner: {
+        async run(_cmd, _args, opts) {
+          opts.onSpawn?.(77777);
+          for (let i = 0; i < 3; i++) {
+            await new Promise((r) => setTimeout(r, 80));
+            if (opts.signal?.aborted) return { exitCode: -1, pid: 77777 };
+            opts.onStdout(`chunk-${i}\n`);
+          }
+          return { exitCode: 0, pid: 77777 };
+        },
+      },
+    });
+
+    assert.equal(res.timedOut, false);
+    assert.equal(res.status, "done");
+    assert.equal(res.exitCode, 0);
   });
 });

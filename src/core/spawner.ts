@@ -211,6 +211,7 @@ export interface SpawnSubagentOptions {
   timeoutMs?: number;
   maxDurationMs?: number;
   idleTimeoutMs?: number;
+  allowSlidingTimeout?: boolean;
   cwd?: string;
   commandRunner?: CommandRunner;
   dispatchMode?: SubagentDispatchMode;
@@ -230,6 +231,9 @@ export const DEFAULT_DEBATE_TIMEOUT_MS =
 export const DEFAULT_IDLE_TIMEOUT_MS =
   Number.parseInt(process.env.ASD_SPAWN_IDLE_TIMEOUT_MS || "", 10) ||
   10 * 60_000;
+export const DEFAULT_MAX_WALL_TIMEOUT_MS =
+  Number.parseInt(process.env.ASD_MAX_WALL_TIMEOUT_MS || "", 10) ||
+  4 * 60 * 60_000;
 
 export interface SpawnSubagentResult {
   exitCode: number;
@@ -237,28 +241,43 @@ export interface SpawnSubagentResult {
   metaPath: string;
   harnessSessionId?: string | null;
   timedOut?: boolean;
+  timeoutReason?: "idle" | "wall_clock";
 }
 
 // ============================================================================
-// Windows .cmd / npm Shim Safe Resolver
+// Windows .cmd / .ps1 / npm Shim Safe Resolver
 // ============================================================================
+
+function findPowerShellExecutable(
+  env: Record<string, string | undefined>
+): string {
+  const pathEnv = env.PATH || env.Path || process.env.PATH || process.env.Path || "";
+  const dirs = pathEnv.split(path.delimiter).filter(Boolean);
+  for (const bin of ["pwsh.exe", "powershell.exe"]) {
+    for (const dir of dirs) {
+      const candidate = path.join(dir, bin);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return "powershell.exe";
+}
 
 /**
  * Resolves a command and arguments for safe cross-platform execution.
  * On Windows, npm global CLIs (`claude`, `codex`, `opencode`, `agy`, `npx`)
- * are installed as `.cmd` batch shims, which throw ENOENT when spawned with
- * `shell: false`, or break on multiline prompts when spawned with `shell: true`.
- *
- * This resolver locates the `.cmd` shim on PATH, extracts the underlying Node.js
- * entrypoint script if it is an npm shim, and invokes `process.execPath` directly
- * with `shell: false`.
+ * and Cursor CLI (`cursor-agent.ps1` / `agent.ps1`) are installed as `.cmd` or `.ps1` shims,
+ * which throw ENOENT when spawned with `shell: false`, or break on multiline prompts
+ * when spawned with `shell: true`.
  */
 export function resolveSpawnCommand(
   cmd: string,
   args: string[],
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  platform: NodeJS.Platform = process.platform
 ): { command: string; args: string[]; shell: boolean } {
-  if (process.platform !== "win32") {
+  if (platform !== "win32") {
     return { command: cmd, args, shell: false };
   }
 
@@ -273,10 +292,14 @@ export function resolveSpawnCommand(
   if (path.isAbsolute(cmd) || cmd.includes("\\") || cmd.includes("/")) {
     if (fs.existsSync(cmd)) {
       resolvedPath = cmd;
-    } else if (fs.existsSync(`${cmd}.cmd`)) {
-      resolvedPath = `${cmd}.cmd`;
     } else if (fs.existsSync(`${cmd}.exe`)) {
       return { command: `${cmd}.exe`, args, shell: false };
+    } else if (fs.existsSync(`${cmd}.cmd`)) {
+      resolvedPath = `${cmd}.cmd`;
+    } else if (fs.existsSync(`${cmd}.bat`)) {
+      resolvedPath = `${cmd}.bat`;
+    } else if (fs.existsSync(`${cmd}.ps1`)) {
+      resolvedPath = `${cmd}.ps1`;
     }
   } else {
     const pathEnv = env.PATH || env.Path || process.env.PATH || process.env.Path || "";
@@ -296,7 +319,29 @@ export function resolveSpawnCommand(
         resolvedPath = batCandidate;
         break;
       }
+      const ps1Candidate = path.join(dir, `${cmd}.ps1`);
+      if (fs.existsSync(ps1Candidate)) {
+        resolvedPath = ps1Candidate;
+        break;
+      }
     }
+  }
+
+  if (resolvedPath && /\.ps1$/i.test(resolvedPath)) {
+    const pwsh = findPowerShellExecutable(env);
+    return {
+      command: pwsh,
+      args: [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        resolvedPath,
+        ...args,
+      ],
+      shell: false,
+    };
   }
 
   if (resolvedPath && /\.(cmd|bat)$/i.test(resolvedPath)) {
@@ -548,6 +593,7 @@ export interface ExecuteHarnessProcessOptions {
   timeoutMs?: number;
   maxDurationMs?: number;
   idleTimeoutMs?: number;
+  allowSlidingTimeout?: boolean;
   commandRunner?: CommandRunner;
   stdinPayload?: string;
   closeStdinOnSpawn?: boolean;
@@ -563,6 +609,7 @@ export interface ExecuteHarnessProcessOptions {
     durationMs: number;
     harnessSessionId: string | null;
     timedOut: boolean;
+    timeoutReason?: "idle" | "wall_clock";
     status: "done" | "failed";
     errorSummary?: string;
   }) => void;
@@ -576,6 +623,7 @@ export interface ExecuteHarnessProcessResult {
   durationMs: number;
   harnessSessionId: string | null;
   timedOut: boolean;
+  timeoutReason?: "idle" | "wall_clock";
   status: "done" | "failed";
   errorSummary?: string;
 }
@@ -598,15 +646,21 @@ export function executeHarnessProcess(
     options.timeoutMs !== undefined && options.maxDurationMs !== undefined
       ? Math.min(options.timeoutMs, options.maxDurationMs)
       : (options.timeoutMs ?? options.maxDurationMs);
+  const maxCeilingMs = options.maxDurationMs ?? DEFAULT_MAX_WALL_TIMEOUT_MS;
+  const slidingEnabled = options.allowSlidingTimeout === true;
 
   return new Promise<ExecuteHarnessProcessResult>((resolve) => {
     let pid = 0;
     let settled = false;
+    let runnerSettled = false;
     let killRequested = false;
     let timedOut = false;
+    let timeoutReason: "idle" | "wall_clock" | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
     let sessionDetectBuffer = "";
+    const runnerAbortController = new AbortController();
 
     const finish = (
       exitCode: number,
@@ -617,6 +671,7 @@ export function executeHarnessProcess(
       settled = true;
       if (timer !== undefined) clearTimeout(timer);
       if (idleTimer !== undefined) clearTimeout(idleTimer);
+      if (graceTimer !== undefined) clearTimeout(graceTimer);
       if (options.signal) options.signal.removeEventListener("abort", onAbort);
       if (!detectedHarnessSessionId && sessionDetectBuffer.length > 0) {
         const extracted = extractHarnessSessionIdFromOutput(
@@ -644,6 +699,7 @@ export function executeHarnessProcess(
         durationMs,
         harnessSessionId: detectedHarnessSessionId,
         timedOut,
+        ...(timeoutReason ? { timeoutReason } : {}),
         status,
         errorSummary,
       };
@@ -667,16 +723,28 @@ export function executeHarnessProcess(
 
     const requestKill = (): void => {
       killRequested = true;
+      runnerAbortController.abort();
       if (pid > 0) killProcessTree(pid);
     };
 
     const onAbort = (): void => {
       requestKill();
-      finish(-1, "failed");
+      if (runnerSettled) {
+        finish(-1, "failed");
+        return;
+      }
+      // Wait up to 250ms grace window for child close event after killProcessTree
+      if (graceTimer === undefined) {
+        graceTimer = setTimeout(() => {
+          finish(-1, "failed");
+        }, 250);
+        graceTimer.unref?.();
+      }
     };
 
     const onHardTimeout = (): void => {
       timedOut = true;
+      timeoutReason = "wall_clock";
       handleChunk(
         `[TIMEOUT] Process exceeded timeout (${effectiveTimeoutMs}ms)\n`
       );
@@ -685,6 +753,7 @@ export function executeHarnessProcess(
 
     const onIdleTimeout = (): void => {
       timedOut = true;
+      timeoutReason = "idle";
       handleChunk(
         `[IDLE_TIMEOUT] Process produced no output for ${options.idleTimeoutMs}ms\n`
       );
@@ -692,10 +761,31 @@ export function executeHarnessProcess(
     };
 
     const resetIdleTimer = (): void => {
-      if (options.idleTimeoutMs === undefined || settled) return;
+      if (options.idleTimeoutMs === undefined || settled || killRequested) return;
       if (idleTimer !== undefined) clearTimeout(idleTimer);
       idleTimer = setTimeout(onIdleTimeout, options.idleTimeoutMs);
       idleTimer.unref?.();
+    };
+
+    const slideWallTimer = (): void => {
+      if (
+        !slidingEnabled ||
+        effectiveTimeoutMs === undefined ||
+        settled ||
+        killRequested
+      ) {
+        return;
+      }
+      const elapsed = Date.now() - startedAt;
+      const remainingCeiling = maxCeilingMs - elapsed;
+      if (remainingCeiling <= 0) {
+        onHardTimeout();
+        return;
+      }
+      const nextWindow = Math.min(effectiveTimeoutMs, remainingCeiling);
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(onHardTimeout, nextWindow);
+      timer.unref?.();
     };
 
     if (options.signal) {
@@ -711,7 +801,10 @@ export function executeHarnessProcess(
     const handleChunk = (chunk: string): void => {
       if (settled) return;
       if (chunk && chunk.length > 0) {
-        resetIdleTimer();
+        if (!killRequested) {
+          resetIdleTimer();
+          slideWallTimer();
+        }
         const fallbackHome = options.env?.HOME || options.env?.USERPROFILE;
         if (options.harness === "cursor" && detectedHarnessSessionId) {
           appendCursorStreamFallback(detectedHarnessSessionId, chunk, { homeDir: fallbackHome });
@@ -750,7 +843,7 @@ export function executeHarnessProcess(
       .run(options.command, options.args, {
         cwd: options.cwd,
         env: options.env,
-        signal: options.signal,
+        signal: runnerAbortController.signal,
         stdinPayload: options.stdinPayload,
         closeStdinOnSpawn: options.closeStdinOnSpawn,
         onStdout: handleChunk,
@@ -763,12 +856,22 @@ export function executeHarnessProcess(
       })
       .then(
         (result) => {
+          runnerSettled = true;
           if (pid === 0 && result.pid > 0) {
             pid = result.pid;
+          }
+          if (killRequested) {
+            finish(-1, "failed");
+            return;
           }
           finish(result.exitCode, result.exitCode === 0 ? "done" : "failed");
         },
         (err) => {
+          runnerSettled = true;
+          if (killRequested) {
+            finish(-1, "failed");
+            return;
+          }
           const msg = err instanceof Error ? err.message : String(err);
           finish(-1, "failed", `[SPAWN_ERROR] Runner rejected: ${msg}\n`);
         }
@@ -839,6 +942,7 @@ export function spawnSubagent(
     timeoutMs: options.timeoutMs,
     maxDurationMs: options.maxDurationMs,
     idleTimeoutMs: options.idleTimeoutMs,
+    allowSlidingTimeout: options.allowSlidingTimeout,
     commandRunner: options.commandRunner,
     stdinPayload: options.stdinPayload,
     closeStdinOnSpawn: options.closeStdinOnSpawn ?? true,
@@ -871,6 +975,7 @@ export function spawnSubagent(
     metaPath,
     harnessSessionId: res.harnessSessionId,
     timedOut: res.timedOut,
+    ...(res.timeoutReason ? { timeoutReason: res.timeoutReason } : {}),
   }));
 }
 

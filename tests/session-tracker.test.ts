@@ -7,7 +7,9 @@ import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openProjectDb } from "../src/core/db.ts";
 import {
+  buildHeadlessHarnessCommand,
   buildSessionDemotion,
+  buildSpawnSpec,
   discoverProjectCliSessions,
   extractHarnessSessionIdFromOutput,
   getCliRecentSessionsPath,
@@ -576,4 +578,43 @@ describe("S3: extractHarnessSessionIdFromOutput - tool result echoes should not 
   } finally {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   }
+});
+
+describe("T1.2: buildSpawnSpec CLI Fallback Hardening", () => {
+  it("defaults streaming to true, includes --pure on opencode, permission flags on agy/claude/codex, and omits model='default' on non-cursor harnesses", () => {
+    const oc = buildSpawnSpec({
+      harness: "opencode",
+      prompt: "run task",
+      model: "default",
+    });
+    assert.ok(oc.args.includes("--pure"), "opencode headless should include --pure");
+    assert.ok(!oc.args.includes("--model"), "model='default' must be omitted on opencode");
+    assert.equal(oc.closeStdinOnSpawn, true);
+
+    const agy = buildSpawnSpec({
+      harness: "antigravity",
+      prompt: "run agy",
+      model: "default",
+    });
+    assert.ok(agy.args.includes("stream-json"), "agy buildSpawnSpec should default to stream-json");
+    assert.ok(agy.args.includes("--dangerously-skip-permissions"));
+    assert.ok(!agy.args.includes("--model"));
+    assert.equal(agy.closeStdinOnSpawn, true);
+
+    const cx = buildSpawnSpec({
+      harness: "codex",
+      prompt: "run codex",
+      model: "default",
+    });
+    assert.ok(cx.args.includes("--full-auto"), "codex buildSpawnSpec should include --full-auto");
+    assert.ok(!cx.args.includes("-m"));
+    assert.equal(cx.closeStdinOnSpawn, true);
+
+    const cur = buildHeadlessHarnessCommand({
+      harness: "cursor",
+      prompt: "run cursor",
+      model: "default",
+    });
+    assert.ok(cur.args.includes("--model") && cur.args.includes("default"), "cursor preserves model='default'");
+  });
 });
