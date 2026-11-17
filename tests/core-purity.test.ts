@@ -69,6 +69,20 @@ describe("Strict Core Purity (HC-1)", () => {
         .map((v) => `  ${v.file}:${v.line} -> ${v.text}`)
         .join("\n")}`
     );
+    assert.ok(
+      coreFiles.includes("acp-types.ts") && coreFiles.includes("acp-client.ts"),
+      "ACP core modules (acp-types.ts, acp-client.ts) must reside in src/core and pass strict purity"
+    );
+
+    const pkgPath = path.resolve(import.meta.dirname, "../package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
+    assert.deepEqual(
+      pkg.dependencies ?? {},
+      {},
+      "package.json must maintain zero runtime dependencies"
+    );
   });
 });
 

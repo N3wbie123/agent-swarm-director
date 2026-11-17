@@ -170,6 +170,8 @@ export type SubagentDispatchMode =
   | "control_action"
   | "debate";
 
+export type SubagentTransportMode = "auto" | "acp" | "cli";
+
 export interface SubagentSessionMeta {
   subSessionId: string;
   parentSessionId: string;
@@ -178,6 +180,7 @@ export interface SubagentSessionMeta {
   harness: HarnessId;
   model: string;
   harnessSessionId?: string | null;
+  transport?: "acp" | "cli";
   taskId: string;
   pid: number;
   ownerPid?: number;
@@ -329,6 +332,34 @@ export interface AsdPlanOutput {
   foreground?: boolean;
 }
 
+export interface AsyncDispatchJobMeta {
+  jobId: string;
+  sessionId: string;
+  turn: number;
+  status: "running" | "done" | "failed";
+  workerPid: number;
+  startedAt: number;
+  finishedAt?: number;
+  openCodeSessionId?: string;
+  notified?: boolean;
+  summary?: string;
+  progressBoard?: string;
+  results?: AsdDispatchOutput["results"];
+  autoCreatedTasks?: AutoCreatedCrossScopeTask[];
+  deferredCrossScopeRequests?: DeferredCrossScopeRequest[];
+  error?: string;
+}
+
+export interface AcpHarnessReadiness {
+  harness: HarnessId;
+  supported: boolean;
+  mode: "native" | "bridge" | "missing-bridge";
+  command: string;
+  args: string[];
+  resolvedPath: string | null;
+  installHint?: string;
+}
+
 export interface AsdDispatchInput {
   sessionId: string;
   turn?: number;
@@ -336,6 +367,9 @@ export interface AsdDispatchInput {
   mode?: "parallel_spawn" | "claim_only";
   harness?: HarnessId;
   autoApprove?: boolean;
+  async?: boolean;
+  transport?: SubagentTransportMode;
+  openCodeSessionId?: string;
 }
 
 export interface AutoCreatedCrossScopeTask {
@@ -359,6 +393,8 @@ export interface DeferredCrossScopeRequest {
 export interface AsdDispatchOutput {
   sessionId: string;
   turn: number;
+  async?: boolean;
+  asyncJob?: AsyncDispatchJobMeta;
   dispatchedTasks?: Array<{
     taskId: string;
     status: TaskStatus;
