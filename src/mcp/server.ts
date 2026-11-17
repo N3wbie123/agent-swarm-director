@@ -31,6 +31,7 @@
  * - Zero external runtime npm dependencies.
  */
 
+import * as child_process from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,9 +46,17 @@ import {
   isValidAsdSessionId,
   linkHarnessSessionToAsdSession,
 } from "../core/session-tracker.ts";
-import { buildDefaultHarnessCommand, runDebateBroker } from "../core/debate.ts";
+import {
+  buildDefaultHarnessCommand,
+  runDebateBroker,
+  spawnHybridSubagent,
+} from "../core/debate.ts";
 import { checkProtectedPath, isPathAllowed, verifyChangedFilesBoundary } from "../core/policy.ts";
-import { expandTaskAllowedFiles } from "../core/subagent-control.ts";
+import {
+  expandTaskAllowedFiles,
+  readAsyncDispatchJob,
+  writeAsyncDispatchJob,
+} from "../core/subagent-control.ts";
 import {
   atomicWriteFileSync,
   getForegroundSessionId,
@@ -85,6 +94,7 @@ import type {
   AsdPlanOutput,
   AsdVerifyInput,
   AsdVerifyOutput,
+  AsyncDispatchJobMeta,
   AutoCreatedCrossScopeTask,
   CrossScopeRequest,
   DeferredCrossScopeRequest,
@@ -93,6 +103,7 @@ import type {
   HarnessId,
   MainSessionMeta,
   SessionPhase,
+  SubagentTransportMode,
   TaskStatus,
   TaskTrack,
 } from "../core/types.ts";
@@ -198,6 +209,17 @@ export const ASD_MCP_TOOLS = [
           type: "string",
           enum: ["claude-code", "opencode", "codex", "antigravity", "cursor"],
           description: "Optional harness override for task dispatch.",
+        },
+        async: {
+          type: "boolean",
+          description:
+            "When true in parallel_spawn mode, launches wave execution asynchronously in the background and returns immediately without blocking the main session.",
+        },
+        transport: {
+          type: "string",
+          enum: ["auto", "acp", "cli"],
+          description:
+            "Subagent execution transport: 'auto' (default: ACP-first with CLI fallback), 'acp', or 'cli'.",
         },
       },
       required: ["sessionId"],
@@ -309,6 +331,7 @@ export interface AsdMcpServerOptions {
   projectRoot?: string;
   homeDir?: string;
   commandRunner?: CommandRunner;
+  acpCommandOverride?: { command: string; args: string[] };
   sessionRole?: string;
   autoSync?: boolean;
   onMainServerStart?: () => Promise<void> | void;
@@ -339,19 +362,72 @@ export interface ParsedSubagentReport {
   cross_scope_requests?: CrossScopeRequest[];
 }
 
+function unwrapNdjsonReportText(rawOutput: string): string {
+  const parts: string[] = [];
+  for (const rawLine of rawOutput.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line.startsWith("{") || !line.endsWith("}")) continue;
+    try {
+      const obj = JSON.parse(line) as Record<string, unknown>;
+      if (!obj || typeof obj !== "object") continue;
+      if (typeof obj.result === "string") parts.push(obj.result);
+      if (obj.result && typeof obj.result === "object") {
+        const resRec = obj.result as Record<string, unknown>;
+        if (typeof resRec.response === "string") parts.push(resRec.response);
+      }
+      if (obj.step_update && typeof obj.step_update === "object") {
+        const su = obj.step_update as Record<string, unknown>;
+        if (typeof su.text_delta === "string") parts.push(su.text_delta);
+      }
+      if (obj.delta && typeof obj.delta === "object") {
+        const d = obj.delta as Record<string, unknown>;
+        if (typeof d.text === "string") parts.push(d.text);
+      }
+      if (obj.part && typeof obj.part === "object") {
+        const p = obj.part as Record<string, unknown>;
+        if (typeof p.text === "string") parts.push(p.text);
+      }
+      if (obj.message && typeof obj.message === "object") {
+        const msg = obj.message as Record<string, unknown>;
+        if (Array.isArray(msg.content)) {
+          for (const b of msg.content) {
+            if (b && typeof b === "object" && typeof (b as Record<string, unknown>).text === "string") {
+              parts.push(String((b as Record<string, unknown>).text));
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore malformed NDJSON line
+    }
+  }
+  return parts.join("");
+}
+
 /**
  * Extracts structured `asd-report` (or trailing JSON report) emitted by a subagent
- * from its stdout/stderr log.
+ * from its stdout/stderr log (supporting both raw/ACP text and escaped NDJSON stream-json envelopes).
  */
 export function parseSubagentReport(rawOutput: string): ParsedSubagentReport | null {
   if (!rawOutput || typeof rawOutput !== "string") return null;
 
-  const candidates: string[] = [];
-  const fencedRegex = /```(?:asd-report|json)\s*([\s\S]*?)```/gi;
-  let match: RegExpExecArray | null;
-  while ((match = fencedRegex.exec(rawOutput)) !== null) {
-    if (match[1]?.trim()) {
-      candidates.push(match[1].trim());
+  const collectFenced = (source: string): string[] => {
+    const found: string[] = [];
+    const fencedRegex = /```(?:asd-report|json)\s*([\s\S]*?)```/gi;
+    let m: RegExpExecArray | null;
+    while ((m = fencedRegex.exec(source)) !== null) {
+      if (m[1]?.trim()) {
+        found.push(m[1].trim());
+      }
+    }
+    return found;
+  };
+
+  const candidates = collectFenced(rawOutput);
+  if (rawOutput.includes("{")) {
+    const unwrapped = unwrapNdjsonReportText(rawOutput);
+    if (unwrapped) {
+      candidates.push(...collectFenced(unwrapped));
     }
   }
 
@@ -453,6 +529,7 @@ export class AsdMcpServer {
   private readonly projectRoot: string;
   private readonly homeDir?: string;
   private readonly commandRunner?: CommandRunner;
+  private readonly acpCommandOverride?: { command: string; args: string[] };
   private readonly sessionRole: string;
   private readonly db: SqliteDriver;
   private readonly ownsDb: boolean;
@@ -463,6 +540,7 @@ export class AsdMcpServer {
     this.projectRoot = path.resolve(options?.projectRoot || process.cwd());
     this.homeDir = options?.homeDir;
     this.commandRunner = options?.commandRunner;
+    this.acpCommandOverride = options?.acpCommandOverride;
     this.sessionRole = options?.sessionRole ?? process.env.ASD_SESSION_ROLE ?? "main";
 
     if (options?.db) {
@@ -884,7 +962,8 @@ export class AsdMcpServer {
 
   async handleDispatch(
     input: AsdDispatchInput,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    dispatchOpts?: { detachAsyncWorker?: boolean }
   ): Promise<AsdDispatchOutput & { dispatchedTasks: AsdDispatchOutput["results"] }> {
     if (this.isSubagent()) {
       throw new Error("Subagents cannot invoke orchestration tools");
@@ -1133,6 +1212,157 @@ export class AsdMcpServer {
     }
 
     // 3. Mode: parallel_spawn
+    if (input.async === true && turnTasks.length > 0) {
+      const jobId = `async-${sessionId}-t${selectedTurn}-${Date.now().toString(36)}`;
+      const startedAt = Date.now();
+      const pendingResults: AsdDispatchOutput["results"] = turnTasks.map((t) => ({
+        taskId: t.task_id,
+        status: "running" as TaskStatus,
+        harness:
+          input.harness ??
+          (t.assigned_harness as HarnessId | null) ??
+          (session.main_harness as HarnessId) ??
+          "opencode",
+        model: t.assigned_model ?? "default",
+        durationMs: 0,
+      }));
+      const initialBoard = renderProgressBoard(session, allTasks);
+      let asyncJob: AsyncDispatchJobMeta = {
+        jobId,
+        sessionId,
+        turn: selectedTurn,
+        status: "running",
+        workerPid: process.pid,
+        startedAt,
+        ...(input.openCodeSessionId ? { openCodeSessionId: input.openCodeSessionId } : {}),
+        notified: false,
+        progressBoard: initialBoard,
+        results: pendingResults,
+      };
+      writeAsyncDispatchJob(this.projectRoot, asyncJob, this.homeDir);
+
+      if (
+        dispatchOpts?.detachAsyncWorker &&
+        !this.commandRunner &&
+        !this.acpCommandOverride
+      ) {
+        const cliScriptPath = path.resolve(
+          path.dirname(fileURLToPath(import.meta.url)),
+          "../cli/index.ts"
+        );
+        const workerArgs = [
+          "--no-warnings",
+          cliScriptPath,
+          "dispatch",
+          "--session",
+          sessionId,
+          "--turn",
+          String(selectedTurn),
+          "--mode",
+          "parallel_spawn",
+          "--project-root",
+          this.projectRoot,
+        ];
+        if (this.homeDir) {
+          workerArgs.push("--home", this.homeDir);
+        }
+        if (input.harness) {
+          workerArgs.push("--harness", input.harness);
+        }
+        if (input.transport) {
+          workerArgs.push("--transport", input.transport);
+        }
+        if (input.taskIds && input.taskIds.length > 0) {
+          workerArgs.push("--task", input.taskIds.join(","));
+        }
+        const child = child_process.spawn(process.execPath, workerArgs, {
+          cwd: this.projectRoot,
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+          env: {
+            ...process.env,
+            NODE_NO_WARNINGS: "1",
+            ASD_ASYNC_WORKER_ACTIVE: "1",
+          },
+        });
+        child.unref();
+        asyncJob = {
+          ...asyncJob,
+          workerPid: child.pid ?? 0,
+        };
+        writeAsyncDispatchJob(this.projectRoot, asyncJob, this.homeDir);
+      } else {
+        const bgServer = new AsdMcpServer({
+          projectRoot: this.projectRoot,
+          homeDir: this.homeDir,
+          commandRunner: this.commandRunner,
+          acpCommandOverride: this.acpCommandOverride,
+          autoSync: false,
+        });
+        void bgServer
+          .handleDispatch({ ...input, async: false, turn: selectedTurn }, signal)
+          .then((completed) => {
+            const anyFailed = completed.results.some(
+              (r) => r.status === "failed" || r.status === "merge_conflict"
+            );
+            const doneSummary = completed.results
+              .map(
+                (r) =>
+                  `- ${r.taskId}: ${r.status} (@${r.harness}/${r.model})${r.error ? ` [${r.error}]` : ""}`
+              )
+              .join("\n");
+            const existingJob =
+              readAsyncDispatchJob(this.projectRoot, sessionId, this.homeDir) ?? asyncJob;
+            writeAsyncDispatchJob(
+              this.projectRoot,
+              {
+                ...existingJob,
+                status: anyFailed ? "failed" : "done",
+                finishedAt: Date.now(),
+                summary: doneSummary,
+                progressBoard: completed.progressBoard,
+                results: completed.results,
+                ...(completed.autoCreatedTasks
+                  ? { autoCreatedTasks: completed.autoCreatedTasks }
+                  : {}),
+                ...(completed.deferredCrossScopeRequests
+                  ? { deferredCrossScopeRequests: completed.deferredCrossScopeRequests }
+                  : {}),
+              },
+              this.homeDir
+            );
+          })
+          .catch((err: unknown) => {
+            const existingJob =
+              readAsyncDispatchJob(this.projectRoot, sessionId, this.homeDir) ?? asyncJob;
+            writeAsyncDispatchJob(
+              this.projectRoot,
+              {
+                ...existingJob,
+                status: "failed",
+                finishedAt: Date.now(),
+                error: err instanceof Error ? err.message : String(err),
+              },
+              this.homeDir
+            );
+          })
+          .finally(() => {
+            bgServer.close();
+          });
+      }
+
+      return {
+        sessionId,
+        turn: selectedTurn,
+        async: true,
+        asyncJob,
+        dispatchedTasks: pendingResults,
+        results: pendingResults,
+        progressBoard: initialBoard,
+      };
+    }
+
     let completedCount = 0;
     const totalCount = turnTasks.length;
 
@@ -1274,7 +1504,7 @@ export class AsdMcpServer {
           baseSubSessionId: subSessionId,
           allowDefaultModelRetry: !this.commandRunner,
           shouldRetry: needsFallbackRetry,
-          attempt: (r, sid) => {
+          attempt: async (r, sid) => {
             attemptedSubIds.push(sid);
             this.db.updateTaskStatus(sessionId, t.task_id, "running", {
               assignedHarness: r.harness,
@@ -1287,7 +1517,14 @@ export class AsdMcpServer {
               r.model,
               r.thinkingEffort ?? t.thinking_effort
             );
-            return spawnSubagent({
+            const effTimeoutMs =
+              Number.parseInt(process.env.ASD_SPAWN_TIMEOUT_MS || "", 10) ||
+              DEFAULT_DISPATCH_TIMEOUT_MS;
+            const effIdleTimeoutMs =
+              Number.parseInt(process.env.ASD_SPAWN_IDLE_TIMEOUT_MS || "", 10) ||
+              DEFAULT_IDLE_TIMEOUT_MS;
+
+            const firstRes = await spawnHybridSubagent({
               projectRoot: this.projectRoot,
               cwd: workDir,
               worktreePath: wtInfo ? wtInfo.wtPath : null,
@@ -1297,22 +1534,68 @@ export class AsdMcpServer {
               role: t.role as AgentRole,
               harness: r.harness,
               model: r.model,
+              thinkingEffort: r.thinkingEffort ?? t.thinking_effort,
               taskId: t.task_id,
               prompt,
               allowedFiles,
-              command: cmdInfo.command,
-              args: cmdInfo.args,
+              ...(this.commandRunner
+                ? { command: cmdInfo.command, args: cmdInfo.args }
+                : {}),
               dispatchMode: "parallel_spawn",
               ownerPid: process.pid,
               commandRunner: this.commandRunner,
-              timeoutMs:
-                Number.parseInt(process.env.ASD_SPAWN_TIMEOUT_MS || "", 10) ||
-                DEFAULT_DISPATCH_TIMEOUT_MS,
-              idleTimeoutMs:
-                Number.parseInt(process.env.ASD_SPAWN_IDLE_TIMEOUT_MS || "", 10) ||
-                DEFAULT_IDLE_TIMEOUT_MS,
+              transport: input.transport,
+              acpCommandOverride: this.acpCommandOverride,
+              timeoutMs: effTimeoutMs,
+              idleTimeoutMs: effIdleTimeoutMs,
+              allowSlidingTimeout: true,
               signal,
             });
+
+            const maxIdleResumes = Number.parseInt(
+              process.env.ASD_IDLE_RESUME_ATTEMPTS ?? "1",
+              10
+            );
+            if (
+              firstRes.timedOut &&
+              firstRes.timeoutReason === "idle" &&
+              firstRes.harnessSessionId &&
+              !signal?.aborted &&
+              maxIdleResumes > 0
+            ) {
+              const resumeSubId = `${sid}-idleresume-1`;
+              attemptedSubIds.push(resumeSubId);
+              const continuationPrompt =
+                `Continue and complete task ${t.task_id} (${t.title}) from the current workspace state without repeating completed work, then emit the final asd-report block.`;
+              return spawnHybridSubagent({
+                projectRoot: this.projectRoot,
+                cwd: workDir,
+                worktreePath: wtInfo ? wtInfo.wtPath : null,
+                homeDir: this.homeDir,
+                mainSessionId: sessionId,
+                subSessionId: resumeSubId,
+                role: t.role as AgentRole,
+                harness: r.harness,
+                model: r.model,
+                thinkingEffort: r.thinkingEffort ?? t.thinking_effort,
+                resumeSessionId: firstRes.harnessSessionId,
+                harnessSessionId: firstRes.harnessSessionId,
+                taskId: t.task_id,
+                prompt: continuationPrompt,
+                allowedFiles,
+                dispatchMode: "parallel_spawn",
+                ownerPid: process.pid,
+                commandRunner: this.commandRunner,
+                transport: input.transport,
+                acpCommandOverride: this.acpCommandOverride,
+                timeoutMs: effTimeoutMs,
+                idleTimeoutMs: effIdleTimeoutMs,
+                allowSlidingTimeout: true,
+                signal,
+              });
+            }
+
+            return firstRes;
           },
         });
         const spawnResult = run.result;
@@ -1559,6 +1842,41 @@ export class AsdMcpServer {
       autoCreatedTasks,
       deferredCrossScopeRequests
     );
+
+    if (process.env.ASD_ASYNC_WORKER_ACTIVE === "1") {
+      const existingJob = readAsyncDispatchJob(
+        this.projectRoot,
+        sessionId,
+        this.homeDir
+      );
+      if (existingJob) {
+        const anyFailed = results.some(
+          (r) => r.status === "failed" || r.status === "merge_conflict"
+        );
+        const doneSummary = results
+          .map(
+            (r) =>
+              `- ${r.taskId}: ${r.status} (@${r.harness}/${r.model})${r.error ? ` [${r.error}]` : ""}`
+          )
+          .join("\n");
+        writeAsyncDispatchJob(
+          this.projectRoot,
+          {
+            ...existingJob,
+            status: anyFailed ? "failed" : "done",
+            finishedAt: Date.now(),
+            summary: doneSummary,
+            progressBoard,
+            results,
+            ...(autoCreatedTasks.length > 0 ? { autoCreatedTasks } : {}),
+            ...(deferredCrossScopeRequests.length > 0
+              ? { deferredCrossScopeRequests }
+              : {}),
+          },
+          this.homeDir
+        );
+      }
+    }
 
     return {
       sessionId,
@@ -2109,6 +2427,7 @@ export class AsdMcpServer {
         ? { runtimeCapabilities: { availableHarnesses: [input.harness] } }
         : {}),
       commandRunner: this.commandRunner,
+      acpCommandOverride: this.acpCommandOverride,
       db: this.db,
       signal,
       onProgress: (msg) => {

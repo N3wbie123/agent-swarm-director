@@ -23,12 +23,17 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { loadRoutingConfig } from "./config.ts";
+import { executeAcpSubagentTurn, probeAcpCapability } from "./acp-client.ts";
+import { loadRoutingConfig, resolveAsdPaths } from "./config.ts";
 import { openProjectDb } from "./db.ts";
 import type { SqliteDriver, SessionRow, TaskRow } from "./db.ts";
 import { redactSecrets } from "./redact.ts";
 import { renderPlanMd, renderProgressBoard } from "./render.ts";
-import { buildHeadlessHarnessCommand } from "./session-tracker.ts";
+import {
+  buildHeadlessHarnessCommand,
+  buildSpawnSpec,
+  isValidAsdSessionId,
+} from "./session-tracker.ts";
 import {
   detectAvailableCliHarnesses,
   inferModelFamily,
@@ -49,12 +54,18 @@ import {
   finalizeSubagentArtifacts,
   spawnSubagent,
 } from "./spawner.ts";
-import type { CommandRunner } from "./spawner.ts";
+import type {
+  CommandRunner,
+  SpawnSubagentOptions,
+  SpawnSubagentResult,
+} from "./spawner.ts";
 import type {
   AgentRole,
   AsdDebateOutput,
   HarnessId,
   RoutingConfig,
+  SubagentSessionMeta,
+  SubagentTransportMode,
 } from "./types.ts";
 import { runGit } from "./workspace.ts";
 
@@ -167,6 +178,8 @@ export interface RunDebateBrokerOptions {
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
   db?: SqliteDriver;
+  transport?: SubagentTransportMode;
+  acpCommandOverride?: { command: string; args: string[] };
 }
 
 export interface DebateBrokerResult extends AsdDebateOutput {
@@ -203,6 +216,230 @@ export function buildDefaultHarnessCommand(
       ],
     }
   );
+}
+
+export interface SpawnHybridSubagentOptions
+  extends Omit<SpawnSubagentOptions, "command" | "args"> {
+  command?: string;
+  args?: string[];
+  thinkingEffort?: string | null;
+  resumeSessionId?: string | null;
+  transport?: SubagentTransportMode;
+  acpCommandOverride?: { command: string; args: string[] };
+}
+
+export interface SpawnHybridSubagentResult extends SpawnSubagentResult {
+  transportUsed: "acp" | "cli";
+}
+
+/**
+ * Hybrid subagent runner (ACP-first with seamless hardened streaming CLI fallback):
+ * 1. When a mock `commandRunner` is injected (unit tests), preserves deterministic CLI mock path.
+ * 2. When `transport` is `"auto"` (default) or `"acp"`, runs via `executeAcpSubagentTurn` whenever
+ *    the harness supports ACP natively (`opencode`, `antigravity`, `cursor`) or has an ACP bridge installed.
+ * 3. Falls back automatically to `buildSpawnSpec({ streaming: true })` CLI execution when ACP bridges
+ *    are not installed (e.g., `claude-code` / `codex` without global ACP adapters) or `transport === "cli"`.
+ */
+export async function spawnHybridSubagent(
+  options: SpawnHybridSubagentOptions
+): Promise<SpawnHybridSubagentResult> {
+  if (!isValidAsdSessionId(options.mainSessionId)) {
+    throw new Error("INVALID_SESSION_ID");
+  }
+
+  const effectiveTransport: SubagentTransportMode =
+    options.transport ??
+    (process.env.ASD_TRANSPORT === "acp" ||
+    process.env.ASD_TRANSPORT === "cli" ||
+    process.env.ASD_TRANSPORT === "auto"
+      ? process.env.ASD_TRANSPORT
+      : "auto");
+
+  // 1. Deterministic mock CommandRunner path (preserves 100% existing unit test contracts)
+  if (options.commandRunner) {
+    const fallbackCmd =
+      options.command !== undefined && options.args !== undefined
+        ? { command: options.command, args: options.args }
+        : buildDefaultHarnessCommand(
+            options.harness,
+            options.prompt,
+            options.model === "default" ? "" : options.model,
+            options.thinkingEffort
+          );
+    const res = await spawnSubagent({
+      ...options,
+      command: fallbackCmd.command,
+      args: fallbackCmd.args,
+    });
+    return { ...res, transportUsed: "cli" };
+  }
+
+  // 2. ACP-first execution path
+  if (effectiveTransport !== "cli") {
+    const readiness = options.acpCommandOverride
+      ? {
+          supported: true,
+          command: options.acpCommandOverride.command,
+          args: options.acpCommandOverride.args,
+          installHint: undefined,
+        }
+      : probeAcpCapability(options.harness, process.env);
+
+    if (readiness.supported || effectiveTransport === "acp") {
+      const paths = resolveAsdPaths(options.projectRoot, options.homeDir);
+      const sessionDir = path.join(
+        paths.sessionsDir,
+        options.mainSessionId,
+        "subagents",
+        options.subSessionId
+      );
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const metaPath = path.join(sessionDir, "meta.json");
+      const logPath = path.join(sessionDir, "output.log");
+      fs.writeFileSync(path.join(sessionDir, "prompt.md"), redactSecrets(options.prompt));
+
+      const startedAt = Date.now();
+      let meta: SubagentSessionMeta = {
+        subSessionId: options.subSessionId,
+        parentSessionId: options.mainSessionId,
+        roleType: "subagent",
+        role: options.role,
+        harness: options.harness,
+        model: options.model,
+        harnessSessionId: options.resumeSessionId ?? options.harnessSessionId ?? null,
+        transport: "acp",
+        taskId: options.taskId,
+        pid: 0,
+        ownerPid: options.ownerPid ?? process.pid,
+        dispatchMode: options.dispatchMode ?? "parallel_spawn",
+        worktreePath: options.worktreePath ?? null,
+        allowedFiles: options.allowedFiles,
+        status: "running",
+        startedAt,
+      };
+      const writeMeta = (): void => {
+        fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+      };
+      writeMeta();
+
+      if (!readiness.supported) {
+        const hintSuffix = readiness.installHint
+          ? ` Install ACP bridge via: ${readiness.installHint}`
+          : "";
+        const errText = `[ACP_MISSING_BRIDGE] ACP adapter not installed for '${options.harness}'.${hintSuffix}\n`;
+        fs.appendFileSync(logPath, errText, "utf8");
+        const finishedAt = Date.now();
+        meta = {
+          ...meta,
+          exitCode: -1,
+          status: "failed",
+          finishedAt,
+          durationMs: finishedAt - startedAt,
+          errorSummary: errText.trim(),
+        };
+        writeMeta();
+        return {
+          exitCode: -1,
+          durationMs: finishedAt - startedAt,
+          metaPath,
+          harnessSessionId: meta.harnessSessionId,
+          timedOut: false,
+          transportUsed: "acp",
+        };
+      }
+
+      const env: Record<string, string> = {
+        ...(process.env as Record<string, string>),
+        NODE_NO_WARNINGS: "1",
+        ASD_MAIN_SESSION_ID: options.mainSessionId,
+        ASD_SESSION_ROLE: "subagent",
+        ASD_SUBAGENT_META: metaPath,
+      };
+
+      const acpRes = await executeAcpSubagentTurn({
+        harness: options.harness,
+        role: options.role,
+        model: options.model,
+        thinkingEffort: options.thinkingEffort,
+        prompt: options.prompt,
+        cwd: options.cwd ?? options.projectRoot,
+        allowedFiles: options.allowedFiles,
+        metaPath,
+        logPath,
+        resumeSessionId: options.resumeSessionId ?? options.harnessSessionId,
+        commandOverride: options.acpCommandOverride,
+        env,
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+        maxDurationMs: options.maxDurationMs,
+        idleTimeoutMs: options.idleTimeoutMs,
+        allowSlidingTimeout: options.allowSlidingTimeout ?? true,
+        onSpawn: (pid) => {
+          meta = { ...meta, pid };
+          writeMeta();
+        },
+        onSessionIdDetected: (sid) => {
+          meta = { ...meta, harnessSessionId: sid };
+          writeMeta();
+        },
+      });
+
+      const finishedAt = Date.now();
+      meta = {
+        ...meta,
+        pid: acpRes.pid,
+        exitCode: acpRes.exitCode,
+        harnessSessionId: acpRes.sessionId,
+        status: acpRes.status,
+        finishedAt,
+        durationMs: acpRes.durationMs,
+        errorSummary: acpRes.errorSummary,
+      };
+      writeMeta();
+
+      return {
+        exitCode: acpRes.exitCode,
+        durationMs: acpRes.durationMs,
+        metaPath,
+        harnessSessionId: acpRes.sessionId,
+        timedOut: acpRes.timedOut,
+        ...(acpRes.timeoutReason ? { timeoutReason: acpRes.timeoutReason } : {}),
+        transportUsed: "acp",
+      };
+    }
+  }
+
+  // 3. Hardened Streaming CLI Fallback (`buildSpawnSpec` with `streaming: true`)
+  const cliSpec =
+    options.command !== undefined && options.args !== undefined
+      ? {
+          command: options.command,
+          args: options.args,
+          stdinPayload: options.stdinPayload,
+          closeStdinOnSpawn: options.closeStdinOnSpawn ?? true,
+          promptFilePath: options.promptFilePath,
+        }
+      : buildSpawnSpec({
+          harness: options.harness,
+          prompt: options.prompt,
+          model: options.model,
+          thinkingEffort: options.thinkingEffort,
+          streaming: true,
+          resumeSessionId:
+            options.resumeSessionId ?? options.harnessSessionId ?? undefined,
+        });
+
+  const cliRes = await spawnSubagent({
+    ...options,
+    command: cliSpec.command,
+    args: cliSpec.args,
+    stdinPayload: cliSpec.stdinPayload,
+    closeStdinOnSpawn: cliSpec.closeStdinOnSpawn ?? true,
+    promptFilePath: cliSpec.promptFilePath,
+    allowSlidingTimeout: options.allowSlidingTimeout ?? true,
+  });
+
+  return { ...cliRes, transportUsed: "cli" };
 }
 
 // ============================================================================
@@ -363,9 +600,37 @@ function extractTextFromJsonEnvelope(obj: Record<string, unknown>): string[] {
   const texts: string[] = [];
   if (typeof obj.text === "string" && obj.text.trim()) texts.push(obj.text);
   if (typeof obj.result === "string" && obj.result.trim()) texts.push(obj.result);
+  if (obj.result && typeof obj.result === "object") {
+    const resRec = obj.result as Record<string, unknown>;
+    if (typeof resRec.response === "string" && resRec.response.trim()) {
+      texts.push(resRec.response);
+    }
+  }
+  if (obj.step_update && typeof obj.step_update === "object") {
+    const su = obj.step_update as Record<string, unknown>;
+    if (typeof su.text_delta === "string" && su.text_delta) {
+      texts.push(su.text_delta);
+    }
+  }
+  if (obj.delta && typeof obj.delta === "object") {
+    const d = obj.delta as Record<string, unknown>;
+    if (typeof d.text === "string" && d.text) {
+      texts.push(d.text);
+    }
+  }
   if (typeof obj.response === "string" && obj.response.trim()) texts.push(obj.response);
   if (typeof obj.content === "string" && obj.content.trim()) texts.push(obj.content);
   if (typeof obj.message === "string" && obj.message.trim()) texts.push(obj.message);
+  if (obj.message && typeof obj.message === "object") {
+    const msgRec = obj.message as Record<string, unknown>;
+    if (Array.isArray(msgRec.content)) {
+      for (const b of msgRec.content) {
+        if (b && typeof b === "object" && typeof (b as Record<string, unknown>).text === "string") {
+          texts.push(String((b as Record<string, unknown>).text));
+        }
+      }
+    }
+  }
   if (obj.part && typeof obj.part === "object") {
     const part = obj.part as Record<string, unknown>;
     if (typeof part.text === "string" && part.text.trim()) texts.push(part.text);
@@ -1159,10 +1424,10 @@ export async function runDebateBroker(
         attempt: (route, sid) => {
           spawnedDebateSubIds.push(sid);
           const cmdModel = route.model === "default" ? "" : route.model;
-          const cmdInfo = options.commandBuilder
+          const explicitCmd = options.commandBuilder
             ? options.commandBuilder(route.harness, round1Prompt, cmdModel)
-            : buildDefaultHarnessCommand(route.harness, round1Prompt, cmdModel);
-          return spawnSubagent({
+            : undefined;
+          return spawnHybridSubagent({
             projectRoot: options.projectRoot,
             homeDir: options.homeDir,
             mainSessionId: options.sessionId,
@@ -1173,11 +1438,14 @@ export async function runDebateBroker(
             taskId: logTaskId,
             prompt: round1Prompt,
             allowedFiles: [],
-            command: cmdInfo.command,
-            args: cmdInfo.args,
+            ...(explicitCmd
+              ? { command: explicitCmd.command, args: explicitCmd.args }
+              : {}),
             dispatchMode: "debate",
             ownerPid: process.pid,
             commandRunner: options.commandRunner,
+            transport: explicitCmd ? "cli" : options.transport,
+            acpCommandOverride: options.acpCommandOverride,
             signal: options.signal,
             timeoutMs: effectiveTimeoutMs,
             idleTimeoutMs: effectiveIdleTimeoutMs,
@@ -1406,10 +1674,10 @@ export async function runDebateBroker(
           attempt: (route, sid) => {
             spawnedDebateSubIds.push(sid);
             const cmdModel = route.model === "default" ? "" : route.model;
-            const cmdInfo = options.commandBuilder
+            const explicitCmd = options.commandBuilder
               ? options.commandBuilder(route.harness, r2Prompt, cmdModel)
-              : buildDefaultHarnessCommand(route.harness, r2Prompt, cmdModel);
-            return spawnSubagent({
+              : undefined;
+            return spawnHybridSubagent({
               projectRoot: options.projectRoot,
               homeDir: options.homeDir,
               mainSessionId: options.sessionId,
@@ -1420,11 +1688,14 @@ export async function runDebateBroker(
               taskId: logTaskId,
               prompt: r2Prompt,
               allowedFiles: [],
-              command: cmdInfo.command,
-              args: cmdInfo.args,
+              ...(explicitCmd
+                ? { command: explicitCmd.command, args: explicitCmd.args }
+                : {}),
               dispatchMode: "debate",
-            ownerPid: process.pid,
-            commandRunner: options.commandRunner,
+              ownerPid: process.pid,
+              commandRunner: options.commandRunner,
+              transport: explicitCmd ? "cli" : options.transport,
+              acpCommandOverride: options.acpCommandOverride,
               signal: options.signal,
               timeoutMs: effectiveTimeoutMs,
               idleTimeoutMs: effectiveIdleTimeoutMs,

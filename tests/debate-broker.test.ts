@@ -924,5 +924,85 @@ Hope this helps!
       assert.equal(resCount.verdict, "APPROVE");
       assert.equal(capturedHarnesses.length, 4);
     });
+
+    test("unwraps Antigravity stream-json step_update deltas in parseReviewerOpening and runs debate via ACP", async () => {
+      const agyStream = [
+        JSON.stringify({ event: "init", conversation_id: "agy-deb-1" }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            state: "ACTIVE",
+            step_type: "agent_response",
+            text_delta: '```json\n{"verdict":"MINOR_AMEND","hard_constraints":["Keep zero deps"],',
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            state: "ACTIVE",
+            step_type: "agent_response",
+            text_delta: '"decisions":["Use ACP v1"],"risks":[],"reasoning":"Clean stdio RPC"}\n```',
+          },
+        }),
+      ].join("\n");
+
+      const parsed = parseReviewerOpening(agyStream);
+      assert.ok(parsed);
+      assert.equal(parsed?.verdict, "MINOR_AMEND");
+      assert.deepEqual(parsed?.hard_constraints, ["Keep zero deps"]);
+
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asd-deb-acp-"));
+      try {
+        const db = openProjectDb(projectRoot);
+        openDrivers.push(db);
+        const mockAcpDebate = path.join(projectRoot, "mock-acp-debate.mjs");
+        fs.writeFileSync(
+          mockAcpDebate,
+          `
+import * as readline from "node:readline";
+const rl = readline.createInterface({ input: process.stdin });
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+  } else if (msg.method === "session/new") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "acp-deb-ses" } });
+  } else if (msg.method === "session/set_model") {
+    send({ jsonrpc: "2.0", id: msg.id, result: {} });
+  } else if (msg.method === "session/prompt") {
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "acp-deb-ses",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: JSON.stringify({ verdict: "APPROVE", hard_constraints: ["ACP verified"], decisions: [], risks: [], reasoning: "Solid" }) }
+        }
+      }
+    });
+    send({ jsonrpc: "2.0", id: msg.id, result: { stopReason: "end_turn" } });
+  }
+});
+          `.trim()
+        );
+
+        const debRes = await runDebateBroker({
+          projectRoot,
+          sessionId: "asd-20261118-020000-d001",
+          topic: "ACP Debate Transport",
+          proposal: "Run reviewers over ACP",
+          reviewerRoutes: [{ harness: "opencode", model: "glm-5", role: "critic" }],
+          acpCommandOverride: { command: process.execPath, args: [mockAcpDebate] },
+          db,
+        });
+
+        assert.equal(debRes.verdict, "APPROVE");
+        assert.ok(debRes.hardConstraints.includes("ACP verified"));
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
   });
 });

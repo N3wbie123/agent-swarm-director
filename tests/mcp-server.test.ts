@@ -31,7 +31,8 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AsdMcpServer, ASD_MCP_TOOLS, handlePlan, handleDispatch, handleDebate, handleVerify } from "../src/mcp/server.ts";
+import { AsdMcpServer, ASD_MCP_TOOLS, handlePlan, handleDispatch, handleDebate, handleVerify, parseSubagentReport } from "../src/mcp/server.ts";
+import { waitForAsyncDispatch } from "../src/core/subagent-control.ts";
 import { main as cliMain } from "../src/cli/index.ts";
 import { openProjectDb, type SqliteDriver } from "../src/core/db.ts";
 import { ensureGitUserIdentity, prepareBaseline, runGit } from "../src/core/workspace.ts";
@@ -1764,5 +1765,149 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         `Expected boundary violation for scout.test.ts, got: ${JSON.stringify(vScout)}`
       );
     });
+  });
+});
+
+
+describe("T2.1: ACP Hybrid Dispatch, In-Place Idle Resume & Async Dispatch", () => {
+  test("parseSubagentReport unwraps Antigravity stream-json NDJSON envelopes", () => {
+    const ndjson = [
+      JSON.stringify({ event: "init", conversation_id: "agy-1" }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          state: "ACTIVE",
+          step_type: "agent_response",
+          text_delta: '```asd-report\n{"summary":"Streamed report","key_decisions":["Used ACP"],"risks":[]}\n```',
+        },
+      }),
+    ].join("\n");
+    const parsed = parseSubagentReport(ndjson);
+    assert.ok(parsed);
+    assert.equal(parsed?.summary, "Streamed report");
+    assert.deepEqual(parsed?.key_decisions, ["Used ACP"]);
+  });
+
+  test("executes HEAVY parallel_spawn via ACP (with in-place idle stall session/load resume) and supports async: true", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asd-mcp-acp-proj-"));
+    const mockDir = fs.mkdtempSync(path.join(os.tmpdir(), "asd-mcp-acp-mock-"));
+    runGit(["init"], { cwd: projectRoot });
+    ensureGitUserIdentity(projectRoot);
+    fs.mkdirSync(path.join(projectRoot, "src"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "src/acp-target.ts"), "export const x = 1;\n", "utf8");
+    runGit(["add", "."], { cwd: projectRoot });
+    runGit(["commit", "-m", "init"], { cwd: projectRoot });
+
+    const mockAcpServer = path.join(mockDir, "mock-acp-worker.mjs");
+    fs.writeFileSync(
+      mockAcpServer,
+      `
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as readline from "node:readline";
+
+const rl = readline.createInterface({ input: process.stdin });
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+let cwd = process.cwd();
+let loaded = false;
+
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+  } else if (msg.method === "session/new") {
+    cwd = msg.params.cwd || cwd;
+    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "acp-worker-ses-1" } });
+  } else if (msg.method === "session/load") {
+    loaded = true;
+    cwd = msg.params.cwd || cwd;
+    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: msg.params.sessionId } });
+  } else if (msg.method === "session/set_model") {
+    send({ jsonrpc: "2.0", id: msg.id, result: {} });
+  } else if (msg.method === "session/prompt") {
+    const sid = msg.params.sessionId;
+    if (!loaded) {
+      fs.writeFileSync(path.join(cwd, "src/acp-target.ts"), "export const x = 2; // partial\\n", "utf8");
+      return;
+    }
+    const prev = fs.readFileSync(path.join(cwd, "src/acp-target.ts"), "utf8");
+    const finalVal = prev.includes("partial") ? 42 : 0;
+    fs.writeFileSync(path.join(cwd, "src/acp-target.ts"), \`export const x = \${finalVal};\\n\`, "utf8");
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: sid,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: {
+            type: "text",
+            text: '\`\`\`asd-report\\n{"summary":"Completed via ACP resume","key_decisions":["Resumed same worktree"],"risks":[]}\\n\`\`\`'
+          }
+        }
+      }
+    });
+    send({ jsonrpc: "2.0", id: msg.id, result: { stopReason: "end_turn" } });
+  }
+});
+      `.trim()
+    );
+
+    const prevIdle = process.env.ASD_SPAWN_IDLE_TIMEOUT_MS;
+    process.env.ASD_SPAWN_IDLE_TIMEOUT_MS = "250";
+    const server = new AsdMcpServer({
+      projectRoot,
+      autoSync: false,
+      acpCommandOverride: { command: process.execPath, args: [mockAcpServer] },
+    });
+    try {
+      const plan = await server.handlePlan({
+        action: "create",
+        mainHarness: "opencode",
+        tasks: [
+          {
+            taskId: "T1.1",
+            turn: 1,
+            title: "ACP worker task with idle recovery",
+            track: "HEAVY",
+            role: "worker",
+            targetFiles: ["src/acp-target.ts"],
+            verifyCmd: "node -e \"process.exit(0)\"",
+          },
+        ],
+      });
+
+      const asyncStart = await server.handleDispatch({
+        sessionId: plan.sessionId,
+        turn: 1,
+        mode: "parallel_spawn",
+        harness: "opencode",
+        async: true,
+        openCodeSessionId: "ses_oc_main_1",
+      });
+
+      assert.equal(asyncStart.async, true);
+      assert.equal(asyncStart.asyncJob?.status, "running");
+      assert.equal(asyncStart.asyncJob?.openCodeSessionId, "ses_oc_main_1");
+
+      const finishedJob = await waitForAsyncDispatch(projectRoot, plan.sessionId, {
+        timeoutMs: 15000,
+        pollIntervalMs: 100,
+      });
+      assert.equal(finishedJob.status, "done");
+      assert.equal(finishedJob.results?.[0]?.status, "done");
+
+      const mergedContent = fs.readFileSync(path.join(projectRoot, "src/acp-target.ts"), "utf8");
+      assert.ok(
+        mergedContent.includes("export const x = 42;"),
+        `Expected merged worktree content from resumed ACP session, got: ${mergedContent}`
+      );
+    } finally {
+      server.close();
+      if (prevIdle === undefined) delete process.env.ASD_SPAWN_IDLE_TIMEOUT_MS;
+      else process.env.ASD_SPAWN_IDLE_TIMEOUT_MS = prevIdle;
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(mockDir, { recursive: true, force: true });
+    }
   });
 });

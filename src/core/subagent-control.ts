@@ -23,10 +23,12 @@ import {
   buildRound1Prompt,
   buildRound2Prompt,
   parseReviewerOpening,
+  spawnHybridSubagent,
   synthesizeInsightVerdict,
 } from "./debate.ts";
 import {
   createTaskWorktree,
+  isPidAlive,
   verifyAndCommitLightTask,
   verifyAndMergeHeavyTask,
 } from "./workspace.ts";
@@ -48,7 +50,14 @@ import { buildPromptForTask } from "./session-services.ts";
 import { buildResumeHarnessCommand } from "./session-tracker.ts";
 import { loadRoutingConfig, resolveAsdPaths } from "./config.ts";
 import { scanSubagentLogs, type SubagentLogRecord } from "./subagent-logs.ts";
-import type { HarnessId, AgentRole, DifficultyTier, TaskTrack } from "./types.ts";
+import type {
+  AgentRole,
+  AsyncDispatchJobMeta,
+  DifficultyTier,
+  HarnessId,
+  SubagentTransportMode,
+  TaskTrack,
+} from "./types.ts";
 
 const NON_CODE_DOC_CONFIG_PATTERN =
   /(?:^|\/)(?:\.gitignore|\.gitattributes|\.editorconfig|license(?:\.[a-z0-9]+)?|readme[^/]*|changelog[^/]*|handoff\.md)$|\.(?:md|mdx|markdown|txt|rst|adoc|json|jsonc|ya?ml|toml|ini|cfg|conf|lock|svg|png|jpe?g|gif|webp|ico|pdf)$/i;
@@ -101,6 +110,8 @@ export async function runSubagentControlAction(options: {
   model?: string;
   commandRunner?: CommandRunner;
   waitForCompletion?: boolean;
+  transport?: SubagentTransportMode;
+  acpCommandOverride?: { command: string; args: string[] };
 }): Promise<{
   ok: boolean;
   action: string;
@@ -486,10 +497,11 @@ export async function runSubagentControlAction(options: {
           harnessSessionId: target.harnessSessionId,
           prompt: promptText,
           model: nextModel,
+          streaming: true,
         })
       : buildDefaultHarnessCommand(nextHarness, promptText, nextModel);
 
-  const runPromise = spawnSubagent({
+  const runPromise = spawnHybridSubagent({
     projectRoot,
     homeDir: options.homeDir,
     mainSessionId: target.sessionId,
@@ -498,6 +510,8 @@ export async function runSubagentControlAction(options: {
     harness: nextHarness,
     model: nextModel || "default",
     harnessSessionId: target.harnessSessionId ?? null,
+    resumeSessionId:
+      options.action === "resume" ? (target.harnessSessionId ?? null) : null,
     taskId: effectiveTaskId,
     prompt: promptText,
     allowedFiles: effectiveAllowedFiles,
@@ -506,11 +520,14 @@ export async function runSubagentControlAction(options: {
       execWorktreePath && fs.existsSync(execWorktreePath)
         ? execWorktreePath
         : projectRoot,
-    command: cmdInfo.command,
-    args: cmdInfo.args,
+    ...(options.commandRunner
+      ? { command: cmdInfo.command, args: cmdInfo.args }
+      : {}),
     dispatchMode: "control_action",
     ownerPid: process.pid,
     commandRunner: options.commandRunner,
+    transport: options.transport,
+    acpCommandOverride: options.acpCommandOverride,
     timeoutMs: DEFAULT_DEBATE_TIMEOUT_MS,
     idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS,
   }).then(async (res) => {
@@ -657,7 +674,11 @@ export async function runSubagentControlAction(options: {
     return { ...res, finalTaskStatus };
   });
 
-  if (options.waitForCompletion || options.commandRunner) {
+  if (
+    options.waitForCompletion ||
+    options.commandRunner ||
+    options.acpCommandOverride
+  ) {
     const completed = await runPromise;
     return {
       ok: completed.finalTaskStatus === "done" || completed.finalTaskStatus === "verifying",
@@ -769,5 +790,90 @@ function tryRefreshDebateVerdictFromLog(
     // Ignore DB refresh error
   } finally {
     db?.close();
+  }
+}
+
+// ============================================================================
+// Async Dispatch Job Persistence & Polling Helpers
+// ============================================================================
+
+export function getAsyncDispatchJobPath(
+  projectRoot: string,
+  sessionId: string,
+  homeDir?: string
+): string {
+  const paths = resolveAsdPaths(projectRoot, homeDir);
+  return path.join(paths.sessionsDir, sessionId, "async-dispatch.json");
+}
+
+export function writeAsyncDispatchJob(
+  projectRoot: string,
+  job: AsyncDispatchJobMeta,
+  homeDir?: string
+): string {
+  const jobPath = getAsyncDispatchJobPath(projectRoot, job.sessionId, homeDir);
+  fs.mkdirSync(path.dirname(jobPath), { recursive: true });
+  atomicWriteFileSync(jobPath, JSON.stringify(job, null, 2) + "\n");
+  return jobPath;
+}
+
+export function readAsyncDispatchJob(
+  projectRoot: string,
+  sessionId: string,
+  homeDir?: string
+): AsyncDispatchJobMeta | null {
+  try {
+    const jobPath = getAsyncDispatchJobPath(projectRoot, sessionId, homeDir);
+    if (!fs.existsSync(jobPath)) return null;
+    const raw = fs.readFileSync(jobPath, "utf8");
+    const parsed = JSON.parse(raw) as AsyncDispatchJobMeta;
+    if (!parsed || typeof parsed !== "object" || !parsed.sessionId) return null;
+    if (
+      parsed.status === "running" &&
+      parsed.workerPid > 0 &&
+      parsed.workerPid !== process.pid &&
+      !isPidAlive(parsed.workerPid)
+    ) {
+      const crashed: AsyncDispatchJobMeta = {
+        ...parsed,
+        status: "failed",
+        finishedAt: Date.now(),
+        error: `Async dispatch worker (PID ${parsed.workerPid}) exited unexpectedly`,
+      };
+      writeAsyncDispatchJob(projectRoot, crashed, homeDir);
+      return crashed;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function waitForAsyncDispatch(
+  projectRoot: string,
+  sessionId: string,
+  options?: {
+    homeDir?: string;
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+  }
+): Promise<AsyncDispatchJobMeta> {
+  const deadline = Date.now() + (options?.timeoutMs ?? 60 * 60_000);
+  const interval = options?.pollIntervalMs ?? 150;
+
+  while (true) {
+    const job = readAsyncDispatchJob(projectRoot, sessionId, options?.homeDir);
+    if (!job) {
+      throw new Error(`No async dispatch job found for session '${sessionId}'`);
+    }
+    if (job.status !== "running") {
+      return job;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out waiting for async dispatch job '${job.jobId}' in session '${sessionId}'`
+      );
+    }
+    await new Promise((r) => setTimeout(r, interval));
   }
 }

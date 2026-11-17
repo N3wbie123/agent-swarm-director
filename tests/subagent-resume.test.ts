@@ -364,3 +364,104 @@ test("T2.3: subagent-control uses global core.db exclusively (ignores legacy <pr
     fs.rmSync(tmpHome, { recursive: true, force: true });
   }
 });
+
+test("T2.1: runSubagentControlAction resumes ACP subagent via session/load", async () => {
+  const root = makeTempGitRepo("asd-sub-acp-resume-");
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "asd-sub-acp-home-"));
+  try {
+    const db = openProjectDb(root, tmpHome);
+    const sessionId = "asd-20261118-020500-acpr";
+    db.createOrGetSession({
+      sessionId,
+      projectRoot: root,
+      mainHarness: "opencode",
+    });
+    db.upsertTasks(sessionId, [
+      {
+        taskId: "T1.1",
+        turn: 1,
+        title: "Failed ACP task to resume",
+        track: "LIGHT",
+        role: "worker",
+        targetFiles: ["src/feature.ts"],
+        verifyCmd: "node -e \"process.exit(0)\"",
+      },
+    ]);
+    db.updateTaskStatus(sessionId, "T1.1", "failed", {
+      assignedHarness: "opencode",
+      assignedModel: "glm-5",
+      subSessionId: "sub-1-T1.1-worker-opencode",
+    });
+    db.close();
+
+    const subDir = path.join(root, ".asd", "sessions", sessionId, "subagents", "sub-1-T1.1-worker-opencode");
+    fs.mkdirSync(subDir, { recursive: true });
+    fs.writeFileSync(path.join(subDir, "prompt.md"), "Initial task prompt", "utf8");
+    fs.writeFileSync(
+      path.join(subDir, "meta.json"),
+      JSON.stringify({
+        subSessionId: "sub-1-T1.1-worker-opencode",
+        parentSessionId: sessionId,
+        roleType: "subagent",
+        role: "worker",
+        harness: "opencode",
+        model: "glm-5",
+        harnessSessionId: "ses_acp_orig_77",
+        transport: "acp",
+        taskId: "T1.1",
+        pid: 1234,
+        allowedFiles: ["src/feature.ts"],
+        status: "failed",
+      }),
+      "utf8"
+    );
+
+    const mockAcpPath = path.join(tmpHome, "mock-acp-resume.mjs");
+    fs.writeFileSync(
+      mockAcpPath,
+      `
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as readline from "node:readline";
+const rl = readline.createInterface({ input: process.stdin });
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+let loadedSid = "";
+let cwd = process.cwd();
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+  } else if (msg.method === "session/load") {
+    loadedSid = msg.params.sessionId;
+    cwd = msg.params.cwd || cwd;
+    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: loadedSid } });
+  } else if (msg.method === "session/set_model") {
+    send({ jsonrpc: "2.0", id: msg.id, result: {} });
+  } else if (msg.method === "session/prompt") {
+    fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "src/feature.ts"), \`export const resumedSid = "\${loadedSid}";\\n\`, "utf8");
+    send({ jsonrpc: "2.0", id: msg.id, result: { stopReason: "end_turn" } });
+  }
+});
+      `.trim()
+    );
+
+    const res = await runSubagentControlAction({
+      projectRoot: root,
+      homeDir: tmpHome,
+      sessionId,
+      subSessionId: "sub-1-T1.1-worker-opencode",
+      action: "resume",
+      prompt: "Finish feature via ACP",
+      acpCommandOverride: { command: process.execPath, args: [mockAcpPath] },
+    });
+
+    assert.equal(res.ok, true);
+    assert.equal(res.status, "done");
+    const updatedFeature = fs.readFileSync(path.join(root, "src/feature.ts"), "utf8");
+    assert.ok(updatedFeature.includes('resumedSid = "ses_acp_orig_77"'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  }
+});

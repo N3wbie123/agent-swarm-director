@@ -8,6 +8,8 @@
  */
 
 export * from "./core/types.ts";
+export * from "./core/acp-types.ts";
+export * from "./core/acp-client.ts";
 export * from "./core/config.ts";
 export * from "./core/db.ts";
 export * from "./core/session-tracker.ts";
