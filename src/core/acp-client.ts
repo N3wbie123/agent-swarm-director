@@ -37,6 +37,7 @@ import type {
   AcpSessionCancelParams,
   AcpSessionConfigOption,
   AcpSessionLoadParams,
+  AcpSessionModelInfo,
   AcpSessionNewParams,
   AcpSessionNewResult,
   AcpSessionPromptParams,
@@ -68,6 +69,163 @@ import {
 // ============================================================================
 // 1. Harness ACP Capability Discovery & Cross-Platform Executable Resolver
 // ============================================================================
+
+function stripModelBrackets(id: string): string {
+  return id.replace(/\[.*\]$/, "").trim();
+}
+
+function normalizeModelSlug(id: string): string {
+  return stripModelBrackets(id)
+    .toLowerCase()
+    .replace(/^.*\//, "")
+    .replace(/(\d)p(\d)/g, "$1.$2")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function pickBestEffortVariant(candidates: string[], effort: string): string {
+  if (candidates.length <= 1 || !effort) return candidates[0]!;
+  const effRe = new RegExp(`(?:^|[,_=-])${effort}(?:[,\\]$]|$)`, "i");
+  return candidates.find((c) => effRe.test(c)) ?? candidates[0]!;
+}
+
+export function matchAcpModelCandidate(
+  requestedModel: string,
+  candidates: readonly string[],
+  thinkingEffort?: string | null
+): string | null {
+  const reqTrimmed = requestedModel.trim();
+  if (!reqTrimmed || candidates.length === 0) return null;
+  const reqLower = reqTrimmed.toLowerCase();
+
+  // 1. Exact case-insensitive match
+  const exact = candidates.find((c) => c.toLowerCase() === reqLower);
+  if (exact) return exact;
+
+  // 2. Antigravity tier shorthands (flash_lite, flash, pro)
+  if (reqLower === "flash_lite" || reqLower === "flash-lite") {
+    return (
+      candidates.find((c) => /gemini-3\.8-flash-low/i.test(c)) ??
+      candidates.find((c) => /flash-(?:low|lite)/i.test(c)) ??
+      candidates.find((c) => /flash/i.test(c)) ??
+      null
+    );
+  }
+  if (reqLower === "flash") {
+    return (
+      candidates.find((c) => /gemini-3\.8-flash-medium/i.test(c)) ??
+      candidates.find((c) => /gemini-3\.8-flash(?:\[|$)/i.test(c)) ??
+      candidates.find((c) => /flash/i.test(c)) ??
+      null
+    );
+  }
+  if (reqLower === "pro") {
+    return (
+      candidates.find((c) => /gemini-4-carbon-high/i.test(c)) ??
+      candidates.find((c) => /gemini-4-carbon/i.test(c)) ??
+      candidates.find((c) => /\bpro\b|-pro(?:\[|-|$)/i.test(c)) ??
+      null
+    );
+  }
+
+  const reqNoBracket = stripModelBrackets(reqLower);
+  const effortSuffixMatch = reqNoBracket.match(/^(.*?)-(low|medium|high|xhigh|max)$/);
+  const reqBase = effortSuffixMatch ? effortSuffixMatch[1]! : reqNoBracket;
+  const effectiveEffort =
+    thinkingEffort?.trim().toLowerCase() || effortSuffixMatch?.[2] || "medium";
+
+  // 3. Base + effort suffix match (e.g. 'gemini-3.8-flash' -> 'gemini-3.8-flash-medium')
+  const withEffort = `${reqBase}-${effectiveEffort}`;
+  const exactEffort = candidates.find((c) => c.toLowerCase() === withEffort);
+  if (exactEffort) return exactEffort;
+
+  // 4. Provider-prefixed suffix match (e.g. 'z-ai/glm-5.3-flash' -> 'nvidia/z-ai/glm-5.3-flash')
+  const providerMatches = candidates.filter((c) => {
+    const baseC = stripModelBrackets(c).toLowerCase();
+    return (
+      baseC === reqNoBracket ||
+      baseC.endsWith(`/${reqNoBracket}`) ||
+      baseC.endsWith(`/${reqBase}`)
+    );
+  });
+  if (providerMatches.length > 0) {
+    return pickBestEffortVariant(providerMatches, effectiveEffort);
+  }
+
+  // 5. Bracket-stripped base match (e.g. Cursor 'claude-sonnet-5-5[context=300k,...]' for 'claude-sonnet-5-5-medium')
+  const baseMatches = candidates.filter((c) => {
+    const baseC = stripModelBrackets(c).toLowerCase();
+    return baseC === reqBase || baseC.startsWith(`${reqBase}-`);
+  });
+  if (baseMatches.length > 0) {
+    return pickBestEffortVariant(baseMatches, effectiveEffort);
+  }
+
+  // 6. Normalized slug match (e.g. 'z-ai/glm-5.3-flash' -> 'glm-5p3-flash[reasoning=high]', 'deepseek-v4.1-flash' -> 'deepseek-v41-flash-1017[...]')
+  const reqSlug = normalizeModelSlug(reqBase);
+  if (reqSlug.length >= 5) {
+    const slugExact = candidates.filter((c) => normalizeModelSlug(c) === reqSlug);
+    if (slugExact.length > 0) {
+      return pickBestEffortVariant(slugExact, effectiveEffort);
+    }
+    const slugPrefix = candidates.filter((c) =>
+      normalizeModelSlug(c).startsWith(reqSlug)
+    );
+    if (slugPrefix.length > 0) {
+      return pickBestEffortVariant(slugPrefix, effectiveEffort);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolves the concrete ACP `set_model` and `set_config_option` model IDs from
+ * `session/new` (or `session/load`) catalog metadata (`models.availableModels` & `configOptions`).
+ */
+export function resolveBestAcpModelId(
+  requestedModel: string,
+  catalog?: {
+    availableModels?: AcpSessionModelInfo[];
+    configOptions?: AcpSessionConfigOption[];
+    thinkingEffort?: string | null;
+  }
+): {
+  setModelId: string | null;
+  configOptionId: string | null;
+  configValue: string | null;
+} {
+  const cleanReq = requestedModel.trim();
+  const modelIds = (catalog?.availableModels ?? [])
+    .map((m) => m.modelId)
+    .filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+
+  const modelOpt = catalog?.configOptions?.find(
+    (c) => c.id === "model" || c.category === "model"
+  );
+  const configIds = (modelOpt?.options ?? [])
+    .map((o) => o.value)
+    .filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+
+  const matchedSetModel =
+    modelIds.length > 0
+      ? matchAcpModelCandidate(cleanReq, modelIds, catalog?.thinkingEffort)
+      : configIds.length > 0
+        ? matchAcpModelCandidate(cleanReq, configIds, catalog?.thinkingEffort)
+        : cleanReq;
+
+  const matchedConfigValue =
+    configIds.length > 0
+      ? matchAcpModelCandidate(cleanReq, configIds, catalog?.thinkingEffort)
+      : modelOpt
+        ? cleanReq
+        : null;
+
+  return {
+    setModelId: matchedSetModel,
+    configOptionId: modelOpt?.id ?? null,
+    configValue: matchedConfigValue,
+  };
+}
 
 export const CLAUDE_ACP_INSTALL_HINT =
   "npm install -g @agentclientprotocol/claude-agent-acp" as const;
@@ -742,6 +900,7 @@ export class AcpStdioClient {
   }): Promise<{ sessionId: string; loaded: boolean }> {
     let sessionId = "";
     let loaded = false;
+    let availableModels: AcpSessionModelInfo[] | undefined;
     let configOptions: AcpSessionConfigOption[] | undefined;
 
     const resumeId = input.resumeSessionId?.trim();
@@ -769,6 +928,7 @@ export class AcpStdioClient {
       sessionId =
         (typeof loadRes?.sessionId === "string" && loadRes.sessionId.trim()) ||
         resumeId;
+      availableModels = loadRes?.models?.availableModels;
       configOptions = loadRes?.configOptions;
       loaded = true;
     } else {
@@ -785,6 +945,7 @@ export class AcpStdioClient {
         throw new Error("ACP session/new returned an invalid or empty sessionId");
       }
       sessionId = created.sessionId.trim();
+      availableModels = created.models?.availableModels;
       configOptions = created.configOptions;
     }
 
@@ -795,7 +956,11 @@ export class AcpStdioClient {
       cleanModel !== "inherit" &&
       cleanModel !== "inherent"
     ) {
-      await this.tryConfigureSessionModel(sessionId, cleanModel, configOptions);
+      await this.tryConfigureSessionModel(sessionId, cleanModel, {
+        availableModels,
+        configOptions,
+        thinkingEffort: input.thinkingEffort,
+      });
     }
 
     const cleanEffort = (input.thinkingEffort ?? "").trim();
@@ -823,24 +988,33 @@ export class AcpStdioClient {
 
   private async tryConfigureSessionModel(
     sessionId: string,
-    modelId: string,
-    configOptions?: AcpSessionConfigOption[]
-  ): Promise<void> {
-    try {
-      const setModelParams: AcpSessionSetModelParams = { sessionId, modelId };
-      await this.sendRequest("session/set_model", setModelParams, 10_000);
-      return;
-    } catch {
-      // Fallback to session/set_config_option
+    requestedModelId: string,
+    catalog?: {
+      availableModels?: AcpSessionModelInfo[];
+      configOptions?: AcpSessionConfigOption[];
+      thinkingEffort?: string | null;
     }
-    const modelOpt = configOptions?.find(
-      (c) => c.id === "model" || c.category === "model"
-    );
-    if (modelOpt) {
+  ): Promise<void> {
+    const resolved = resolveBestAcpModelId(requestedModelId, catalog);
+    const setModelTarget = resolved.setModelId;
+    if (setModelTarget) {
+      try {
+        const setModelParams: AcpSessionSetModelParams = {
+          sessionId,
+          modelId: setModelTarget,
+        };
+        await this.sendRequest("session/set_model", setModelParams, 10_000);
+        return;
+      } catch {
+        // Fallback to session/set_config_option below
+      }
+    }
+
+    if (resolved.configOptionId && resolved.configValue) {
       const cfgParams: AcpSessionSetConfigOptionParams = {
         sessionId,
-        configId: modelOpt.id,
-        value: modelId,
+        configId: resolved.configOptionId,
+        value: resolved.configValue,
       };
       await this.sendRequest("session/set_config_option", cfgParams, 10_000).catch(
         () => {}

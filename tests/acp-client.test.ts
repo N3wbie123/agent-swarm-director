@@ -15,6 +15,7 @@ import {
   executeAcpSubagentTurn,
   probeAcpCapability,
   resolveAcpLaunchCommand,
+  resolveBestAcpModelId,
 } from "../src/core/acp-client.ts";
 
 function makeTempDir(prefix: string): string {
@@ -92,6 +93,86 @@ describe("ACP Capability Probing & Launch Resolution", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  test("resolveBestAcpModelId maps routing.jsonc model names onto OpenCode, Antigravity, and Cursor ACP catalogs", () => {
+    // 1. OpenCode ACP (configOptions only, provider-prefixed IDs)
+    const ocCatalog = {
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          options: [
+            { value: "nvidia/z-ai/glm-5.3-flash" },
+            { value: "nvidia/deepseek-ai/deepseek-v4.1-flash" },
+          ],
+        },
+      ],
+    };
+    assert.equal(
+      resolveBestAcpModelId("z-ai/glm-5.3-flash", ocCatalog).setModelId,
+      "nvidia/z-ai/glm-5.3-flash"
+    );
+    assert.equal(
+      resolveBestAcpModelId("deepseek-ai/deepseek-v4.1-flash", ocCatalog).configValue,
+      "nvidia/deepseek-ai/deepseek-v4.1-flash"
+    );
+
+    // 2. Antigravity ACP (tier shorthands + effort-suffixed availableModels)
+    const agCatalog = {
+      availableModels: [
+        { modelId: "gemini-4-carbon-high" },
+        { modelId: "gemini-4-carbon-medium" },
+        { modelId: "gemini-3.8-flash-medium" },
+        { modelId: "gemini-3.8-flash-low" },
+      ],
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          options: [{ value: "gemini-4-carbon" }, { value: "gemini-3.8-flash" }],
+        },
+      ],
+    };
+    assert.equal(
+      resolveBestAcpModelId("flash_lite", agCatalog).setModelId,
+      "gemini-3.8-flash-low"
+    );
+    assert.equal(
+      resolveBestAcpModelId("flash", agCatalog).setModelId,
+      "gemini-3.8-flash-medium"
+    );
+    assert.equal(
+      resolveBestAcpModelId("pro", agCatalog).setModelId,
+      "gemini-4-carbon-high"
+    );
+    assert.equal(
+      resolveBestAcpModelId("gemini-3.8-flash", agCatalog).setModelId,
+      "gemini-3.8-flash-medium"
+    );
+
+    // 3. Cursor ACP (bracket-parameterized modelIds & 'p'-escaped version slugs)
+    const crCatalog = {
+      availableModels: [
+        { modelId: "default[]" },
+        { modelId: "claude-opus-5-5[context=300k,effort=medium,fast=false]" },
+        { modelId: "claude-sonnet-5-5[context=300k,reasoning_effort=high]" },
+        { modelId: "glm-5p3-flash[reasoning=high]" },
+        { modelId: "deepseek-v41-flash-1017[reasoning_effort=high]" },
+      ],
+    };
+    assert.equal(
+      resolveBestAcpModelId("claude-sonnet-5-5-medium", crCatalog).setModelId,
+      "claude-sonnet-5-5[context=300k,reasoning_effort=high]"
+    );
+    assert.equal(
+      resolveBestAcpModelId("z-ai/glm-5.3-flash", crCatalog).setModelId,
+      "glm-5p3-flash[reasoning=high]"
+    );
+    assert.equal(
+      resolveBestAcpModelId("deepseek-ai/deepseek-v4.1-flash", crCatalog).setModelId,
+      "deepseek-v41-flash-1017[reasoning_effort=high]"
+    );
   });
 });
 
