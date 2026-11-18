@@ -146,38 +146,68 @@ export interface TranscriptMessage {
 
 ```ts
 import {
+  openProjectDb,
   runDriverTurn,
-  parseDriverStreamLine,
+  cancelDriverTurn,
+  closeDriverSession,
+  closeAllDriverSessions,
   type DriverStreamEvent,
-  type RunDriverTurnResult,
+  type DriverRunResult,
 } from "agent-swarm-director";
 
-const result: RunDriverTurnResult = await runDriverTurn({
+const db = openProjectDb("/path/to/project");
+const controller = new AbortController();
+
+const result: DriverRunResult = await runDriverTurn({
   projectRoot: "/path/to/project",
+  db,
   sessionId: "asd-20261103-182153-i9ti",
-  harness: "claude-code",
-  model: "claude-sonnet-4-6",
   prompt: "현재 프로젝트의 세션 트래커 구조를 분석해줘.",
-  source: "gui",
-  streamJson: true, // 기본값 true: 전 하네스 이벤트 스트리밍 — Claude(--output-format stream-json --verbose), Cursor/Antigravity(--output-format stream-json), Codex(--json), OpenCode(--format json). false면 Claude/Cursor/Antigravity는 최종 json 단일 응답
+  model: "claude-sonnet-4-6",   // 선택: driver.model / 기본 모델 오버라이드 (ACP 세션에서는 setSessionModel로 전환)
+  transport: "auto",            // "auto" (기본: ACP 우선, 실패 시 CLI 폴백) | "acp" | "cli"
+  autoApprove: false,           // false 시 onPermissionRequest 콜백으로 대화형 권한 확인 (생략 시 session.auto_approve 따름)
+  onPermissionRequest: async (params) => {
+    const allowOpt = params.options?.find((o) => o.kind === "allow_once");
+    return allowOpt
+      ? { outcome: { outcome: "selected", optionId: allowOpt.optionId } }
+      : { outcome: { outcome: "cancelled" } };
+  },
+  signal: controller.signal,    // AbortSignal로 협조적 취소(ACP session/cancel) 트리거 가능
+  streamJson: true,             // CLI 경로 사용 시 NDJSON 스트리밍 활성화
   onEvent: (event: DriverStreamEvent) => {
-    switch (event.category) {
+    switch (event.type) {
       case "thinking":
         console.log("[실시간 Thinking]", event.thinking);
         break;
       case "tool_use":
-        console.log("[실시간 Tool Use]", event.toolUse?.name, event.toolUse?.input);
+        console.log("[실시간 Tool Use]", event.toolName, event.toolInput);
         break;
       case "tool_result":
-        console.log("[실시간 Tool Result]", event.toolResult?.output);
+        console.log("[실시간 Tool Result]", event.toolOutput);
         break;
-      case "assistant":
+      case "text":
         console.log("[실시간 Assistant 응답]", event.text);
         break;
     }
   },
 });
+
+// 상주형 ACP 턴 제어 및 세션 풀 정리 헬퍼
+cancelDriverTurn("asd-20261103-182153-i9ti"); // 실행 중인 ACP 턴에 session/cancel 전송
+await closeDriverSession("asd-20261103-182153-i9ti"); // 해당 세션의 상주 ACP 클라이언트 종료
+await closeAllDriverSessions(); // 전체 상주 ACP 세션 풀 일괄 종료
 ```
+
+#### `RunDriverTurnInput` 주요 ACP·권한·수명주기 옵션
+| 옵션 / 헬퍼 | 타입 / 시그니처 | 설명 |
+| :--- | :--- | :--- |
+| `transport` | `"auto" \| "acp" \| "cli"` | `"auto"`(기본, `commandRunner` 지정 시 `"cli"`): 상주 ACP 세션 우선 실행 및 Phase-A 실패 시 CLI 폴백. `"acp"`는 ACP 미지원/실패 시 오류 발생 |
+| `model` | `string \| null` | 턴 실행 시 사용할 모델 오버라이드 (상주 ACP 풀 재사용 시 `setSessionModel`로 전환) |
+| `autoApprove` | `boolean` | `true`면 ACP 권한 요청을 자동 승인, `false`면 `onPermissionRequest` 위임 (보호 경로는 코어 가드가 선차단) |
+| `onPermissionRequest` | `(params: AcpRequestPermissionParams) => Promise<AcpRequestPermissionResult>` | `autoApprove: false`일 때 `session/request_permission` 응답을 비동기로 반환하는 콜백 |
+| `cancelDriverTurn` | `(sessionId: string) => boolean` | 해당 세션에서 실행 중인 ACP 턴에 `session/cancel` 전송 (`signal?: AbortSignal`과 동일 효과) |
+| `closeDriverSession` | `(sessionId: string) => Promise<void>` | 특정 세션에 연결된 상주 ACP 클라이언트만 풀에서 제거하고 종료 |
+| `closeAllDriverSessions` | `() => Promise<void>` | 앱 종료 시 모든 상주 ACP 클라이언트를 정리 |
 
 ---
 

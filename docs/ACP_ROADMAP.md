@@ -71,15 +71,17 @@
 > [!IMPORTANT]
 > 아래 항목들은 외부 GUI 리포(`ASD-Nexus` / `asd-gui`) 작업 시점에 맞춰 순차 진행하기 위해 의도적으로 분리·보류된 항목입니다.
 
-- [ ] **G1. `runDriverTurn` (`src/core/drivers.ts`) 상주형 멀티턴 ACP 세션 옵션 도입**
-  - 현재 `runDriverTurn`은 매 턴 CLI 프로세스를 새로 스폰(`--resume`)하는 단발 스트리밍 구조임.
-  - `AcpStdioClient`를 상주 세션 풀(`DriverSessionPool`)로 유지하여 매 턴 프로세스 콜드부트(특히 OpenCode ~28초 부팅 비용) 없이 즉시 `session/prompt`를 전송하도록 확장 (`transport?: "auto" | "acp" | "cli"` 옵션 추가, 기본값은 GUI 준비 완료 전까지 하위 호환 유지).
-- [ ] **G2. `AcpNormalizedEvent` ↔ `DriverStreamEvent` 실시간 스트림 단일화**
-  - `src/core/acp-client.ts`의 `normalizeAcpSessionUpdate`(`text`, `thinking`, `tool_use`, `tool_result`, `state`)를 `DriverStreamEvent` 콜백(`onEvent`)에 무손실 매핑하여 GUI 채팅창에서 5대 하네스 동일 UX 렌더링 보장.
-- [ ] **G3. GUI 대화형 권한 승인 모달 연동 (`session/request_permission` Interactive Mode)**
-  - 헤드리스 서브에이전트는 `policy.ts`가 자동 판정하지만, 사용자가 직접 조작하는 GUI 메인 드라이버 세션에서는 `session/request_permission` 수신 시 WebSocket/IPC를 통해 GUI 승인 모달(`allow_once` / `allow_always` / `reject_once`)을 띄우고 사용자 선택 결과를 ACP 응답으로 반환하도록 브리지 추가.
-- [ ] **G4. GUI 실행 중 즉시 중단 버튼 (`session/cancel`) 직결**
-  - 기존 프로세스 강제 종료(`killProcessTree`) 대신 ACP `session/cancel` 알림을 먼저 전송해 하네스 세션 DB 손상 없이 현재 턴만 깔끔히 중단하고 프로세스는 유지.
+- [x] **G1. `runDriverTurn` (`src/core/drivers.ts`) 상주형 멀티턴 ACP 세션 옵션 도입**
+  - `src/core/drivers.ts`에 상주형 세션 풀(`driverSessionPool` / `DriverSessionPoolEntry`)과 `RunDriverTurnInput`의 `transport?: "auto" | "acp" | "cli"`(기본 `"auto"`, `commandRunner` 지정 시 `"cli"`), `model?: string | null` 옵션을 도입함.
+  - 동일 `(projectRoot, sessionId, driverId)` 키로 `AcpStdioClient`를 재사용하고, 모델 변경 시 `AcpStdioClient.setSessionModel`로 갱신하며, `"auto"` 모드에서 Phase-A ACP 연결 실패 시 CLI 폴백으로 무중단 전환됨.
+- [x] **G2. `AcpNormalizedEvent` ↔ `DriverStreamEvent` 실시간 스트림 단일화**
+  - `mapAcpEventToDriverEvent`를 통해 `AcpNormalizedEvent`(`text`, `thinking`, `tool_use`, `tool_result`)를 `DriverStreamEvent`(`type: "text" | "thinking" | "tool_use" | "tool_result"`, `harnessSessionId`, `timestamp`)로 매핑하여 `onEvent`에 전달함 (`state` / `permission` 이벤트는 `DriverStreamEvent`에서 제외).
+  - ACP 경로에서는 `onOutput`을 호출하지 않아 원시 JSON-RPC 프레임이 텍스트 스트림에 간섭하지 않음.
+- [x] **G3. GUI 대화형 권한 승인 모달 연동 (`session/request_permission` Interactive Mode)**
+  - `AcpStdioClientOptions` / `setTurnHandlers` 및 `RunDriverTurnInput`에 비동기 `onPermissionRequest?: (params: AcpRequestPermissionParams) => Promise<AcpRequestPermissionResult>`와 `autoApprove?: boolean`을 추가함.
+  - `probeAcpCapability(harness, env, { interactivePermissions })`로 비자동 승인 모드 시 Antigravity `--dangerously-skip-permissions` 제거 등 인터랙티브 권한 모드를 지원하며, `checkInteractivePermissionSafety`로 워크스페이스 외부 및 보호 경로(`.git/`, `.asd/`, `.env*` 등)를 콜백 호출 전 선차단함.
+- [x] **G4. GUI 실행 중 즉시 중단 버튼 (`session/cancel`) 직결**
+  - `AbortSignal`(`input.signal`) 및 `cancelDriverTurn(sessionId)`로 진행 중인 턴에 ACP `session/cancel`(`client.cancelSession`)을 전송(1.5초 유예 후 정리)하고, `closeDriverSession(sessionId)` / `closeAllDriverSessions()`(및 드라이버 교체·분리 시 `closeDriverSessionByDriverId`)로 상주 클라이언트를 명시적으로 종료할 수 있음.
 - [ ] **G5. GUI 설정 화면 내 ACP 상태 배지 및 원클릭 브리지 설치 도우미**
   - `runAsdDoctor()`가 반환하는 `harnesses[id].acp` 및 `acpBridgeHints` 필드를 GUI 환경설정 패널에 표시하고, Claude Code / Codex 브리지 미설치 시 안내 배너 노출.
 - [ ] **G6. ACP v2 정식 스펙 승격 대응**

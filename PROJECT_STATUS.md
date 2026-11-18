@@ -50,7 +50,8 @@ asd-multiagent/
 │   │   ├── config.ts            # 2-Path 레이아웃(~/.asd 및 <project>/.asd), 단일 core.db 경로, 라우팅 설정 로더
 │   │   ├── db.ts                # node:sqlite WAL 모드 4-테이블 SSOT 드라이버 (sessions, tasks, debates, session_drivers)
 │   │   ├── session-tracker.ts   # 프로젝트 탐색, 5대 하네스 로컬 CLI 세션 발견/추적, CLI ↔ ASD 세션 승격(Promote)/하강(Demote), `ses_` 세션 속성 보정 및 cli-recent 자가 치유
-│   │   ├── drivers.ts           # 멀티 드라이버 소유권(session_drivers), 0-Token 브리핑, 실시간 스트리밍 턴 실행기(runDriverTurn, 전 하네스 네이티브 JSONL 스트리밍)
+│   │   ├── acp-client.ts        # 무의존성 ACP JSON-RPC 2.0 클라이언트(AcpStdioClient), 하네스 ACP 프로빙(probeAcpCapability), 권한 가드
+│   │   ├── drivers.ts           # 멀티 드라이버 소유권(session_drivers), 0-Token 브리핑, 상주 ACP 세션 풀·스트리밍 턴 실행기(runDriverTurn)
 │   │   ├── transcripts.ts       # 5대 하네스 로컬 대화 기록 탐색 및 4분류(Thinking, Tool Use, Tool Result, 응답/유저) 파서
 │   │   ├── router.ts            # 4단계 모델 라우팅, 미설치 하네스 필터링, 다양성 리뷰어 선택, 자동 폴백 체인, 프로젝트 라우팅 저장(saveProjectRoutingConfig)
 │   │   ├── spawner.ts           # 서브에이전트 프로세스 스폰, 시크릿 마스킹 로깅, 프로세스 트리 강제 종료, 아티팩트 마감
@@ -172,12 +173,13 @@ Node.js 내장 `node:sqlite` (`DatabaseSync`)를 사용하여 `~/.asd/state/core
 - [`discoverProjectCliSessions(projectPath, options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/session-tracker.ts#L1774-L1895): 특정 프로젝트 경로에서 실행된 5대 하네스의 모든 CLI 세션을 탐색하고, 각 세션이 ASD 세션으로 승격되어 있는지(`isPromotedToAsd`, `asdSessionId`, `asdPhase`) 결합하여 최신순으로 반환합니다.
 - [`listKnownProjects(options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/session-tracker.ts#L1901-L1980): 단일 공유 DB(`core.db`)에서 프로젝트별 세션/태스크/토론 통계를 고속 집계합니다 (15초 FS stat 캐시, `skipDiskCheck`, `db` 재사용 지원).
 
-#### ⑤ [`src/core/drivers.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts)
-하나의 ASD 세션을 여러 하네스나 GUI/CLI가 번갈아 운전할 때의 소유권(`session_drivers`), 핸드오프 브리핑, 실시간 스트리밍 턴 실행을 담당합니다.
-- [`attachDriver(db, options)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L98-L195) / [`detachDriver(db, options)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L220-L265): 세션에 새 드라이버(`cli` | `gui` | `subagent`)를 부착(기존 활성 드라이버는 자동으로 `handover` 종료)하거나 분리합니다.
+#### ⑤ [`src/core/drivers.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts) & [`src/core/acp-client.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/acp-client.ts)
+하나의 ASD 세션을 여러 하네스나 GUI/CLI가 번갈아 운전할 때의 소유권(`session_drivers`), 핸드오프 브리핑, 상주형 ACP/CLI 스트리밍 턴 실행 및 JSON-RPC 프로토콜 제어를 담당합니다.
+- [`attachDriver(db, options)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L98-L195) / [`detachDriver(db, options)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L220-L265): 세션에 새 드라이버(`cli` | `gui` | `subagent`)를 부착(기존 활성 드라이버는 자동으로 `handover` 종료 및 상주 ACP 세션 정리)하거나 분리합니다.
 - [`buildDriverBriefing(db, sessionId, maxChars?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L315-L445): 하네스나 모델이 교체될 때 이전 작업 맥락(완료된 태스크의 `DoneClaim`, 진행 중 태스크, 토론 제약사항, 드라이버 교체 이력)을 0-Token으로 요약 주입하는 브리핑 텍스트를 생성합니다.
-- [`parseDriverStreamLine(harness, rawLine)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L583-L920): Claude Code/Cursor(`stream-json`), Codex(`--json`), OpenCode(`--format json`)가 출력하는 실시간 JSON 스트림 라인을 파싱하여 구조화된 `DriverStreamEvent` 배열(`thinking`, `tool_use`, `tool_result`, `assistant`, `system`, `error`)로 변환합니다.
-- [`runDriverTurn(options)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L926-L1196): 유저 메시지를 받아 해당 하네스 CLI를 실행하고, 실행 도중 발생하는 Thinking·Tool Use·Tool Result·응답 이벤트를 `onEvent` 콜백으로 실시간 스트리밍하며, 완료 후 새로 발급된 `harnessSessionId`를 DB에 자동 저장합니다.
+- [`parseDriverStreamLine(harness, rawLine)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L583-L920): Claude Code/Cursor(`stream-json`), Codex(`--json`), OpenCode(`--format json`)가 출력하는 실시간 JSON 스트림 라인을 파싱하여 구조화된 `DriverStreamEvent` 배열(`thinking`, `tool_use`, `tool_result`, `text`, `status`, `raw`)로 변환합니다.
+- [`runDriverTurn(input)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L1501-L2110): `RunDriverTurnInput`(`transport?: "auto" | "acp" | "cli"`, `autoApprove?`, `onPermissionRequest?`, `model?`, `signal?` 등)을 받아 상주형 `DriverSessionPool` (`driverSessionPool` + `AcpStdioClient`) 또는 CLI 폴백으로 턴을 실행합니다. ACP 경로에서는 `AcpNormalizedEvent`를 `DriverStreamEvent`로 매핑해 `onEvent`로 스트리밍하고(`onOutput` 미간섭), `cancelDriverTurn(sessionId)` / `closeDriverSession(sessionId)` / `closeAllDriverSessions()`로 `session/cancel` 및 세션 풀 수명주기를 제어합니다.
+- [`probeAcpCapability(harness, env?, options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/acp-client.ts#L238-L348) & [`AcpStdioClient`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/acp-client.ts#L830-L1470): `interactivePermissions` 옵션 기반 하네스 ACP 준비 상태 탐색, `isConnected` / `setSessionModel` / `setTurnHandlers` / `cancelSession` 지원, 그리고 `onPermissionRequest` 수신 시 워크스페이스/보호 경로를 선검사(`checkInteractivePermissionSafety`)한 뒤 대화형 권한 요청을 중계합니다.
 
 #### ⑥ [`src/core/transcripts.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/transcripts.ts)
 5대 하네스의 로컬 디스크/DB에서 실제 대화 기록을 찾아 **4분류(Thinking, Tool Use, Tool Result, User/Assistant 메시지)**로 정밀 분리합니다.
