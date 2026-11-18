@@ -4,6 +4,13 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { AcpStdioClient, probeAcpCapability } from "./acp-client.ts";
+import type {
+  AcpNormalizedEvent,
+  AcpPermissionOption,
+  AcpRequestPermissionParams,
+  AcpRequestPermissionResult,
+} from "./acp-types.ts";
 import {
   type DriverDetachReason,
   type DriverRow,
@@ -181,6 +188,10 @@ export function attachDriver(
 
   syncSessionDriversToMainJson(db, input.projectRoot, input.sessionId);
 
+  if (txResult.changed && txResult.previousDriverId) {
+    void closeDriverSessionByDriverId(txResult.previousDriverId);
+  }
+
   if (nextSid) {
     recordCliRecentSession(input.projectRoot, {
       harnessSessionId: nextSid,
@@ -256,7 +267,7 @@ export function detachDriver(
     reason: DriverDetachReason;
   }
 ): void {
-  const sessionId = db.withImmediateTx(() => {
+  const detached = db.withImmediateTx(() => {
     const existing = input.driverId
       ? db.getDriver(input.driverId)
       : input.sessionId
@@ -264,7 +275,7 @@ export function detachDriver(
         : undefined;
     if (!existing) {
       if (input.sessionId && !input.driverId) {
-        return input.sessionId;
+        return { sessionId: input.sessionId, driverId: null as string | null };
       }
       throw new Error(`Driver not found: ${input.driverId ?? input.sessionId ?? "unknown"}`);
     }
@@ -272,10 +283,14 @@ export function detachDriver(
       db.detachDriverRow(existing.driver_id, input.reason, Date.now());
       db.incrementStateVersion(existing.session_id);
     }
-    return existing.session_id;
+    return { sessionId: existing.session_id, driverId: existing.driver_id };
   });
 
-  syncSessionDriversToMainJson(db, input.projectRoot, sessionId);
+  if (detached.driverId) {
+    void closeDriverSessionByDriverId(detached.driverId);
+  }
+
+  syncSessionDriversToMainJson(db, input.projectRoot, detached.sessionId);
 }
 
 export function getActiveDriver(
@@ -1316,7 +1331,148 @@ export function parseDriverStreamLine(
   return [];
 }
 
-export async function runDriverTurn(input: {
+export interface DriverSessionPoolEntry {
+  key: string;
+  projectRoot: string;
+  sessionId: string;
+  driverId: string;
+  harness: HarnessId;
+  model: string;
+  launchArgs: string[];
+  client: AcpStdioClient;
+  acpSessionId: string;
+}
+
+const driverSessionPool = new Map<string, DriverSessionPoolEntry>();
+const activeAcpTurnCancels = new Map<string, Set<() => void>>();
+
+function buildDriverPoolKey(
+  projectRoot: string,
+  sessionId: string,
+  driverId: string
+): string {
+  return `${projectRoot.toLowerCase()}::${sessionId}::${driverId}`;
+}
+
+export function cancelDriverTurn(sessionId: string): boolean {
+  const fns = activeAcpTurnCancels.get(sessionId);
+  if (!fns || fns.size === 0) return false;
+  for (const fn of [...fns]) {
+    fn();
+  }
+  return true;
+}
+
+export async function closeDriverSessionByDriverId(driverId: string): Promise<void> {
+  const matches: DriverSessionPoolEntry[] = [];
+  for (const [key, entry] of driverSessionPool.entries()) {
+    if (entry.driverId === driverId) {
+      driverSessionPool.delete(key);
+      matches.push(entry);
+    }
+  }
+  await Promise.all(matches.map((entry) => entry.client.close().catch(() => {})));
+}
+
+export async function closeDriverSession(sessionId: string): Promise<void> {
+  const matches: DriverSessionPoolEntry[] = [];
+  for (const [key, entry] of driverSessionPool.entries()) {
+    if (entry.sessionId === sessionId) {
+      driverSessionPool.delete(key);
+      matches.push(entry);
+    }
+  }
+  await Promise.all(matches.map((entry) => entry.client.close().catch(() => {})));
+}
+
+export async function closeAllDriverSessions(): Promise<void> {
+  const all = [...driverSessionPool.values()];
+  driverSessionPool.clear();
+  await Promise.all(all.map((entry) => entry.client.close().catch(() => {})));
+}
+
+function selectDriverPermissionOption(
+  options: AcpPermissionOption[],
+  allow: boolean
+): AcpRequestPermissionResult {
+  if (!Array.isArray(options) || options.length === 0) {
+    return { outcome: { outcome: "cancelled" } };
+  }
+  if (allow) {
+    const picked =
+      options.find((o) => o.kind === "allow_once") ??
+      options.find((o) => o.kind === "allow_always") ??
+      options.find((o) =>
+        /allow|approve|accept|yes/i.test(`${o.optionId} ${o.kind} ${o.name}`)
+      ) ??
+      options[0];
+    if (picked) {
+      return { outcome: { outcome: "selected", optionId: picked.optionId } };
+    }
+    return { outcome: { outcome: "cancelled" } };
+  }
+  const rejectPicked =
+    options.find((o) => o.kind === "reject_once") ??
+    options.find((o) => o.kind === "reject_always") ??
+    options.find((o) =>
+      /reject|deny|block|cancel|no/i.test(`${o.optionId} ${o.kind} ${o.name}`)
+    );
+  if (rejectPicked) {
+    return { outcome: { outcome: "selected", optionId: rejectPicked.optionId } };
+  }
+  return { outcome: { outcome: "cancelled" } };
+}
+
+function mapAcpEventToDriverEvent(
+  ev: AcpNormalizedEvent,
+  harness: HarnessId,
+  acpSessionId: string
+): DriverStreamEvent | null {
+  switch (ev.category) {
+    case "text":
+      return {
+        type: "text",
+        harness,
+        ...(ev.text !== undefined ? { text: ev.text } : {}),
+        harnessSessionId: acpSessionId,
+        timestamp: ev.timestamp,
+      };
+    case "thinking":
+      return {
+        type: "thinking",
+        harness,
+        ...(ev.thinking !== undefined ? { thinking: ev.thinking } : {}),
+        harnessSessionId: acpSessionId,
+        timestamp: ev.timestamp,
+      };
+    case "tool_use":
+      return {
+        type: "tool_use",
+        harness,
+        ...(ev.toolName !== undefined ? { toolName: ev.toolName } : {}),
+        ...(ev.toolCallId !== undefined ? { toolId: ev.toolCallId } : {}),
+        ...(ev.toolInput !== undefined ? { toolInput: ev.toolInput } : {}),
+        harnessSessionId: acpSessionId,
+        timestamp: ev.timestamp,
+      };
+    case "tool_result":
+      return {
+        type: "tool_result",
+        harness,
+        ...(ev.toolName !== undefined ? { toolName: ev.toolName } : {}),
+        ...(ev.toolCallId !== undefined ? { toolId: ev.toolCallId } : {}),
+        ...(ev.toolOutput !== undefined ? { toolOutput: ev.toolOutput } : {}),
+        ...(ev.isError !== undefined ? { isError: ev.isError } : {}),
+        harnessSessionId: acpSessionId,
+        timestamp: ev.timestamp,
+      };
+    case "state":
+    case "permission":
+      return null;
+  }
+}
+
+export interface RunDriverTurnInput {
   projectRoot: string;
   homeDir?: string;
   db: SqliteDriver;
@@ -1332,7 +1488,19 @@ export async function runDriverTurn(input: {
   onEvent?: (event: DriverStreamEvent) => void;
   streamJson?: boolean;
   commandRunner?: CommandRunner;
-}): Promise<DriverRunResult> {
+  model?: string | null;
+  transport?: "auto" | "acp" | "cli";
+  autoApprove?: boolean;
+  onPermissionRequest?: (
+    params: AcpRequestPermissionParams
+  ) => Promise<AcpRequestPermissionResult>;
+  acpCommandOverride?: { command: string; args: string[] };
+  env?: Record<string, string | undefined>;
+}
+
+export async function runDriverTurn(
+  input: RunDriverTurnInput
+): Promise<DriverRunResult> {
   if (!isValidAsdSessionId(input.sessionId)) {
     throw new Error("INVALID_SESSION_ID");
   }
@@ -1418,37 +1586,46 @@ export async function runDriverTurn(input: {
     }
 
     const harnessId = driver.harness as HarnessId;
+    const effectiveAutoApprove =
+      input.autoApprove ??
+      (input.db.getSession(input.sessionId)?.auto_approve !== 0);
+    const effectiveTransport =
+      input.transport ?? (input.commandRunner ? "cli" : "auto");
     const effectiveModel =
-      driver.model && driver.model.trim().length > 0
-        ? driver.model.trim()
-        : getDefaultModelForHarness(harnessId);
+      input.model?.trim() ||
+      driver.model?.trim() ||
+      getDefaultModelForHarness(harnessId);
 
-    const useStreamJson =
-      input.streamJson ?? Boolean(input.onEvent && !input.commandRunner);
-
-    const spawnSpec = buildSpawnSpec({
-      harness: harnessId,
-      prompt: effectivePrompt,
-      model: driver.harness_session_id ? (driver.model ?? effectiveModel) : effectiveModel,
-      streaming: useStreamJson,
-      resumeSessionId: driver.harness_session_id ?? undefined,
-    });
-    const command = spawnSpec.command;
-    const args = spawnSpec.args;
-
-    const streamParser = createStreamParser({
-      harness: harnessId,
-      sessionId: input.sessionId,
-    });
-    const handleOutputChunk = (chunk: string): void => {
-      input.onOutput?.(chunk);
-      for (const ev of streamParser.pushChunk(chunk)) {
-        if (ev.harnessSessionId) {
-          recordDetectedSid(ev.harnessSessionId);
-        }
-        input.onEvent?.(ev);
-      }
+    const baseEnv: Record<string, string | undefined> = {
+      ...process.env,
+      ...(input.env ?? {}),
     };
+    const env: Record<string, string | undefined> = {
+      ...baseEnv,
+      ASD_SESSION_ROLE: "driver",
+      ASD_MAIN_SESSION_ID: input.sessionId,
+      ASD_DRIVER_ID: driver.driver_id,
+      NODE_NO_WARNINGS: "1",
+    };
+
+    const readiness =
+      effectiveTransport !== "cli"
+        ? input.acpCommandOverride
+          ? {
+              supported: true as const,
+              command: input.acpCommandOverride.command,
+              args: input.acpCommandOverride.args,
+            }
+          : probeAcpCapability(harnessId, baseEnv, {
+              interactivePermissions: !effectiveAutoApprove,
+            })
+        : { supported: false as const, command: "", args: [] as string[] };
+
+    if (effectiveTransport === "acp" && !readiness.supported) {
+      throw new Error(
+        `ACP_UNAVAILABLE: ACP server not available for harness '${harnessId}'`
+      );
+    }
 
     const runId = generateDriverRunId();
     const runDir = path.join(runsBaseDir, runId);
@@ -1474,18 +1651,6 @@ export async function runDriverTurn(input: {
     };
     writeMeta();
 
-    if (shouldInject) {
-      input.db.markDriverBriefingInjected(driver.driver_id);
-    }
-
-    const env: Record<string, string> = {
-      ...(process.env as Record<string, string>),
-      ASD_SESSION_ROLE: "driver",
-      ASD_MAIN_SESSION_ID: input.sessionId,
-      ASD_DRIVER_ID: driver.driver_id,
-      NODE_NO_WARNINGS: "1",
-    };
-
     const recordDetectedSid = (extracted: string): void => {
       if (!extracted) return;
       if (!currentSid || currentSid !== extracted) {
@@ -1505,6 +1670,372 @@ export async function runDriverTurn(input: {
       meta = { ...meta, harnessSessionId: currentSid };
       writeMeta();
     };
+
+    if (effectiveTransport !== "cli" && readiness.supported) {
+      const poolKey = buildDriverPoolKey(
+        projectRoot,
+        input.sessionId,
+        driver.driver_id
+      );
+      let activeEntry = driverSessionPool.get(poolKey);
+      if (activeEntry) {
+        const reusable =
+          activeEntry.client.isConnected &&
+          JSON.stringify(activeEntry.launchArgs) ===
+            JSON.stringify(readiness.args);
+        if (!reusable) {
+          driverSessionPool.delete(poolKey);
+          await activeEntry.client.close().catch(() => {});
+          activeEntry = undefined;
+        }
+      }
+
+      let spawnedFreshClient: AcpStdioClient | null = null;
+      let phaseAAborted = false;
+      const onPhaseASignalAbort = (): void => {
+        phaseAAborted = true;
+        if (spawnedFreshClient) {
+          void spawnedFreshClient.close().catch(() => {});
+        }
+        if (activeEntry) {
+          void activeEntry.client.close().catch(() => {});
+        }
+      };
+      if (input.signal) {
+        input.signal.addEventListener("abort", onPhaseASignalAbort, {
+          once: true,
+        });
+        if (input.signal.aborted) {
+          phaseAAborted = true;
+        }
+      }
+
+      try {
+        if (phaseAAborted) {
+          throw new Error("ACP_TURN_ABORTED");
+        }
+        if (!activeEntry) {
+          const client = new AcpStdioClient({
+            command: readiness.command,
+            args: readiness.args,
+            cwd: projectRoot,
+            env,
+            onSpawn: (pid) => {
+              meta = { ...meta, pid };
+              writeMeta();
+            },
+          });
+          spawnedFreshClient = client;
+          await client.connect();
+          const sess = await client.startOrLoadSession({
+            cwd: projectRoot,
+            resumeSessionId: driver.harness_session_id,
+            model: effectiveModel,
+          });
+          activeEntry = {
+            key: poolKey,
+            projectRoot,
+            sessionId: input.sessionId,
+            driverId: driver.driver_id,
+            harness: harnessId,
+            model: effectiveModel,
+            launchArgs: [...readiness.args],
+            client,
+            acpSessionId: sess.sessionId,
+          };
+          driverSessionPool.set(poolKey, activeEntry);
+          spawnedFreshClient = null;
+        } else if ((activeEntry.model ?? "") !== effectiveModel) {
+          await activeEntry.client.setSessionModel(
+            activeEntry.acpSessionId,
+            effectiveModel
+          );
+          activeEntry.model = effectiveModel;
+        }
+      } catch (phaseAErr) {
+        if (spawnedFreshClient) {
+          await spawnedFreshClient.close().catch(() => {});
+        }
+        if (activeEntry) {
+          driverSessionPool.delete(poolKey);
+          await activeEntry.client.close().catch(() => {});
+          activeEntry = undefined;
+        }
+        if (phaseAAborted) {
+          const finishedAt = Date.now();
+          const durationMs = finishedAt - startedAt;
+          meta = {
+            ...meta,
+            exitCode: -1,
+            timedOut: false,
+            status: "failed",
+            startedAt,
+            finishedAt,
+            durationMs,
+            transport: "acp",
+          };
+          writeMeta();
+          pruneDriverRuns(runsBaseDir, 50);
+          return {
+            runId,
+            driverId: driver.driver_id,
+            exitCode: -1,
+            timedOut: false,
+            harnessSessionId: currentSid,
+            durationMs,
+            metaPath,
+          };
+        }
+        if (effectiveTransport === "acp") {
+          const finishedAt = Date.now();
+          const durationMs = finishedAt - startedAt;
+          meta = {
+            ...meta,
+            exitCode: -1,
+            timedOut: false,
+            status: "failed",
+            startedAt,
+            finishedAt,
+            durationMs,
+            transport: "acp",
+          };
+          writeMeta();
+          throw phaseAErr;
+        }
+        // effectiveTransport === "auto": fall through to CLI path below
+        activeEntry = undefined;
+      } finally {
+        if (input.signal) {
+          input.signal.removeEventListener("abort", onPhaseASignalAbort);
+        }
+      }
+
+      if (activeEntry) {
+        recordDetectedSid(activeEntry.acpSessionId);
+        meta = {
+          ...meta,
+          pid: activeEntry.client.pid,
+          harnessSessionId: currentSid ?? activeEntry.acpSessionId,
+          transport: "acp",
+        };
+        writeMeta();
+        input.onEvent?.({
+          type: "status",
+          harness: harnessId,
+          harnessSessionId: activeEntry.acpSessionId,
+          timestamp: Date.now(),
+        });
+
+        if (shouldInject) {
+          input.db.markDriverBriefingInjected(driver.driver_id);
+        }
+
+        const baseWallMs =
+          input.timeoutMs !== undefined && input.maxDurationMs !== undefined
+            ? Math.min(input.timeoutMs, input.maxDurationMs)
+            : (input.timeoutMs ?? input.maxDurationMs);
+
+        let cancelTriggered = false;
+        let cancelledByCaller = false;
+        let timedOut = false;
+        let graceExpired = false;
+        let wallTimer: ReturnType<typeof setTimeout> | undefined;
+        let idleTimer: ReturnType<typeof setTimeout> | undefined;
+        let graceTimer: ReturnType<typeof setTimeout> | undefined;
+        let rejectGrace: ((err: Error) => void) | null = null;
+
+        const gracePromise = new Promise<never>((_, reject) => {
+          rejectGrace = reject;
+        });
+
+        const triggerCancel = (isTimeout: boolean): void => {
+          if (cancelTriggered) return;
+          cancelTriggered = true;
+          if (isTimeout) {
+            timedOut = true;
+          } else {
+            cancelledByCaller = true;
+          }
+          activeEntry!.client.cancelSession(activeEntry!.acpSessionId);
+          graceTimer = setTimeout(() => {
+            graceExpired = true;
+            rejectGrace?.(new Error("ACP_CANCEL_GRACE_EXPIRED"));
+          }, 1500);
+          graceTimer.unref?.();
+        };
+
+        const resetIdleTimer = (): void => {
+          if (input.idleTimeoutMs === undefined || cancelTriggered) return;
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(
+            () => triggerCancel(true),
+            input.idleTimeoutMs
+          );
+          idleTimer.unref?.();
+        };
+
+        const cancelFn = (): void => triggerCancel(false);
+        let cancelSet = activeAcpTurnCancels.get(input.sessionId);
+        if (!cancelSet) {
+          cancelSet = new Set();
+          activeAcpTurnCancels.set(input.sessionId, cancelSet);
+        }
+        cancelSet.add(cancelFn);
+
+        const onSignalAbort = (): void => triggerCancel(false);
+        if (input.signal) {
+          input.signal.addEventListener("abort", onSignalAbort, { once: true });
+        }
+
+        if (baseWallMs !== undefined) {
+          wallTimer = setTimeout(() => triggerCancel(true), baseWallMs);
+          wallTimer.unref?.();
+        }
+        resetIdleTimer();
+
+        activeEntry.client.setTurnHandlers({
+          onEvent: (ev) => {
+            resetIdleTimer();
+            const mapped = mapAcpEventToDriverEvent(
+              ev,
+              harnessId,
+              activeEntry!.acpSessionId
+            );
+            if (mapped) {
+              input.onEvent?.(mapped);
+            }
+          },
+          onRawFrame: () => {
+            resetIdleTimer();
+          },
+          onPermissionRequest: async (params) => {
+            resetIdleTimer();
+            if (effectiveAutoApprove) {
+              return selectDriverPermissionOption(params.options ?? [], true);
+            }
+            if (input.onPermissionRequest) {
+              return await input.onPermissionRequest(params);
+            }
+            return selectDriverPermissionOption(params.options ?? [], false);
+          },
+        });
+
+        let exitCode = 0;
+        let shouldCloseClient = false;
+        const capturedPid = activeEntry.client.pid;
+
+        try {
+          if (input.signal?.aborted) {
+            cancelledByCaller = true;
+            exitCode = -1;
+          } else {
+            const promptPromise = activeEntry.client.promptTurn(
+              activeEntry.acpSessionId,
+              effectivePrompt
+            );
+            promptPromise.catch(() => {});
+            const turnRes = await Promise.race([promptPromise, gracePromise]);
+            if (timedOut || cancelledByCaller) {
+              exitCode = -1;
+            } else if (
+              turnRes.stopReason === "cancelled" ||
+              turnRes.stopReason === "refusal"
+            ) {
+              exitCode = 1;
+            } else {
+              exitCode = 0;
+            }
+          }
+        } catch {
+          exitCode = -1;
+          shouldCloseClient = true;
+        } finally {
+          if (wallTimer) clearTimeout(wallTimer);
+          if (idleTimer) clearTimeout(idleTimer);
+          if (graceTimer) clearTimeout(graceTimer);
+          if (input.signal) {
+            input.signal.removeEventListener("abort", onSignalAbort);
+          }
+          const set = activeAcpTurnCancels.get(input.sessionId);
+          if (set) {
+            set.delete(cancelFn);
+            if (set.size === 0) {
+              activeAcpTurnCancels.delete(input.sessionId);
+            }
+          }
+          activeEntry.client.setTurnHandlers({});
+          if (
+            shouldCloseClient ||
+            graceExpired ||
+            !activeEntry.client.isConnected
+          ) {
+            driverSessionPool.delete(poolKey);
+            await activeEntry.client.close().catch(() => {});
+          }
+        }
+
+        const finishedAt = Date.now();
+        const durationMs = finishedAt - startedAt;
+        const finalSid = currentSid ?? activeEntry.acpSessionId ?? null;
+        meta = {
+          ...meta,
+          pid: capturedPid || activeEntry.client.pid,
+          exitCode,
+          timedOut,
+          harnessSessionId: finalSid,
+          status: exitCode === 0 ? "done" : "failed",
+          startedAt,
+          finishedAt,
+          durationMs,
+        };
+        writeMeta();
+        pruneDriverRuns(runsBaseDir, 50);
+
+        return {
+          runId,
+          driverId: driver.driver_id,
+          exitCode,
+          timedOut,
+          harnessSessionId: finalSid,
+          durationMs,
+          metaPath,
+        };
+      }
+    }
+
+    // CLI path (explicit transport: "cli", commandRunner override, or "auto" fallback)
+    const useStreamJson =
+      input.streamJson ?? Boolean(input.onEvent && !input.commandRunner);
+
+    const spawnSpec = buildSpawnSpec({
+      harness: harnessId,
+      prompt: effectivePrompt,
+      model: driver.harness_session_id
+        ? (input.model?.trim() || driver.model || effectiveModel)
+        : effectiveModel,
+      streaming: useStreamJson,
+      resumeSessionId: driver.harness_session_id ?? undefined,
+    });
+    const command = spawnSpec.command;
+    const args = spawnSpec.args;
+
+    const streamParser = createStreamParser({
+      harness: harnessId,
+      sessionId: input.sessionId,
+    });
+    const handleOutputChunk = (chunk: string): void => {
+      input.onOutput?.(chunk);
+      for (const ev of streamParser.pushChunk(chunk)) {
+        if (ev.harnessSessionId) {
+          recordDetectedSid(ev.harnessSessionId);
+        }
+        input.onEvent?.(ev);
+      }
+    };
+
+    if (shouldInject) {
+      input.db.markDriverBriefingInjected(driver.driver_id);
+    }
 
     const execRes = await executeHarnessProcess({
       command,
