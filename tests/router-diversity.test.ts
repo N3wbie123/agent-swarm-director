@@ -27,6 +27,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { parseJsonc } from "../src/core/jsonc.ts";
 import type { RoutingConfig } from "../src/core/types.ts";
@@ -35,8 +36,10 @@ import {
   DIVERSITY_DEGRADED_TAG,
   REGISTERED_DOMAIN_CATEGORIES,
   SPECIALIST_ROLES,
+  detectLiveRuntimeCapabilities,
   escalateTaskRoute,
   inferModelFamily,
+  isFallbackTriggerOutput,
   normalizeAntigravityModel,
   resolveFallback,
   resolveLightSubagentModel,
@@ -665,5 +668,51 @@ test("resolveLightSubagentRoute & resolveNextLightSubagentFallback: supports str
     ["nvidia/deepseek-ai/deepseek-v4.1-flash", "glm-5"]
   );
 });
+
+test("detectLiveRuntimeCapabilities enables antigravity parallel_spawn when agy is on PATH and isFallbackTriggerOutput catches Cursor plan gate", () => {
+  const tmpBin = fs.mkdtempSync(path.join(os.tmpdir(), "asd-live-caps-"));
+  const ext = process.platform === "win32" ? ".cmd" : "";
+  try {
+    const writeBin = (name: string) => {
+      const p = path.join(tmpBin, `${name}${ext}`);
+      fs.writeFileSync(p, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n", {
+        encoding: "utf8",
+        mode: 0o755,
+      });
+    };
+
+    writeBin("opencode");
+    const withoutAgy = detectLiveRuntimeCapabilities({ PATH: tmpBin, Path: tmpBin });
+    assert.equal(withoutAgy.antigravityHeadlessSupported, false);
+    assert.deepEqual(withoutAgy.availableHarnesses, ["opencode"]);
+
+    writeBin("agy");
+    writeBin("cursor-agent");
+    const withAgy = detectLiveRuntimeCapabilities({ PATH: tmpBin, Path: tmpBin });
+    assert.equal(withAgy.antigravityHeadlessSupported, true);
+    assert.ok(withAgy.availableHarnesses?.includes("antigravity"));
+    assert.ok(withAgy.availableHarnesses?.includes("opencode"));
+    assert.ok(withAgy.availableHarnesses?.includes("cursor"));
+
+    const agRoute = resolveRoute(
+      {
+        role: "worker",
+        category: "general",
+        difficulty: "low",
+        isSubagentSpawn: true,
+        mode: "parallel_spawn",
+      },
+      defaultRouting,
+      withAgy
+    );
+    assert.equal(agRoute.harness, "antigravity");
+    assert.equal(agRoute.fallbackApplied, undefined);
+
+    assert.equal(isFallbackTriggerOutput("\n\nUpgrade your plan to continue"), true);
+  } finally {
+    fs.rmSync(tmpBin, { recursive: true, force: true });
+  }
+});
+
 
 

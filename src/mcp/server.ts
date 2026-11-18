@@ -66,10 +66,11 @@ import {
   syncPlanFromMd,
 } from "../core/render.ts";
 import {
-  detectAvailableCliHarnesses,
+  detectLiveRuntimeCapabilities,
   escalateTaskRoute,
   isFallbackTriggerOutput,
   normalizeAntigravityModel,
+  resolveBinaryOnPath,
   resolveRoute,
   runWithFallbacks,
   type ResolvedRoute,
@@ -1423,9 +1424,13 @@ export class AsdMcpServer {
 
       // Up to 3 attempts with escalation
       const runtimeCaps = input.harness
-        ? { availableHarnesses: [input.harness] }
+        ? {
+            availableHarnesses: [input.harness],
+            antigravityHeadlessSupported:
+              input.harness === "antigravity" || Boolean(resolveBinaryOnPath("agy")),
+          }
         : !this.commandRunner
-          ? { availableHarnesses: detectAvailableCliHarnesses() }
+          ? detectLiveRuntimeCapabilities()
           : undefined;
       const routingCfg = loadRoutingConfig(this.projectRoot, this.homeDir);
       const attemptedSubIds: string[] = [];

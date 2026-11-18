@@ -35,7 +35,7 @@ import {
   isValidAsdSessionId,
 } from "./session-tracker.ts";
 import {
-  detectAvailableCliHarnesses,
+  detectLiveRuntimeCapabilities,
   inferModelFamily,
   isFallbackTriggerOutput,
   normalizeAgentRole,
@@ -1351,9 +1351,7 @@ export async function runDebateBroker(
       loadRoutingConfig(options.projectRoot, options.homeDir);
     const effectiveCapabilities: RuntimeCapabilities | undefined =
       options.runtimeCapabilities ??
-      (!options.commandRunner
-        ? { availableHarnesses: detectAvailableCliHarnesses() }
-        : undefined);
+      (!options.commandRunner ? detectLiveRuntimeCapabilities() : undefined);
 
     const resolvedSelection = resolveDebateReviewers({
       proposerRoute: options.proposerRoute,

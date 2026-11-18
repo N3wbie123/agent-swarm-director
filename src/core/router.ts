@@ -578,8 +578,8 @@ export function resolveBinaryOnPath(
 }
 
 /**
- * Detects which CLI harnesses (`claude-code`, `opencode`, `codex`) are installed
- * on the current system PATH. Used during live subagent routing and debates so
+ * Detects which CLI/ACP harnesses (`claude-code`, `opencode`, `codex`, `cursor`, `antigravity`)
+ * are installed on the current system PATH. Used during live subagent routing and debates so
  * uninstalled harnesses are skipped automatically.
  */
 export function detectAvailableCliHarnesses(
@@ -589,6 +589,7 @@ export function detectAvailableCliHarnesses(
     { harness: "claude-code", bin: "claude" },
     { harness: "opencode", bin: "opencode" },
     { harness: "codex", bin: "codex" },
+    { harness: "antigravity", bin: "agy" },
   ];
 
   const found: HarnessId[] = [];
@@ -602,6 +603,20 @@ export function detectAvailableCliHarnesses(
   }
 
   return found.length > 0 ? found : [...CLI_HARNESSES];
+}
+
+/**
+ * Builds live `RuntimeCapabilities` from the current system `PATH`, enabling
+ * `@antigravity` external subagent / debate execution whenever `agy` is installed.
+ */
+export function detectLiveRuntimeCapabilities(
+  env: Record<string, string | undefined> = process.env
+): RuntimeCapabilities {
+  const availableHarnesses = detectAvailableCliHarnesses(env);
+  return {
+    availableHarnesses,
+    antigravityHeadlessSupported: Boolean(resolveBinaryOnPath("agy", env)),
+  };
 }
 
 // ============================================================================
@@ -814,7 +829,8 @@ export function resolveRoute(
     if (needsAgFallback || needsCliAvailabilityFallback) {
       const fallback = resolved.fallbacks.find(
         (fb) =>
-          CLI_HARNESSES.includes(fb.harness) &&
+          (CLI_HARNESSES.includes(fb.harness) ||
+            (fb.harness === "antigravity" && headlessSupported)) &&
           (!avail || avail.length === 0 || avail.includes(fb.harness))
       );
 
@@ -824,7 +840,9 @@ export function resolveRoute(
           model: fallback.model,
           modelFamily: fallback.modelFamily,
           fallbacks: resolved.fallbacks.filter(
-            (fb) => fb !== fallback && fb.harness !== "antigravity"
+            (fb) =>
+              fb !== fallback &&
+              (headlessSupported || fb.harness !== "antigravity")
           ),
           tier: resolved.tier,
           fallbackApplied: true,
@@ -950,7 +968,7 @@ function resolveBaseRoute(
  */
 export function isFallbackTriggerOutput(output: string): boolean {
   if (!output || typeof output !== "string") return false;
-  return /rate[\s_-]?limit|quota[\s_-]?exceeded|insufficient[_\s]quota|credit balance|too many requests|\b429\b|\b502\b|\b503\b|\b504\b|overloaded|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network error|fetch failed|model[_\s]+not[_\s]+found|invalid[_\s]+model|unknown[_\s]+model/i.test(
+  return /rate[\s_-]?limit|quota[\s_-]?exceeded|insufficient[_\s]quota|credit balance|upgrade your plan|usage[\s_-]?limit|plan[\s_-]?limit|billing[\s_-]?(?:error|limit|required)|too many requests|\b429\b|\b502\b|\b503\b|\b504\b|overloaded|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network error|fetch failed|model[_\s]+not[_\s]+found|invalid[_\s]+model|unknown[_\s]+model/i.test(
     output
   );
 }
