@@ -10,8 +10,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { parseJsonc } from "./jsonc.ts";
 import { atomicWriteFileSync } from "./render.ts";
-import { inferModelFamily } from "./router.ts";
+import { inferModelFamily, resolveBinaryOnPath } from "./router.ts";
 import {
   resolveSpawnCommand,
   type CommandRunner,
@@ -21,8 +22,67 @@ import type { HarnessId } from "./types.ts";
 export type HarnessModelCatalog = Record<HarnessId, string[]>;
 
 const DEFAULT_MODELS_CACHE_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_CLI_PROBE_TIMEOUT_MS = 10_000;
 
 const modelCatalogCache = new Map<string, HarnessModelCatalog>();
+const inflightModelDiscovery = new Map<string, Promise<HarnessModelCatalog>>();
+
+function stripAnsi(input: string): string {
+  return input.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function readRawModelsDiskCache(homeDir: string): {
+  updatedAt: number;
+  catalog: HarnessModelCatalog;
+} | null {
+  try {
+    const cachePath = getModelsDiskCachePath(homeDir);
+    if (!fs.existsSync(cachePath)) return null;
+    const raw = JSON.parse(fs.readFileSync(cachePath, "utf8")) as {
+      updatedAt?: number;
+      catalog?: HarnessModelCatalog;
+    };
+    if (
+      !raw ||
+      typeof raw.updatedAt !== "number" ||
+      !raw.catalog ||
+      typeof raw.catalog !== "object"
+    ) {
+      return null;
+    }
+    return { updatedAt: raw.updatedAt, catalog: raw.catalog };
+  } catch {
+    return null;
+  }
+}
+
+export function mergeHarnessModelCatalogs(
+  fresh: HarnessModelCatalog,
+  previous: Partial<HarnessModelCatalog> | null | undefined
+): HarnessModelCatalog {
+  if (!previous) return fresh;
+  const harnesses: HarnessId[] = [
+    "antigravity",
+    "claude-code",
+    "codex",
+    "opencode",
+    "cursor",
+  ];
+  const merged = {} as HarnessModelCatalog;
+  for (const h of harnesses) {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const m of [...(fresh[h] ?? []), ...(previous[h] ?? [])]) {
+      if (typeof m !== "string") continue;
+      const trimmed = m.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      list.push(trimmed);
+    }
+    merged[h] = list;
+  }
+  return merged;
+}
 
 export function detectSystemLocale(): string {
   try {
@@ -42,26 +102,11 @@ function readModelsDiskCache(
   homeDir: string,
   ttlMs = DEFAULT_MODELS_CACHE_TTL_MS
 ): HarnessModelCatalog | null {
-  try {
-    const cachePath = getModelsDiskCachePath(homeDir);
-    if (!fs.existsSync(cachePath)) return null;
-    const raw = JSON.parse(fs.readFileSync(cachePath, "utf8")) as {
-      updatedAt?: number;
-      catalog?: HarnessModelCatalog;
-    };
-    if (
-      !raw ||
-      typeof raw.updatedAt !== "number" ||
-      Date.now() - raw.updatedAt > ttlMs ||
-      !raw.catalog ||
-      typeof raw.catalog !== "object"
-    ) {
-      return null;
-    }
-    return raw.catalog;
-  } catch {
+  const raw = readRawModelsDiskCache(homeDir);
+  if (!raw || Date.now() - raw.updatedAt > ttlMs) {
     return null;
   }
+  return raw.catalog;
 }
 
 export function writeModelsDiskCache(
@@ -87,7 +132,7 @@ export function writeModelsDiskCache(
 function execCliOutputAsync(
   command: string,
   args: string[],
-  timeoutMs = 3500,
+  timeoutMs = DEFAULT_CLI_PROBE_TIMEOUT_MS,
   cwd?: string
 ): Promise<{ status: number | null; stdout: string }> {
   return new Promise((resolve) => {
@@ -96,7 +141,7 @@ function execCliOutputAsync(
     const finish = (status: number | null) => {
       if (settled) return;
       settled = true;
-      resolve({ status, stdout });
+      resolve({ status, stdout: stripAnsi(stdout) });
     };
 
     try {
@@ -105,11 +150,24 @@ function execCliOutputAsync(
         stdio: ["ignore", "pipe", "ignore"],
         windowsHide: true,
         shell: resolved.shell,
+        env: {
+          ...process.env,
+          NO_COLOR: "1",
+          FORCE_COLOR: "0",
+        },
         ...(cwd ? { cwd } : {}),
       });
 
       const timer = setTimeout(() => {
         try {
+          if (process.platform === "win32" && child.pid) {
+            const killer = child_process.spawn(
+              "taskkill",
+              ["/PID", String(child.pid), "/T", "/F"],
+              { stdio: "ignore", windowsHide: true }
+            );
+            killer.unref();
+          }
           child.kill();
         } catch {}
         finish(null);
@@ -137,12 +195,13 @@ function execCliOutputAsync(
 }
 
 /**
- * Dynamically discovers ALL real available models for Antigravity, Claude Code, Codex, and OpenCode
- * by querying each harness's live CLI (`agy models`, `opencode models`), local model caches
- * (`~/.codex/models_cache.json`, `~/.claude/settings.json`, `~/.claude/litellm_config.yaml`),
+ * Dynamically discovers ALL real available models for Antigravity, Claude Code, Codex, OpenCode, and Cursor
+ * by querying each harness's live CLI (`agy models`, `opencode models`, `cursor-agent models`), local model caches
+ * (`~/.codex/models_cache.json`, `~/.claude/settings.json`, `~/.claude/litellm_config.yaml`, `opencode.jsonc`),
  * and any configured remote OpenAI-compatible gateway (`integrate.api.nvidia.com/v1/models`, etc.).
- * Uses an in-memory + disk cache (`~/.asd/state/models-cache.json`) and parallel async probes
- * so `asd ui` startup never blocks on synchronous CLI spawns.
+ * Uses an in-memory + disk cache (`~/.asd/state/models-cache.json`), in-flight Promise deduplication,
+ * and union-merging with prior cached entries so partial CLI timeouts or background `asd sync` runs
+ * never wipe out previously discovered models.
  */
 export async function discoverHarnessModels(options?: {
   projectRoot?: string;
@@ -157,10 +216,10 @@ export async function discoverHarnessModels(options?: {
 }): Promise<HarnessModelCatalog> {
   const projectRoot = path.resolve(options?.projectRoot || process.cwd());
   const homeDir = path.resolve(options?.homeDir || os.homedir());
-  const cacheKey = `${projectRoot}::${homeDir}::${options?.excludeAsdRouting ? "noasd" : "all"}`;
-  const ttlMs = options?.cacheTtlMs ?? DEFAULT_MODELS_CACHE_TTL_MS;
-  const cliTimeoutMs = options?.cliTimeoutMs ?? 3500;
   const excludeAsdRouting = Boolean(options?.excludeAsdRouting);
+  const cacheKey = `${projectRoot}::${homeDir}::${excludeAsdRouting ? "noasd" : "all"}`;
+  const ttlMs = options?.cacheTtlMs ?? DEFAULT_MODELS_CACHE_TTL_MS;
+  const cliTimeoutMs = options?.cliTimeoutMs ?? DEFAULT_CLI_PROBE_TIMEOUT_MS;
 
   if (!options?.forceRefresh && !excludeAsdRouting) {
     if (modelCatalogCache.has(cacheKey)) {
@@ -173,401 +232,463 @@ export async function discoverHarnessModels(options?: {
     }
   }
 
-  const sets: Record<HarnessId, Set<string>> = {
-    antigravity: new Set<string>(),
-    "claude-code": new Set<string>(),
-    codex: new Set<string>(),
-    opencode: new Set<string>(),
-    cursor: new Set<string>(),
-  };
-
-  // 1. Antigravity: local `~/.gemini/antigravity-cli/settings.json`
-  try {
-    const agySettingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
-    if (fs.existsSync(agySettingsPath)) {
-      const agySettings = JSON.parse(fs.readFileSync(agySettingsPath, "utf8")) as {
-        model?: string;
-      };
-      if (typeof agySettings.model === "string") {
-        const trimmed = agySettings.model.trim();
-        if (trimmed && !trimmed.includes(" ")) {
-          sets.antigravity.add(trimmed);
-        }
-      }
+  const inflightKey = `${homeDir}::${excludeAsdRouting ? "noasd" : "all"}::${options?.skipCliSpawn ? "nocli" : "cli"}::${String(options?.enableGatewayProbe ?? "default")}`;
+  const existingInflight = inflightModelDiscovery.get(inflightKey);
+  if (existingInflight) {
+    const sharedResult = await existingInflight;
+    if (!excludeAsdRouting) {
+      modelCatalogCache.set(cacheKey, sharedResult);
     }
-  } catch {
-    // Ignore antigravity settings scan errors
+    return sharedResult;
   }
 
-  // 2. Codex: scan `~/.codex/models_cache.json` and `~/.codex/config.toml`
-  try {
-    const codexCachePath = path.join(homeDir, ".codex", "models_cache.json");
-    if (fs.existsSync(codexCachePath)) {
-      const cacheObj = JSON.parse(fs.readFileSync(codexCachePath, "utf8")) as {
-        models?: Array<{ slug?: string; visibility?: string }>;
-      };
-      if (Array.isArray(cacheObj.models)) {
-        for (const item of cacheObj.models) {
-          if (item?.visibility === "hide") continue;
-          if (item?.slug && typeof item.slug === "string" && item.slug.trim()) {
-            sets.codex.add(item.slug.trim());
+  const discoveryPromise = (async (): Promise<HarnessModelCatalog> => {
+    const sets: Record<HarnessId, Set<string>> = {
+      antigravity: new Set<string>(),
+      "claude-code": new Set<string>(),
+      codex: new Set<string>(),
+      opencode: new Set<string>(),
+      cursor: new Set<string>(),
+    };
+
+    // 1. Antigravity: local `~/.gemini/antigravity-cli/settings.json`
+    try {
+      const agySettingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+      if (fs.existsSync(agySettingsPath)) {
+        const agySettings = JSON.parse(fs.readFileSync(agySettingsPath, "utf8")) as {
+          model?: string;
+        };
+        if (typeof agySettings.model === "string") {
+          const trimmed = agySettings.model.trim();
+          if (trimmed && !trimmed.includes(" ")) {
+            sets.antigravity.add(trimmed);
           }
         }
       }
-    }
-    const codexTomlPath = path.join(homeDir, ".codex", "config.toml");
-    if (fs.existsSync(codexTomlPath)) {
-      const tomlText = fs.readFileSync(codexTomlPath, "utf8");
-      const matches = tomlText.matchAll(/^\s*model\s*=\s*["']([^"']+)["']/gm);
-      for (const m of matches) {
-        if (m[1]?.trim()) sets.codex.add(m[1].trim());
-      }
-    }
-  } catch {
-    // Ignore codex scan errors
-  }
-
-  // 3. Claude Code: scan `~/.claude/settings.json` and `~/.claude/litellm_config.yaml`
-  let anthropicToken = process.env.ANTHROPIC_AUTH_TOKEN?.trim() || "";
-  let anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL?.trim() || "";
-  let nvidiaToken = process.env.NVIDIA_NIM_API_KEY?.trim() || "";
-  let litellmBaseUrl = "";
-  try {
-    const addClaudeModel = (raw: string | undefined) => {
-      if (!raw || typeof raw !== "string") return;
-      const trimmed = raw.trim();
-      if (!trimmed) return;
-      sets["claude-code"].add(trimmed);
-      const stripped = trimmed.replace(/\[.*\]$/, "").trim();
-      if (stripped) sets["claude-code"].add(stripped);
-    };
-
-    addClaudeModel(process.env.ANTHROPIC_MODEL);
-    addClaudeModel(process.env.ANTHROPIC_CUSTOM_MODEL_OPTION);
-    addClaudeModel(process.env.ANTHROPIC_DEFAULT_SONNET_MODEL);
-    addClaudeModel(process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL);
-    addClaudeModel(process.env.ANTHROPIC_DEFAULT_OPUS_MODEL);
-
-    const claudeSettingsPath = path.join(homeDir, ".claude", "settings.json");
-    if (fs.existsSync(claudeSettingsPath)) {
-      const settingsObj = JSON.parse(fs.readFileSync(claudeSettingsPath, "utf8")) as {
-        model?: string;
-        env?: Record<string, string>;
-      };
-      addClaudeModel(settingsObj.model);
-      const env = settingsObj.env ?? {};
-      addClaudeModel(env.ANTHROPIC_MODEL);
-      addClaudeModel(env.ANTHROPIC_CUSTOM_MODEL_OPTION);
-      addClaudeModel(env.ANTHROPIC_DEFAULT_SONNET_MODEL);
-      addClaudeModel(env.ANTHROPIC_DEFAULT_HAIKU_MODEL);
-      addClaudeModel(env.ANTHROPIC_DEFAULT_OPUS_MODEL);
-      if (env.ANTHROPIC_AUTH_TOKEN?.trim()) {
-        anthropicToken = env.ANTHROPIC_AUTH_TOKEN.trim();
-      }
-      if (env.ANTHROPIC_BASE_URL?.trim()) {
-        anthropicBaseUrl = env.ANTHROPIC_BASE_URL.trim();
-      }
-      if (env.NVIDIA_NIM_API_KEY?.trim()) {
-        nvidiaToken = env.NVIDIA_NIM_API_KEY.trim();
-      }
+    } catch {
+      // Ignore antigravity settings scan errors
     }
 
-    const litellmYamlPath = path.join(homeDir, ".claude", "litellm_config.yaml");
-    if (fs.existsSync(litellmYamlPath)) {
-      const yamlText = fs.readFileSync(litellmYamlPath, "utf8");
-      const defMatch = yamlText.match(/default_model:\s*["']?([^"'\r\n#]+)["']?/);
-      if (defMatch?.[1]) addClaudeModel(defMatch[1]);
-      const baseMatch = yamlText.match(/api_base:\s*["']?([^"'\r\n#]+)["']?/);
-      if (baseMatch?.[1]?.trim()) {
-        litellmBaseUrl = baseMatch[1].trim().replace(/\/+$/, "");
-      }
-      for (const m of yamlText.matchAll(/-\s*model_name:\s*["']?([^"'\r\n#]+)["']?/g)) {
-        if (m[1]) addClaudeModel(m[1]);
-      }
-      for (const m of yamlText.matchAll(/model:\s*["']?([^"'\r\n#]+)["']?/g)) {
-        if (m[1]) addClaudeModel(m[1].trim().replace(/^nvidia_nim\//, ""));
-      }
-    }
-  } catch {
-    // Ignore claude local scan errors
-  }
-
-  // 4. OpenCode: scan opencode.json, opencode.jsonc, agent/*.md, and ~/.asd/routing.jsonc
-  try {
-    const parseOpencodeConfig = (cfgText: string) => {
-      try {
-        const cleaned = cfgText.replace(/\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g, "");
-        const ocObj = JSON.parse(cleaned) as {
-          model?: string;
-          small_model?: string;
-          provider?: Record<string, { models?: Record<string, unknown> }>;
+    // 2. Codex: scan `~/.codex/models_cache.json` and `~/.codex/config.toml`
+    try {
+      const codexCachePath = path.join(homeDir, ".codex", "models_cache.json");
+      if (fs.existsSync(codexCachePath)) {
+        const cacheObj = JSON.parse(fs.readFileSync(codexCachePath, "utf8")) as {
+          models?: Array<{ slug?: string; visibility?: string }>;
         };
-        if (typeof ocObj.model === "string" && ocObj.model.trim()) {
-          sets.opencode.add(ocObj.model.trim());
+        if (Array.isArray(cacheObj.models)) {
+          for (const item of cacheObj.models) {
+            if (item?.visibility === "hide") continue;
+            if (item?.slug && typeof item.slug === "string" && item.slug.trim()) {
+              sets.codex.add(item.slug.trim());
+            }
+          }
         }
-        if (typeof ocObj.small_model === "string" && ocObj.small_model.trim()) {
-          sets.opencode.add(ocObj.small_model.trim());
+      }
+      const codexTomlPath = path.join(homeDir, ".codex", "config.toml");
+      if (fs.existsSync(codexTomlPath)) {
+        const tomlText = fs.readFileSync(codexTomlPath, "utf8");
+        const matches = tomlText.matchAll(/^\s*model\s*=\s*["']([^"']+)["']/gm);
+        for (const m of matches) {
+          if (m[1]?.trim()) sets.codex.add(m[1].trim());
         }
-        if (ocObj.provider && typeof ocObj.provider === "object") {
-          for (const [provKey, provVal] of Object.entries(ocObj.provider)) {
-            if (provVal?.models && typeof provVal.models === "object") {
-              for (const mKey of Object.keys(provVal.models)) {
-                sets.opencode.add(`${provKey}/${mKey}`);
+      }
+    } catch {
+      // Ignore codex scan errors
+    }
+
+    // 3. Claude Code: scan `~/.claude/settings.json` and `~/.claude/litellm_config.yaml`
+    let anthropicToken = process.env.ANTHROPIC_AUTH_TOKEN?.trim() || "";
+    let anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL?.trim() || "";
+    let nvidiaToken = process.env.NVIDIA_NIM_API_KEY?.trim() || "";
+    let litellmBaseUrl = "";
+    try {
+      const addClaudeModel = (raw: string | undefined) => {
+        if (!raw || typeof raw !== "string") return;
+        const trimmed = raw.trim();
+        if (!trimmed) return;
+        sets["claude-code"].add(trimmed);
+        const stripped = trimmed.replace(/\[.*\]$/, "").trim();
+        if (stripped) sets["claude-code"].add(stripped);
+      };
+
+      addClaudeModel(process.env.ANTHROPIC_MODEL);
+      addClaudeModel(process.env.ANTHROPIC_CUSTOM_MODEL_OPTION);
+      addClaudeModel(process.env.ANTHROPIC_DEFAULT_SONNET_MODEL);
+      addClaudeModel(process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL);
+      addClaudeModel(process.env.ANTHROPIC_DEFAULT_OPUS_MODEL);
+      addClaudeModel(process.env.CLAUDE_CODE_AUTO_MODE_MODEL);
+
+      const claudeSettingsPath = path.join(homeDir, ".claude", "settings.json");
+      if (fs.existsSync(claudeSettingsPath)) {
+        const settingsObj = JSON.parse(fs.readFileSync(claudeSettingsPath, "utf8")) as {
+          model?: string;
+          env?: Record<string, string>;
+        };
+        addClaudeModel(settingsObj.model);
+        const env = settingsObj.env ?? {};
+        addClaudeModel(env.ANTHROPIC_MODEL);
+        addClaudeModel(env.ANTHROPIC_CUSTOM_MODEL_OPTION);
+        addClaudeModel(env.ANTHROPIC_DEFAULT_SONNET_MODEL);
+        addClaudeModel(env.ANTHROPIC_DEFAULT_HAIKU_MODEL);
+        addClaudeModel(env.ANTHROPIC_DEFAULT_OPUS_MODEL);
+        addClaudeModel(env.CLAUDE_CODE_AUTO_MODE_MODEL);
+        if (env.ANTHROPIC_AUTH_TOKEN?.trim()) {
+          anthropicToken = env.ANTHROPIC_AUTH_TOKEN.trim();
+        }
+        if (env.ANTHROPIC_BASE_URL?.trim()) {
+          anthropicBaseUrl = env.ANTHROPIC_BASE_URL.trim();
+        }
+        if (env.NVIDIA_NIM_API_KEY?.trim()) {
+          nvidiaToken = env.NVIDIA_NIM_API_KEY.trim();
+        }
+      }
+
+      const litellmYamlPath = path.join(homeDir, ".claude", "litellm_config.yaml");
+      if (fs.existsSync(litellmYamlPath)) {
+        const yamlText = fs.readFileSync(litellmYamlPath, "utf8");
+        const defMatch = yamlText.match(/default_model:\s*["']?([^"'\r\n#]+)["']?/);
+        if (defMatch?.[1]) addClaudeModel(defMatch[1]);
+        const baseMatch = yamlText.match(/api_base:\s*["']?([^"'\r\n#]+)["']?/);
+        if (baseMatch?.[1]?.trim()) {
+          litellmBaseUrl = baseMatch[1].trim().replace(/\/+$/, "");
+        }
+        for (const m of yamlText.matchAll(/-\s*model_name:\s*["']?([^"'\r\n#]+)["']?/g)) {
+          if (m[1]) addClaudeModel(m[1]);
+        }
+        for (const m of yamlText.matchAll(/model:\s*["']?([^"'\r\n#]+)["']?/g)) {
+          if (m[1]) addClaudeModel(m[1].trim().replace(/^nvidia_nim\//, ""));
+        }
+      }
+    } catch {
+      // Ignore claude local scan errors
+    }
+
+    // 4. OpenCode: scan opencode.json, opencode.jsonc (string-safe JSONC), agent/*.md, and ~/.asd/routing.jsonc
+    try {
+      const parseOpencodeConfig = (cfgText: string) => {
+        try {
+          const ocObj = parseJsonc<{
+            model?: string;
+            small_model?: string;
+            provider?: Record<string, { models?: Record<string, unknown> }>;
+          }>(cfgText);
+          if (typeof ocObj?.model === "string" && ocObj.model.trim()) {
+            sets.opencode.add(ocObj.model.trim());
+          }
+          if (typeof ocObj?.small_model === "string" && ocObj.small_model.trim()) {
+            sets.opencode.add(ocObj.small_model.trim());
+          }
+          if (ocObj?.provider && typeof ocObj.provider === "object") {
+            for (const [provKey, provVal] of Object.entries(ocObj.provider)) {
+              if (provVal?.models && typeof provVal.models === "object") {
+                for (const mKey of Object.keys(provVal.models)) {
+                  sets.opencode.add(`${provKey}/${mKey}`);
+                }
               }
             }
           }
+        } catch {
+          // ignore parse error
         }
-      } catch {
-        // ignore parse error
+      };
+
+      const ocJsonPath = path.join(homeDir, ".config", "opencode", "opencode.json");
+      if (fs.existsSync(ocJsonPath)) {
+        parseOpencodeConfig(fs.readFileSync(ocJsonPath, "utf8"));
       }
-    };
 
-    const ocJsonPath = path.join(homeDir, ".config", "opencode", "opencode.json");
-    if (fs.existsSync(ocJsonPath)) {
-      parseOpencodeConfig(fs.readFileSync(ocJsonPath, "utf8"));
-    }
+      const ocJsoncPath = path.join(homeDir, ".config", "opencode", "opencode.jsonc");
+      if (fs.existsSync(ocJsoncPath)) {
+        parseOpencodeConfig(fs.readFileSync(ocJsoncPath, "utf8"));
+      }
 
-    const ocJsoncPath = path.join(homeDir, ".config", "opencode", "opencode.jsonc");
-    if (fs.existsSync(ocJsoncPath)) {
-      parseOpencodeConfig(fs.readFileSync(ocJsoncPath, "utf8"));
-    }
-
-    // Scan ~/.config/opencode/agent/*.md frontmatter for configured models
-    const agentDir = path.join(homeDir, ".config", "opencode", "agent");
-    if (fs.existsSync(agentDir)) {
-      for (const entry of fs.readdirSync(agentDir, { withFileTypes: true })) {
-        if (excludeAsdRouting && entry.name.startsWith("asd-")) continue;
-        if (entry.isFile() && entry.name.endsWith(".md")) {
-          try {
-            const text = fs.readFileSync(path.join(agentDir, entry.name), "utf8");
-            const m = /^model:\s*["']?([^"'\r\n#]+)["']?/m.exec(text);
-            if (m?.[1]?.trim()) {
-              sets.opencode.add(m[1].trim());
+      // Scan ~/.config/opencode/agent/*.md frontmatter for configured models
+      const agentDir = path.join(homeDir, ".config", "opencode", "agent");
+      if (fs.existsSync(agentDir)) {
+        for (const entry of fs.readdirSync(agentDir, { withFileTypes: true })) {
+          if (excludeAsdRouting && entry.name.startsWith("asd-")) continue;
+          if (entry.isFile() && entry.name.endsWith(".md")) {
+            try {
+              const text = fs.readFileSync(path.join(agentDir, entry.name), "utf8");
+              const m = /^model:\s*["']?([^"'\r\n#]+)["']?/m.exec(text);
+              if (m?.[1]?.trim()) {
+                sets.opencode.add(m[1].trim());
+              }
+            } catch {
+              // ignore agent read error
             }
-          } catch {
-            // ignore agent read error
           }
         }
       }
-    }
 
-    // Scan global ~/.asd/routing.jsonc for opencode models (UI dropdown convenience only)
-    const globalRoutingPath = path.join(homeDir, ".asd", "routing.jsonc");
-    if (!excludeAsdRouting && fs.existsSync(globalRoutingPath)) {
-      try {
-        const text = fs.readFileSync(globalRoutingPath, "utf8");
-        const matches = text.matchAll(/"harness"\s*:\s*"opencode"\s*,\s*"model"\s*:\s*"([^"]+)"/g);
-        for (const match of matches) {
-          if (match[1]?.trim()) {
-            sets.opencode.add(match[1].trim());
-          }
-        }
-      } catch {
-        // ignore routing read error
-      }
-    }
-  } catch {
-    // Ignore opencode scan errors
-  }
-
-  // 5. Cursor: scan ~/.cursor/cli-config.json, ~/.cursor/agents/*.md, and ~/.asd/routing.jsonc
-  try {
-    const cursorCfgPath = path.join(homeDir, ".cursor", "cli-config.json");
-    if (fs.existsSync(cursorCfgPath)) {
-      const cObj = JSON.parse(fs.readFileSync(cursorCfgPath, "utf8")) as { model?: { modelId?: string } | string };
-      if (typeof cObj.model === "string" && cObj.model.trim()) {
-        sets.cursor.add(cObj.model.trim());
-      } else if (cObj.model && typeof cObj.model === "object" && typeof cObj.model.modelId === "string" && cObj.model.modelId.trim()) {
-        sets.cursor.add(cObj.model.modelId.trim());
-      }
-    }
-
-    const cursorAgentDir = path.join(homeDir, ".cursor", "agents");
-    if (fs.existsSync(cursorAgentDir)) {
-      for (const entry of fs.readdirSync(cursorAgentDir, { withFileTypes: true })) {
-        if (excludeAsdRouting && entry.name.startsWith("asd-")) continue;
-        if (entry.isFile() && entry.name.endsWith(".md")) {
-          try {
-            const text = fs.readFileSync(path.join(cursorAgentDir, entry.name), "utf8");
-            const m = /^model:\s*["']?([^"'\r\n#]+)["']?/m.exec(text);
-            if (m?.[1]?.trim()) {
-              sets.cursor.add(m[1].trim());
+      // Scan global ~/.asd/routing.jsonc for opencode models (UI dropdown convenience only)
+      const globalRoutingPath = path.join(homeDir, ".asd", "routing.jsonc");
+      if (!excludeAsdRouting && fs.existsSync(globalRoutingPath)) {
+        try {
+          const text = fs.readFileSync(globalRoutingPath, "utf8");
+          const matches = text.matchAll(/"harness"\s*:\s*"opencode"\s*,\s*"model"\s*:\s*"([^"]+)"/g);
+          for (const match of matches) {
+            if (match[1]?.trim()) {
+              sets.opencode.add(match[1].trim());
             }
-          } catch {
-            // ignore
           }
+        } catch {
+          // ignore routing read error
         }
       }
+    } catch {
+      // Ignore opencode scan errors
     }
 
-    const globalRoutingPath = path.join(homeDir, ".asd", "routing.jsonc");
-    if (!excludeAsdRouting && fs.existsSync(globalRoutingPath)) {
-      try {
-        const text = fs.readFileSync(globalRoutingPath, "utf8");
-        const matches = text.matchAll(/"harness"\s*:\s*"cursor"\s*,\s*"model"\s*:\s*"([^"]+)"/g);
-        for (const match of matches) {
-          if (match[1]?.trim()) {
-            sets.cursor.add(match[1].trim());
-          }
-        }
-      } catch {
-        // ignore
-      }
-    }
-  } catch {
-    // Ignore cursor scan errors
-  }
-
-  // 6. Parallel non-blocking CLI & remote gateway probes
-  const runCliProbes = !options?.skipCliSpawn;
-  const runGatewayProbe = !options?.skipCliSpawn || Boolean(options?.enableGatewayProbe);
-  if (runCliProbes || runGatewayProbe) {
-    const agyProbe = !runCliProbes ? Promise.resolve() : execCliOutputAsync("agy", ["models"], cliTimeoutMs).then((res) => {
-      if (!res.stdout) return;
-      for (const rawLine of res.stdout.split(/\r?\n/)) {
-        const line = rawLine.trim();
-        if (!line || line.startsWith("Fetching")) continue;
-        const firstCol = line.split("\t")[0]?.trim();
-        if (firstCol && !firstCol.includes(" ")) {
-          sets.antigravity.add(firstCol);
-        }
-      }
-    });
-
-    const opencodeProbe = !runCliProbes ? Promise.resolve() : execCliOutputAsync("opencode", ["models"], cliTimeoutMs, homeDir).then((res) => {
-      if (res.status !== 0 || !res.stdout) return;
-      const lines = res.stdout
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0 && !l.startsWith("[") && !l.includes(" "));
-      for (const line of lines) {
-        sets.opencode.add(line);
-      }
-    });
-
-    const parseCursorModelsOutput = (stdout: string) => {
-      for (const rawLine of stdout.split(/\r?\n/)) {
-        const line = rawLine.trim();
-        if (!line || line.startsWith("Available models") || line.startsWith("Tip:")) continue;
-        const modelId = line.split(" - ")[0]?.trim();
-        if (modelId && !modelId.includes(" ")) {
-          sets.cursor.add(modelId);
-        }
-      }
-    };
-
-    const cursorProbe = !runCliProbes ? Promise.resolve() : execCliOutputAsync("cursor-agent", ["models"], cliTimeoutMs).then((res) => {
-      if (res.stdout) {
-        parseCursorModelsOutput(res.stdout);
-      } else {
-        return execCliOutputAsync("agent", ["models"], cliTimeoutMs).then((agentRes) => {
-          if (agentRes.stdout) parseCursorModelsOutput(agentRes.stdout);
-        });
-      }
-    });
-
-    // Pair each token strictly with its matching gateway base URL (F21)
-    const TRUSTED_GATEWAY_HOSTS = new Set([
-      "api.anthropic.com",
-      "integrate.api.nvidia.com",
-      "api.openai.com",
-    ]);
-    const isSafeGatewayProbeUrl = (rawUrl: string, allowCustomRemoteHost: boolean): boolean => {
-      try {
-        const parsed = new URL(rawUrl);
-        if (parsed.username || parsed.password) return false;
-        const host = parsed.hostname.toLowerCase();
-        const isLoopback = host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
-        if (isLoopback) {
-          return parsed.protocol === "http:" || parsed.protocol === "https:";
-        }
-        if (parsed.protocol !== "https:") return false;
-        if (
-          host === "0.0.0.0" ||
-          host === "metadata.google.internal" ||
-          host === "100.100.100.200" ||
-          host.startsWith("169.254.") ||
-          host.startsWith("10.") ||
-          host.startsWith("192.168.") ||
-          /^172\.(?:1[6-9]|2\d|3[01])\./.test(host)
+    // 5. Cursor: scan ~/.cursor/cli-config.json, ~/.cursor/agents/*.md, and ~/.asd/routing.jsonc
+    try {
+      const cursorCfgPath = path.join(homeDir, ".cursor", "cli-config.json");
+      if (fs.existsSync(cursorCfgPath)) {
+        const cObj = JSON.parse(fs.readFileSync(cursorCfgPath, "utf8")) as {
+          model?: { modelId?: string } | string;
+        };
+        if (typeof cObj.model === "string" && cObj.model.trim()) {
+          sets.cursor.add(cObj.model.trim());
+        } else if (
+          cObj.model &&
+          typeof cObj.model === "object" &&
+          typeof cObj.model.modelId === "string" &&
+          cObj.model.modelId.trim()
         ) {
+          sets.cursor.add(cObj.model.modelId.trim());
+        }
+      }
+
+      const cursorAgentDir = path.join(homeDir, ".cursor", "agents");
+      if (fs.existsSync(cursorAgentDir)) {
+        for (const entry of fs.readdirSync(cursorAgentDir, { withFileTypes: true })) {
+          if (excludeAsdRouting && entry.name.startsWith("asd-")) continue;
+          if (entry.isFile() && entry.name.endsWith(".md")) {
+            try {
+              const text = fs.readFileSync(path.join(cursorAgentDir, entry.name), "utf8");
+              const m = /^model:\s*["']?([^"'\r\n#]+)["']?/m.exec(text);
+              if (m?.[1]?.trim()) {
+                sets.cursor.add(m[1].trim());
+              }
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+
+      const globalRoutingPath = path.join(homeDir, ".asd", "routing.jsonc");
+      if (!excludeAsdRouting && fs.existsSync(globalRoutingPath)) {
+        try {
+          const text = fs.readFileSync(globalRoutingPath, "utf8");
+          const matches = text.matchAll(/"harness"\s*:\s*"cursor"\s*,\s*"model"\s*:\s*"([^"]+)"/g);
+          for (const match of matches) {
+            if (match[1]?.trim()) {
+              sets.cursor.add(match[1].trim());
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      // Ignore cursor scan errors
+    }
+
+    // 6. Parallel non-blocking CLI & remote gateway probes
+    const runCliProbes = !options?.skipCliSpawn;
+    const runGatewayProbe = !options?.skipCliSpawn || Boolean(options?.enableGatewayProbe);
+    if (runCliProbes || runGatewayProbe) {
+      const hasAgy = runCliProbes && Boolean(resolveBinaryOnPath("agy"));
+      const agyProbe = !hasAgy
+        ? Promise.resolve()
+        : execCliOutputAsync("agy", ["models"], cliTimeoutMs).then((res) => {
+            if (!res.stdout) return;
+            for (const rawLine of res.stdout.split(/\r?\n/)) {
+              const line = rawLine.trim();
+              if (!line || line.startsWith("Fetching")) continue;
+              const firstCol = line.split("\t")[0]?.trim();
+              if (firstCol && !firstCol.includes(" ")) {
+                sets.antigravity.add(firstCol);
+              }
+            }
+          });
+
+      const hasOpencode = runCliProbes && Boolean(resolveBinaryOnPath("opencode"));
+      const opencodeProbe = !hasOpencode
+        ? Promise.resolve()
+        : execCliOutputAsync("opencode", ["models"], cliTimeoutMs, homeDir).then((res) => {
+            if (!res.stdout) return;
+            const lines = res.stdout
+              .split(/\r?\n/)
+              .map((l) => l.trim())
+              .filter((l) => {
+                if (!l || l.startsWith("[") || l.includes(" ") || /^https?:/i.test(l)) {
+                  return false;
+                }
+                return res.status === 0 || l.includes("/");
+              });
+            for (const line of lines) {
+              sets.opencode.add(line);
+            }
+          });
+
+      const parseCursorModelsOutput = (stdout: string) => {
+        for (const rawLine of stdout.split(/\r?\n/)) {
+          const line = rawLine.trim();
+          if (!line || line.startsWith("Available models") || line.startsWith("Tip:")) continue;
+          const modelId = line.split(" - ")[0]?.trim();
+          if (modelId && !modelId.includes(" ")) {
+            sets.cursor.add(modelId);
+          }
+        }
+      };
+
+      const cursorBin = !runCliProbes
+        ? null
+        : resolveBinaryOnPath("cursor-agent")
+          ? "cursor-agent"
+          : resolveBinaryOnPath("agent")
+            ? "agent"
+            : null;
+      const cursorProbe = !cursorBin
+        ? Promise.resolve()
+        : execCliOutputAsync(cursorBin, ["models"], cliTimeoutMs).then((res) => {
+            if (res.stdout) {
+              parseCursorModelsOutput(res.stdout);
+            }
+          });
+
+      // Pair each token strictly with its matching gateway base URL (F21)
+      const TRUSTED_GATEWAY_HOSTS = new Set([
+        "api.anthropic.com",
+        "integrate.api.nvidia.com",
+        "api.openai.com",
+      ]);
+      const isSafeGatewayProbeUrl = (rawUrl: string, allowCustomRemoteHost: boolean): boolean => {
+        try {
+          const parsed = new URL(rawUrl);
+          if (parsed.username || parsed.password) return false;
+          const host = parsed.hostname.toLowerCase();
+          const isLoopback =
+            host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
+          if (isLoopback) {
+            return parsed.protocol === "http:" || parsed.protocol === "https:";
+          }
+          if (parsed.protocol !== "https:") return false;
+          if (
+            host === "0.0.0.0" ||
+            host === "metadata.google.internal" ||
+            host === "100.100.100.200" ||
+            host.startsWith("169.254.") ||
+            host.startsWith("10.") ||
+            host.startsWith("192.168.") ||
+            /^172\.(?:1[6-9]|2\d|3[01])\./.test(host)
+          ) {
+            return false;
+          }
+          if (TRUSTED_GATEWAY_HOSTS.has(host)) return true;
+          return allowCustomRemoteHost;
+        } catch {
           return false;
         }
-        if (TRUSTED_GATEWAY_HOSTS.has(host)) return true;
-        return allowCustomRemoteHost;
-      } catch {
-        return false;
-      }
-    };
+      };
 
-    const allowCustomRemoteHost =
-      options?.enableGatewayProbe === true ||
-      process.env.ASD_ALLOW_CUSTOM_GATEWAY_PROBE === "1";
+      const allowCustomRemoteHost =
+        options?.enableGatewayProbe === true ||
+        process.env.ASD_ALLOW_CUSTOM_GATEWAY_PROBE === "1";
 
-    let gatewayToken = "";
-    let gatewayBase = "";
-    const explicitGatewayBase = (anthropicBaseUrl || litellmBaseUrl).replace(/\/+$/, "");
-    if (anthropicToken && explicitGatewayBase) {
-      if (isSafeGatewayProbeUrl(explicitGatewayBase, allowCustomRemoteHost)) {
-        gatewayToken = anthropicToken;
-        gatewayBase = explicitGatewayBase;
+      let gatewayToken = "";
+      let gatewayBase = "";
+      const explicitGatewayBase = (anthropicBaseUrl || litellmBaseUrl).replace(/\/+$/, "");
+      if (anthropicToken && explicitGatewayBase) {
+        if (isSafeGatewayProbeUrl(explicitGatewayBase, allowCustomRemoteHost)) {
+          gatewayToken = anthropicToken;
+          gatewayBase = explicitGatewayBase;
+        }
+      } else if (nvidiaToken) {
+        const candidateNvidiaBase = "https://integrate.api.nvidia.com/v1";
+        if (
+          !explicitGatewayBase ||
+          explicitGatewayBase.toLowerCase().includes("integrate.api.nvidia.com")
+        ) {
+          gatewayToken = nvidiaToken;
+          gatewayBase = explicitGatewayBase || candidateNvidiaBase;
+        }
       }
-    } else if (nvidiaToken) {
-      const candidateNvidiaBase = "https://integrate.api.nvidia.com/v1";
-      if (
-        !explicitGatewayBase ||
-        explicitGatewayBase.toLowerCase().includes("integrate.api.nvidia.com")
-      ) {
-        gatewayToken = nvidiaToken;
-        gatewayBase = explicitGatewayBase || candidateNvidiaBase;
-      }
-    }
 
-    const gatewayProbe = (async () => {
-      if (
-        !gatewayToken ||
-        !gatewayBase ||
-        gatewayToken.includes("dummy") ||
-        gatewayToken.includes("\uC5EC\uAE30\uC5D0_")
-      ) {
-        return;
-      }
-      try {
-        const modelsEndpoint = gatewayBase.endsWith("/models") ? gatewayBase : `${gatewayBase}/models`;
-        const res = await fetch(modelsEndpoint, {
-          headers: { Authorization: `Bearer ${gatewayToken}` },
-          redirect: "error",
-          signal: AbortSignal.timeout(2500),
-        });
-        if (res.ok) {
-          const data = (await res.json()) as { data?: Array<{ id?: string }> };
-          if (Array.isArray(data.data)) {
-            for (const item of data.data) {
-              if (item?.id && typeof item.id === "string" && item.id.trim()) {
-                sets["claude-code"].add(item.id.trim());
+      const gatewayProbe = (async () => {
+        if (
+          !gatewayToken ||
+          !gatewayBase ||
+          gatewayToken.includes("dummy") ||
+          gatewayToken.includes("\uC5EC\uAE30\uC5D0_")
+        ) {
+          return;
+        }
+        try {
+          const modelsEndpoint = gatewayBase.endsWith("/models")
+            ? gatewayBase
+            : `${gatewayBase}/models`;
+          const res = await fetch(modelsEndpoint, {
+            headers: { Authorization: `Bearer ${gatewayToken}` },
+            redirect: "error",
+            signal: AbortSignal.timeout(3500),
+          });
+          if (res.ok) {
+            const data = (await res.json()) as { data?: Array<{ id?: string }> };
+            if (Array.isArray(data.data)) {
+              for (const item of data.data) {
+                if (item?.id && typeof item.id === "string" && item.id.trim()) {
+                  sets["claude-code"].add(item.id.trim());
+                }
               }
             }
           }
+        } catch {
+          // Ignore remote gateway timeout/network error
         }
-      } catch {
-        // Ignore remote gateway timeout/network error
+      })();
+
+      await Promise.all([agyProbe, opencodeProbe, cursorProbe, gatewayProbe]);
+    }
+
+    const rawCatalog: HarnessModelCatalog = {
+      antigravity: [...sets.antigravity],
+      "claude-code": [...sets["claude-code"]],
+      codex: [...sets.codex],
+      opencode: [...sets.opencode],
+      cursor: [...sets.cursor],
+    };
+
+    const previousDisk = readRawModelsDiskCache(homeDir)?.catalog ?? null;
+
+    if (excludeAsdRouting) {
+      modelCatalogCache.set(cacheKey, rawCatalog);
+      // Never overwrite models-cache.json during non-probing background syncs (`skipCliSpawn: true`)
+      if (!options?.skipCliSpawn) {
+        writeModelsDiskCache(
+          homeDir,
+          mergeHarnessModelCatalogs(rawCatalog, previousDisk),
+          Boolean(options?.persistCache)
+        );
       }
-    })();
+      return rawCatalog;
+    }
 
-    await Promise.all([agyProbe, opencodeProbe, cursorProbe, gatewayProbe]);
+    const mergedCatalog = mergeHarnessModelCatalogs(rawCatalog, previousDisk);
+    modelCatalogCache.set(cacheKey, mergedCatalog);
+    writeModelsDiskCache(homeDir, mergedCatalog, Boolean(options?.persistCache));
+    return mergedCatalog;
+  })();
+
+  inflightModelDiscovery.set(inflightKey, discoveryPromise);
+  try {
+    return await discoveryPromise;
+  } finally {
+    inflightModelDiscovery.delete(inflightKey);
   }
-
-  const catalog: HarnessModelCatalog = {
-    antigravity: [...sets.antigravity],
-    "claude-code": [...sets["claude-code"]],
-    codex: [...sets.codex],
-    opencode: [...sets.opencode],
-    cursor: [...sets.cursor],
-  };
-
-  modelCatalogCache.set(cacheKey, catalog);
-  writeModelsDiskCache(homeDir, catalog, Boolean(options?.persistCache));
-  return catalog;
 }
 
 // ============================================================================

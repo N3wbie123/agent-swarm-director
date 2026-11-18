@@ -570,6 +570,7 @@ function renderDashboardHtml(
         btnOpenModelsModal: "모델 확인",
         modelsModalTitle: "하네스별 사용 가능한 모델 목록",
         btnRefreshModelsOnly: "🔄 모델 목록 새로고침",
+        btnRefreshingModels: "⏳ 모델 목록 조회 중...",
         btnCloseModelsModal: "닫기",
         modelSearchPlaceholder: "🔍 모델 검색...",
         modelEmptyText: "(조회된 모델 없음)",
@@ -640,6 +641,7 @@ function renderDashboardHtml(
         btnOpenModelsModal: "Models",
         modelsModalTitle: "Available Models by Harness",
         btnRefreshModelsOnly: "🔄 Refresh Model List",
+        btnRefreshingModels: "⏳ Refreshing Models...",
         btnCloseModelsModal: "Close",
         modelSearchPlaceholder: "🔍 Search models...",
         modelEmptyText: "(No models found)",
@@ -723,6 +725,7 @@ function renderDashboardHtml(
     let editingMemoDraft = "";
     let routingEditorOpen = false;
     let modelsModalOpen = false;
+    let refreshingModels = false;
     let customHarnessPick = "opencode";
     let customModelPick = "";
     let actionStatusMsg = "";
@@ -841,8 +844,17 @@ function renderDashboardHtml(
       document.getElementById("btnToggleRouting").textContent = t.btnToggleRouting;
       document.getElementById("btnOpenModelsModal").textContent = t.btnOpenModelsModal;
       document.getElementById("modelsModalTitle").textContent = t.modelsModalTitle;
-      document.getElementById("btnRefreshModelsOnly").textContent = t.btnRefreshModelsOnly;
-      document.getElementById("btnRefreshModelsInRouting").textContent = t.btnRefreshModelsOnly;
+      const refreshLabel = refreshingModels ? t.btnRefreshingModels : t.btnRefreshModelsOnly;
+      const btnModalRef = document.getElementById("btnRefreshModelsOnly");
+      const btnRtRef = document.getElementById("btnRefreshModelsInRouting");
+      if (btnModalRef) {
+        btnModalRef.textContent = refreshLabel;
+        btnModalRef.disabled = refreshingModels;
+      }
+      if (btnRtRef) {
+        btnRtRef.textContent = refreshLabel;
+        btnRtRef.disabled = refreshingModels;
+      }
       document.getElementById("btnCloseModelsModal").textContent = t.btnCloseModelsModal;
       document.getElementById("routingEditorTitle").textContent = t.routingEditorTitle;
       document.getElementById("btnSaveRouting").textContent = t.btnSaveRouting;
@@ -915,6 +927,9 @@ function renderDashboardHtml(
     }
 
     async function refreshModelCatalogOnly() {
+      if (refreshingModels) return;
+      refreshingModels = true;
+      updateLangButtons();
       try {
         const res = await fetch("/api/models/refresh", {
           method: "POST",
@@ -963,7 +978,10 @@ function renderDashboardHtml(
             }
           }
         }
-      } catch {}
+      } catch {} finally {
+        refreshingModels = false;
+        updateLangButtons();
+      }
     }
 
     function toggleRoutingEditor() {
@@ -1843,6 +1861,7 @@ export async function startDashboardServer(options?: {
           projectRoot,
           homeDir,
           forceRefresh: true,
+          cliTimeoutMs: 12_000,
         });
         res.writeHead(200, {
           ...commonSecurityHeaders,

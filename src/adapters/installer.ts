@@ -1501,8 +1501,8 @@ export async function syncHarnessConfigs(
         projectRoot: options?.projectRoot,
         forceRefresh: shouldProbeClis,
         skipCliSpawn: !shouldProbeClis,
-        cliTimeoutMs: 2500,
-        persistCache: true,
+        cliTimeoutMs: 10_000,
+        persistCache: shouldProbeClis,
         excludeAsdRouting: true,
         enableGatewayProbe: shouldProbeClis ? "trusted-only" : false,
       });
