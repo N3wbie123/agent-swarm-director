@@ -606,7 +606,11 @@ describe("T1.2: buildSpawnSpec CLI Fallback Hardening", () => {
       prompt: "run codex",
       model: "default",
     });
-    assert.ok(cx.args.includes("--full-auto"), "codex buildSpawnSpec should include --full-auto");
+    assert.ok(
+      cx.args.includes("--dangerously-bypass-approvals-and-sandbox"),
+      "codex buildSpawnSpec should include --dangerously-bypass-approvals-and-sandbox"
+    );
+    assert.ok(!cx.args.includes("--full-auto"));
     assert.ok(!cx.args.includes("-m"));
     assert.equal(cx.closeStdinOnSpawn, true);
 

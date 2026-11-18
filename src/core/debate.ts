@@ -230,6 +230,8 @@ export interface SpawnHybridSubagentOptions
 
 export interface SpawnHybridSubagentResult extends SpawnSubagentResult {
   transportUsed: "acp" | "cli";
+  errorSummary?: string;
+  acpBridgeNotice?: string;
 }
 
 /**
@@ -275,6 +277,7 @@ export async function spawnHybridSubagent(
   }
 
   // 2. ACP-first execution path
+  let pendingAcpBridgeNotice: string | undefined;
   if (effectiveTransport !== "cli") {
     const readiness = options.acpCommandOverride
       ? {
@@ -345,6 +348,7 @@ export async function spawnHybridSubagent(
           harnessSessionId: meta.harnessSessionId,
           timedOut: false,
           transportUsed: "acp",
+          errorSummary: errText.trim(),
         };
       }
 
@@ -404,8 +408,11 @@ export async function spawnHybridSubagent(
         harnessSessionId: acpRes.sessionId,
         timedOut: acpRes.timedOut,
         ...(acpRes.timeoutReason ? { timeoutReason: acpRes.timeoutReason } : {}),
+        ...(acpRes.errorSummary ? { errorSummary: acpRes.errorSummary } : {}),
         transportUsed: "acp",
       };
+    } else if (readiness.installHint) {
+      pendingAcpBridgeNotice = `${options.harness}: ACP bridge not found (executed via streaming CLI fallback). Optional setup: ${readiness.installHint}`;
     }
   }
 
@@ -439,7 +446,11 @@ export async function spawnHybridSubagent(
     allowSlidingTimeout: options.allowSlidingTimeout ?? true,
   });
 
-  return { ...cliRes, transportUsed: "cli" };
+  return {
+    ...cliRes,
+    transportUsed: "cli",
+    ...(pendingAcpBridgeNotice ? { acpBridgeNotice: pendingAcpBridgeNotice } : {}),
+  };
 }
 
 // ============================================================================

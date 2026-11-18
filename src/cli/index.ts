@@ -1385,6 +1385,9 @@ export async function main(
         console.log(`SubSession : ${r.subSessionId}`);
         console.log(`Harness    : ${r.harness} (${r.model}) | Role: ${r.role}`);
         console.log(`Status     : ${r.status}`);
+        if (r.errorSummary) {
+          console.log(`Error      : ${r.errorSummary}`);
+        }
         console.log(`Log Path   : ${r.dirPath}`);
         console.log(`\n--- Output Log ---\n${r.outputLog.trim() || "(empty)"}`);
         return 0;
@@ -1977,6 +1980,12 @@ export async function main(
                 console.log(
                   `- ${r.taskId}: ${r.status} (${tag})${r.error ? ` [Error: ${r.error}]` : ""}`
                 );
+              }
+              if (res.acpBridgeHints && res.acpBridgeHints.length > 0) {
+                console.log("\nACP Bridge Setup Guidance (optional):");
+                for (const hint of res.acpBridgeHints) {
+                  console.log(`  - ${hint}`);
+                }
               }
             }
             return 0;

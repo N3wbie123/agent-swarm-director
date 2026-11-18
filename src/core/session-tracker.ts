@@ -75,7 +75,7 @@ export interface HeadlessHarnessCommandOptions {
   streaming?: boolean;
   /** Pass `--pure` for OpenCode headless runs to isolate external TUI plugins. */
   pure?: boolean;
-  /** Pass non-interactive permission/sandbox flags (`--dangerously-skip-permissions` / `--full-auto`). */
+  /** Pass non-interactive permission/sandbox flags (`--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`). */
   skipPermissions?: boolean;
 }
 
@@ -144,11 +144,12 @@ export function buildSpawnSpec(
     if (
       allowAutoPerms &&
       !spec.args.includes("--full-auto") &&
+      !spec.args.includes("--approve-for-me") &&
       !spec.args.includes("--sandbox") &&
       !spec.args.includes("-s") &&
       !spec.args.includes("--dangerously-bypass-approvals-and-sandbox")
     ) {
-      spec.args.push("--full-auto");
+      spec.args.push("--dangerously-bypass-approvals-and-sandbox");
     }
     spec.closeStdinOnSpawn = true;
   } else if (options.harness === "cursor") {

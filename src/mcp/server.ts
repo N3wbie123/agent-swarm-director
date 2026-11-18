@@ -1367,6 +1367,7 @@ export class AsdMcpServer {
     let completedCount = 0;
     const totalCount = turnTasks.length;
 
+    const acpBridgeHintsSet = new Set<string>();
     const spawnPromises = turnTasks.map(async (t) => {
       const upCtx = taskUpstreamContext.get(t.task_id)!;
       if (!upCtx.valid) {
@@ -1557,6 +1558,10 @@ export class AsdMcpServer {
               signal,
             });
 
+            if (firstRes.acpBridgeNotice) {
+              acpBridgeHintsSet.add(firstRes.acpBridgeNotice);
+            }
+
             const maxIdleResumes = Number.parseInt(
               process.env.ASD_IDLE_RESUME_ATTEMPTS ?? "1",
               10
@@ -1572,7 +1577,7 @@ export class AsdMcpServer {
               attemptedSubIds.push(resumeSubId);
               const continuationPrompt =
                 `Continue and complete task ${t.task_id} (${t.title}) from the current workspace state without repeating completed work, then emit the final asd-report block.`;
-              return spawnHybridSubagent({
+              const resumedRes = await spawnHybridSubagent({
                 projectRoot: this.projectRoot,
                 cwd: workDir,
                 worktreePath: wtInfo ? wtInfo.wtPath : null,
@@ -1598,6 +1603,10 @@ export class AsdMcpServer {
                 allowSlidingTimeout: true,
                 signal,
               });
+              if (resumedRes.acpBridgeNotice) {
+                acpBridgeHintsSet.add(resumedRes.acpBridgeNotice);
+              }
+              return resumedRes;
             }
 
             return firstRes;
@@ -1640,7 +1649,7 @@ export class AsdMcpServer {
             ? "Task execution aborted"
             : spawnResult.timedOut
               ? "Subagent execution timed out"
-              : `Subagent exited with code ${spawnResult.exitCode}`;
+              : spawnResult.errorSummary || `Subagent exited with code ${spawnResult.exitCode}`;
 
           if (signal?.aborted || currentAttempts >= 3) {
             if (signal?.aborted && updated.status !== "failed") {
@@ -1886,6 +1895,7 @@ export class AsdMcpServer {
       }
     }
 
+    const acpBridgeHints = [...acpBridgeHintsSet];
     return {
       sessionId,
       turn: selectedTurn,
@@ -1893,6 +1903,7 @@ export class AsdMcpServer {
       results,
       ...(autoCreatedTasks.length > 0 ? { autoCreatedTasks } : {}),
       ...(deferredCrossScopeRequests.length > 0 ? { deferredCrossScopeRequests } : {}),
+      ...(acpBridgeHints.length > 0 ? { acpBridgeHints } : {}),
       progressBoard,
     };
   }

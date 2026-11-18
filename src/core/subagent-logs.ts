@@ -25,6 +25,7 @@ export interface SubagentLogRecord {
   updatedAt?: number;
   prompt: string;
   outputLog: string;
+  errorSummary?: string;
   artifactsPurged: boolean;
   dirPath: string;
 }
@@ -62,7 +63,13 @@ export function scanSubagentLogs(projectRoot: string): SubagentLogRecord[] {
           const hasPrompt = fs.existsSync(promptPath);
           const hasOutput = fs.existsSync(outputPath);
           const prompt = hasPrompt ? fs.readFileSync(promptPath, "utf8") : "";
-          const outputLog = hasOutput ? fs.readFileSync(outputPath, "utf8") : "";
+          const errorSummary =
+            typeof meta.errorSummary === "string" && meta.errorSummary.trim()
+              ? meta.errorSummary.trim()
+              : undefined;
+          const rawOutputLog = hasOutput ? fs.readFileSync(outputPath, "utf8") : "";
+          const outputLog =
+            rawOutputLog || (errorSummary ? `${errorSummary}\n` : "");
           const artifactsPurged = !hasPrompt && !hasOutput;
           const startedAt =
             typeof meta.startedAt === "number" && meta.startedAt > 0
@@ -100,6 +107,7 @@ export function scanSubagentLogs(projectRoot: string): SubagentLogRecord[] {
             updatedAt,
             prompt,
             outputLog,
+            ...(errorSummary ? { errorSummary } : {}),
             artifactsPurged,
             dirPath,
           });

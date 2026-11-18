@@ -417,6 +417,7 @@ export interface AsdDispatchOutput {
   }>;
   autoCreatedTasks?: AutoCreatedCrossScopeTask[];
   deferredCrossScopeRequests?: DeferredCrossScopeRequest[];
+  acpBridgeHints?: string[];
   progressBoard: string;
 }
 
@@ -438,6 +439,7 @@ export interface AsdVerifyOutput {
   error?: string;
   autoCreatedTasks?: AutoCreatedCrossScopeTask[];
   deferredCrossScopeRequests?: DeferredCrossScopeRequest[];
+  acpBridgeHints?: string[];
   progressBoard: string;
 }
 
