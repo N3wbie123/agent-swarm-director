@@ -237,7 +237,8 @@ export const CODEX_ACP_INSTALL_HINT =
  */
 export function probeAcpCapability(
   harness: HarnessId,
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  options?: { interactivePermissions?: boolean }
 ): AcpHarnessReadiness {
   switch (harness) {
     case "opencode": {
@@ -253,12 +254,16 @@ export function probeAcpCapability(
     }
     case "antigravity": {
       const resolved = resolveBinaryOnPath("agy", env);
+      const args =
+        options?.interactivePermissions === true
+          ? ["acp"]
+          : ["acp", "--dangerously-skip-permissions"];
       return {
         harness,
         supported: Boolean(resolved),
         mode: "native",
         command: "agy",
-        args: ["acp", "--dangerously-skip-permissions"],
+        args,
         resolvedPath: resolved,
       };
     }
@@ -494,6 +499,31 @@ function collectCandidatePaths(
     }
   }
   return [...new Set(paths)];
+}
+
+function checkInteractivePermissionSafety(
+  params: AcpRequestPermissionParams,
+  cwd: string
+): { safe: true } | { safe: false; reason: string } {
+  const candidatePaths = collectCandidatePaths(params);
+  for (const targetPath of candidatePaths) {
+    const safeRes = resolveSafeTargetPath(targetPath, cwd);
+    if (!safeRes.safe) {
+      return {
+        safe: false,
+        reason: safeRes.reason ?? `Unsafe path '${targetPath}'`,
+      };
+    }
+    const rel = safeRes.relativeToRoot ?? targetPath;
+    const prot = checkProtectedPath(rel);
+    if (prot.protected) {
+      return {
+        safe: false,
+        reason: prot.reason ?? `Protected path '${rel}'`,
+      };
+    }
+  }
+  return { safe: true };
 }
 
 /**
@@ -784,6 +814,9 @@ export interface AcpStdioClientOptions {
   requestTimeoutMs?: number;
   onEvent?: (event: AcpNormalizedEvent) => void;
   onRawFrame?: (direction: "in" | "out" | "stderr", line: string) => void;
+  onPermissionRequest?: (
+    params: AcpRequestPermissionParams
+  ) => Promise<AcpRequestPermissionResult>;
   onSpawn?: (pid: number) => void;
 }
 
@@ -800,6 +833,17 @@ export class AcpStdioClient {
   private stdoutBuffer = "";
   private nextId = 1;
   private readonly pending = new Map<JsonRpcId, PendingRpcCall>();
+  private readonly pendingPermissions = new Map<
+    JsonRpcId,
+    { sessionId: string; cancel: () => void }
+  >();
+  private readonly sessionCatalogs = new Map<
+    string,
+    {
+      availableModels?: AcpSessionModelInfo[];
+      configOptions?: AcpSessionConfigOption[];
+    }
+  >();
   private readonly stateWaiters = new Map<
     string,
     Array<(stopReason: AcpStopReason) => void>
@@ -810,11 +854,20 @@ export class AcpStdioClient {
   private initResult: AcpInitializeResult | null = null;
 
   constructor(options: AcpStdioClientOptions) {
-    this.opts = options;
+    this.opts = { ...options };
   }
 
   get pid(): number {
     return this.child?.pid ?? 0;
+  }
+
+  get isConnected(): boolean {
+    return (
+      !this.closed &&
+      this.child !== null &&
+      this.child.exitCode === null &&
+      !this.child.killed
+    );
   }
 
   get protocolVersion(): number {
@@ -823,6 +876,18 @@ export class AcpStdioClient {
 
   get agentCapabilities(): AcpInitializeResult["agentCapabilities"] | undefined {
     return this.initResult?.agentCapabilities;
+  }
+
+  setTurnHandlers(handlers: {
+    onEvent?: (event: AcpNormalizedEvent) => void;
+    onRawFrame?: (direction: "in" | "out" | "stderr", line: string) => void;
+    onPermissionRequest?: (
+      params: AcpRequestPermissionParams
+    ) => Promise<AcpRequestPermissionResult>;
+  }): void {
+    this.opts.onEvent = handlers.onEvent;
+    this.opts.onRawFrame = handlers.onRawFrame;
+    this.opts.onPermissionRequest = handlers.onPermissionRequest;
   }
 
   async connect(): Promise<AcpInitializeResult> {
@@ -949,7 +1014,19 @@ export class AcpStdioClient {
       configOptions = created.configOptions;
     }
 
-    const cleanModel = (input.model ?? "").trim();
+    this.sessionCatalogs.set(sessionId, { availableModels, configOptions });
+    await this.setSessionModel(sessionId, input.model ?? "", input.thinkingEffort);
+
+    return { sessionId, loaded };
+  }
+
+  async setSessionModel(
+    sessionId: string,
+    requestedModelId: string,
+    thinkingEffort?: string | null
+  ): Promise<void> {
+    const catalog = this.sessionCatalogs.get(sessionId);
+    const cleanModel = requestedModelId.trim();
     if (
       cleanModel &&
       cleanModel !== "default" &&
@@ -957,15 +1034,15 @@ export class AcpStdioClient {
       cleanModel !== "inherent"
     ) {
       await this.tryConfigureSessionModel(sessionId, cleanModel, {
-        availableModels,
-        configOptions,
-        thinkingEffort: input.thinkingEffort,
+        availableModels: catalog?.availableModels,
+        configOptions: catalog?.configOptions,
+        thinkingEffort,
       });
     }
 
-    const cleanEffort = (input.thinkingEffort ?? "").trim();
+    const cleanEffort = (thinkingEffort ?? "").trim();
     if (cleanEffort) {
-      const effortOpt = configOptions?.find(
+      const effortOpt = catalog?.configOptions?.find(
         (c) =>
           c.id === "thought_level" ||
           c.id === "reasoning_effort" ||
@@ -982,8 +1059,6 @@ export class AcpStdioClient {
         );
       }
     }
-
-    return { sessionId, loaded };
   }
 
   private async tryConfigureSessionModel(
@@ -1064,6 +1139,12 @@ export class AcpStdioClient {
 
   cancelSession(sessionId: string): void {
     if (this.closed || !sessionId) return;
+    for (const [id, entry] of this.pendingPermissions.entries()) {
+      if (entry.sessionId === sessionId) {
+        this.pendingPermissions.delete(id);
+        entry.cancel();
+      }
+    }
     const params: AcpSessionCancelParams = { sessionId };
     this.writeFrame({
       jsonrpc: "2.0",
@@ -1197,6 +1278,34 @@ export class AcpStdioClient {
       const method = msg.method as string;
       if (method === "session/request_permission") {
         const params = (msg.params ?? {}) as AcpRequestPermissionParams;
+        const onPermReq = this.opts.onPermissionRequest;
+        if (onPermReq) {
+          const cwd = this.opts.cwd ?? process.cwd();
+          const safety = checkInteractivePermissionSafety(params, cwd);
+          if (!safety.safe) {
+            const deniedResult = selectPermissionOption(params.options ?? [], false);
+            this.opts.onEvent?.({
+              category: "permission",
+              sessionId: params.sessionId ?? "",
+              toolCallId: params.toolCall?.toolCallId,
+              toolName:
+                params.toolCall?.title ?? params.toolCall?.kind ?? "permission",
+              permissionDecision: "denied",
+              permissionReason: safety.reason,
+              timestamp: Date.now(),
+            });
+            this.writeFrame({
+              jsonrpc: "2.0",
+              id,
+              result: deniedResult,
+            });
+            return;
+          }
+
+          void this.handleInteractivePermission(id, params, onPermReq);
+          return;
+        }
+
         const evalRes = evaluateAcpPermissionRequest(params, this.opts.policyContext);
         this.opts.onEvent?.({
           category: "permission",
@@ -1247,12 +1356,97 @@ export class AcpStdioClient {
     }
   }
 
+  private async handleInteractivePermission(
+    id: JsonRpcId,
+    params: AcpRequestPermissionParams,
+    onPermissionRequest: (
+      params: AcpRequestPermissionParams
+    ) => Promise<AcpRequestPermissionResult>
+  ): Promise<void> {
+    const sessionId = params.sessionId ?? "";
+    let settled = false;
+
+    const finalize = (rawResult: AcpRequestPermissionResult): void => {
+      if (settled) return;
+      settled = true;
+      this.pendingPermissions.delete(id);
+
+      const result: AcpRequestPermissionResult =
+        rawResult &&
+        typeof rawResult === "object" &&
+        rawResult.outcome &&
+        typeof rawResult.outcome === "object"
+          ? rawResult
+          : { outcome: { outcome: "cancelled" } };
+
+      let allowed = false;
+      if (result.outcome.outcome === "selected") {
+        const selectedOptId = result.outcome.optionId;
+        const opt = (params.options ?? []).find(
+          (o) => o.optionId === selectedOptId
+        );
+        const isRejectOption = opt
+          ? /^reject/i.test(opt.kind ?? "") || /^reject/i.test(opt.optionId)
+          : /^reject/i.test(selectedOptId);
+        allowed = !isRejectOption;
+      }
+
+      this.opts.onEvent?.({
+        category: "permission",
+        sessionId,
+        toolCallId: params.toolCall?.toolCallId,
+        toolName: params.toolCall?.title ?? params.toolCall?.kind ?? "permission",
+        permissionDecision: allowed ? "allowed" : "denied",
+        timestamp: Date.now(),
+      });
+
+      if (!this.closed) {
+        this.writeFrame({
+          jsonrpc: "2.0",
+          id,
+          result,
+        });
+      }
+    };
+
+    const cancelPromise = new Promise<AcpRequestPermissionResult>((resolve) => {
+      this.pendingPermissions.set(id, {
+        sessionId,
+        cancel: () => {
+          const cancelled: AcpRequestPermissionResult = {
+            outcome: { outcome: "cancelled" },
+          };
+          finalize(cancelled);
+          resolve(cancelled);
+        },
+      });
+    });
+
+    let reqPromise: Promise<AcpRequestPermissionResult>;
+    try {
+      reqPromise = Promise.resolve(onPermissionRequest(params)).catch(
+        (): AcpRequestPermissionResult => ({
+          outcome: { outcome: "cancelled" },
+        })
+      );
+    } catch {
+      reqPromise = Promise.resolve({ outcome: { outcome: "cancelled" } });
+    }
+
+    const result = await Promise.race([reqPromise, cancelPromise]);
+    finalize(result);
+  }
+
   private rejectAllPending(err: Error): void {
     for (const [, entry] of this.pending.entries()) {
       if (entry.timer) clearTimeout(entry.timer);
       entry.reject(err);
     }
     this.pending.clear();
+    for (const [id, entry] of this.pendingPermissions.entries()) {
+      this.pendingPermissions.delete(id);
+      entry.cancel();
+    }
     for (const [, waiters] of this.stateWaiters.entries()) {
       for (const resolve of waiters) {
         resolve("cancelled");

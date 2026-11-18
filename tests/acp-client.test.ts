@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { describe, test } from "node:test";
 
 import {
+  AcpStdioClient,
   CLAUDE_ACP_INSTALL_HINT,
   CODEX_ACP_INSTALL_HINT,
   evaluateAcpPermissionRequest,
@@ -17,6 +18,7 @@ import {
   resolveAcpLaunchCommand,
   resolveBestAcpModelId,
 } from "../src/core/acp-client.ts";
+import type { AcpNormalizedEvent } from "../src/core/acp-types.ts";
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -45,6 +47,18 @@ describe("ACP Capability Probing & Launch Resolution", () => {
       const ag = probeAcpCapability("antigravity", mockEnv);
       assert.equal(ag.supported, true);
       assert.equal(ag.mode, "native");
+      assert.deepEqual(ag.args, ["acp", "--dangerously-skip-permissions"]);
+
+      const agInteractive = probeAcpCapability("antigravity", mockEnv, {
+        interactivePermissions: true,
+      });
+      assert.equal(agInteractive.supported, true);
+      assert.deepEqual(agInteractive.args, ["acp"]);
+
+      const agNonInteractive = probeAcpCapability("antigravity", mockEnv, {
+        interactivePermissions: false,
+      });
+      assert.deepEqual(agNonInteractive.args, ["acp", "--dangerously-skip-permissions"]);
 
       const cr = probeAcpCapability("cursor", mockEnv);
       assert.equal(cr.supported, true);
@@ -479,6 +493,419 @@ rl.on("line", (line) => {
       assert.equal(stallRes.timeoutReason, "idle");
       assert.equal(stallRes.sessionId, "acp-stall-999");
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("AcpStdioClient Interactive Permissions, Session Model & Lifecycle", () => {
+  test("async onPermissionRequest allows non-protected tools without blocking session/update and blocks protected paths", async () => {
+    const dir = makeTempDir("asd-acp-interactive-");
+    const mockServerPath = path.join(dir, "mock-acp-interactive.mjs");
+
+    fs.writeFileSync(
+      mockServerPath,
+      `
+import * as readline from "node:readline";
+const rl = readline.createInterface({ input: process.stdin });
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+
+let promptMsgId = null;
+const permResults = {};
+
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+  } else if (msg.method === "session/new") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "ses-int-1" } });
+  } else if (msg.method === "session/prompt") {
+    promptMsgId = msg.id;
+    send({
+      jsonrpc: "2.0",
+      id: 101,
+      method: "session/request_permission",
+      params: {
+        sessionId: "ses-int-1",
+        toolCall: { toolCallId: "tc-ok", kind: "edit", title: "Edit src/ok.ts", locations: [{ path: "src/ok.ts" }] },
+        options: [
+          { optionId: "allow_once", name: "Allow", kind: "allow_once" },
+          { optionId: "reject_once", name: "Reject", kind: "reject_once" }
+        ]
+      }
+    });
+    setTimeout(() => {
+      send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "ses-int-1",
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "streaming-while-pending" } }
+        }
+      });
+    }, 15);
+  } else if (msg.id === 101 && !msg.method) {
+    permResults[101] = msg.result?.outcome?.optionId ?? "none";
+    send({
+      jsonrpc: "2.0",
+      id: 102,
+      method: "session/request_permission",
+      params: {
+        sessionId: "ses-int-1",
+        toolCall: { toolCallId: "tc-env", kind: "edit", title: "Edit .env", locations: [{ path: ".env" }] },
+        options: [
+          { optionId: "allow_once", name: "Allow", kind: "allow_once" },
+          { optionId: "reject_once", name: "Reject", kind: "reject_once" }
+        ]
+      }
+    });
+  } else if (msg.id === 102 && !msg.method) {
+    permResults[102] = msg.result?.outcome?.optionId ?? "none";
+    send({
+      jsonrpc: "2.0",
+      id: 103,
+      method: "session/request_permission",
+      params: {
+        sessionId: "ses-int-1",
+        toolCall: { toolCallId: "tc-git", kind: "edit", title: "Edit .git/config", locations: [{ path: ".git/config" }] },
+        options: [
+          { optionId: "allow_once", name: "Allow", kind: "allow_once" },
+          { optionId: "reject_once", name: "Reject", kind: "reject_once" }
+        ]
+      }
+    });
+  } else if (msg.id === 103 && !msg.method) {
+    permResults[103] = msg.result?.outcome?.optionId ?? "none";
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "ses-int-1",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "|101=" + permResults[101] + "|102=" + permResults[102] + "|103=" + permResults[103] }
+        }
+      }
+    });
+    send({ jsonrpc: "2.0", id: promptMsgId, result: { stopReason: "end_turn" } });
+  }
+});
+      `.trim()
+    );
+
+    const events: AcpNormalizedEvent[] = [];
+    const seenPermTitles: string[] = [];
+    let resolveStreamingSeen: (() => void) | null = null;
+    const streamingSeenPromise = new Promise<void>((resolve) => {
+      resolveStreamingSeen = resolve;
+    });
+
+    const client = new AcpStdioClient({
+      command: process.execPath,
+      args: [mockServerPath],
+      cwd: dir,
+      onEvent: (ev) => {
+        events.push(ev);
+        if (ev.category === "text" && ev.text === "streaming-while-pending") {
+          resolveStreamingSeen?.();
+        }
+      },
+      onPermissionRequest: async (params) => {
+        seenPermTitles.push(params.toolCall?.title ?? "");
+        // Wait for session/update chunk to prove handleLine is not blocked while awaiting
+        await streamingSeenPromise;
+        return { outcome: { outcome: "selected", optionId: "allow_once" } };
+      },
+    });
+
+    try {
+      await client.connect();
+      const { sessionId } = await client.startOrLoadSession({ cwd: dir });
+      const turn = await client.promptTurn(sessionId, "Test interactive perms");
+      assert.equal(turn.stopReason, "end_turn");
+
+      assert.deepEqual(seenPermTitles, ["Edit src/ok.ts"]);
+      const fullText = events
+        .filter((e) => e.category === "text")
+        .map((e) => e.text ?? "")
+        .join("");
+      assert.equal(fullText, "streaming-while-pending|101=allow_once|102=reject_once|103=reject_once");
+
+      const permEvents = events.filter((e) => e.category === "permission");
+      assert.equal(permEvents.length, 3);
+      assert.equal(permEvents[0]?.permissionDecision, "allowed");
+      assert.equal(permEvents[1]?.permissionDecision, "denied");
+      assert.ok((permEvents[1]?.permissionReason ?? "").includes(".env"));
+      assert.equal(permEvents[2]?.permissionDecision, "denied");
+      assert.ok((permEvents[2]?.permissionReason ?? "").includes(".git"));
+    } finally {
+      await client.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cancelSession(sessionId) cancels in-flight onPermissionRequest cleanly with outcome cancelled", async () => {
+    const dir = makeTempDir("asd-acp-perm-cancel-");
+    const mockServerPath = path.join(dir, "mock-acp-perm-cancel.mjs");
+
+    fs.writeFileSync(
+      mockServerPath,
+      `
+import * as readline from "node:readline";
+const rl = readline.createInterface({ input: process.stdin });
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+
+let promptMsgId = null;
+const perm201Responses = [];
+let sawCancelNotification = false;
+
+function maybeFinish() {
+  if (perm201Responses.length > 0 && sawCancelNotification && promptMsgId !== null) {
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "ses-cancel-1",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: JSON.stringify({ count: perm201Responses.length, outcome: perm201Responses[0]?.outcome?.outcome }) }
+        }
+      }
+    });
+    send({ jsonrpc: "2.0", id: promptMsgId, result: { stopReason: "cancelled" } });
+  }
+}
+
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+  } else if (msg.method === "session/new") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "ses-cancel-1" } });
+  } else if (msg.method === "session/prompt") {
+    promptMsgId = msg.id;
+    send({
+      jsonrpc: "2.0",
+      id: 201,
+      method: "session/request_permission",
+      params: {
+        sessionId: "ses-cancel-1",
+        toolCall: { toolCallId: "tc-wait", kind: "edit", title: "Edit src/wait.ts", locations: [{ path: "src/wait.ts" }] },
+        options: [
+          { optionId: "allow_once", name: "Allow", kind: "allow_once" },
+          { optionId: "reject_once", name: "Reject", kind: "reject_once" }
+        ]
+      }
+    });
+  } else if (msg.id === 201 && !msg.method) {
+    perm201Responses.push(msg.result);
+    maybeFinish();
+  } else if (msg.method === "session/cancel") {
+    sawCancelNotification = true;
+    maybeFinish();
+  }
+});
+      `.trim()
+    );
+
+    const events: AcpNormalizedEvent[] = [];
+    let resolveEntered: (() => void) | null = null;
+    const enteredPromise = new Promise<void>((resolve) => {
+      resolveEntered = resolve;
+    });
+    const lateBox: {
+      resolve?: (res: { outcome: { outcome: "selected"; optionId: string } }) => void;
+    } = {};
+
+    const client = new AcpStdioClient({
+      command: process.execPath,
+      args: [mockServerPath],
+      cwd: dir,
+      onEvent: (ev) => events.push(ev),
+      onPermissionRequest: () => {
+        resolveEntered?.();
+        return new Promise((resolve) => {
+          lateBox.resolve = resolve;
+        });
+      },
+    });
+
+    try {
+      await client.connect();
+      const { sessionId } = await client.startOrLoadSession({ cwd: dir });
+      const turnPromise = client.promptTurn(sessionId, "Wait on permission");
+
+      await enteredPromise;
+      client.cancelSession(sessionId);
+
+      // Even if late resolution happens afterwards, double-response must be prevented
+      lateBox.resolve?.({ outcome: { outcome: "selected", optionId: "allow_once" } });
+
+      const turn = await turnPromise;
+      assert.equal(turn.stopReason, "cancelled");
+
+      const textOut = events
+        .filter((e) => e.category === "text")
+        .map((e) => e.text ?? "")
+        .join("");
+      assert.deepEqual(JSON.parse(textOut), { count: 1, outcome: "cancelled" });
+
+      const permEvents = events.filter((e) => e.category === "permission");
+      assert.equal(permEvents.length, 1);
+      assert.equal(permEvents[0]?.permissionDecision, "denied");
+    } finally {
+      await client.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("setSessionModel resolves from cached catalog, setTurnHandlers swaps callbacks, and isConnected tracks lifecycle", async () => {
+    const dir = makeTempDir("asd-acp-model-lifecycle-");
+    const mockServerPath = path.join(dir, "mock-acp-model.mjs");
+
+    fs.writeFileSync(
+      mockServerPath,
+      `
+import * as readline from "node:readline";
+const rl = readline.createInterface({ input: process.stdin });
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+
+const recordedCalls = [];
+
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+  } else if (msg.method === "session/new") {
+    const sid = recordedCalls.length === 0 ? "ses-cat-1" : "ses-cat-2";
+    if (sid === "ses-cat-1") {
+      send({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: {
+          sessionId: sid,
+          models: {
+            availableModels: [
+              { modelId: "gemini-3.8-flash-medium" },
+              { modelId: "gemini-4-carbon-high" }
+            ]
+          },
+          configOptions: [
+            {
+              id: "thought_level",
+              category: "thought_level",
+              options: [{ value: "low" }, { value: "high" }]
+            }
+          ]
+        }
+      });
+    } else {
+      send({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: {
+          sessionId: sid,
+          configOptions: [
+            {
+              id: "model",
+              category: "model",
+              options: [{ value: "nvidia/z-ai/glm-5.3-flash" }]
+            }
+          ]
+        }
+      });
+    }
+  } else if (msg.method === "session/set_model") {
+    recordedCalls.push({ method: "session/set_model", params: msg.params });
+    if (msg.params.sessionId === "ses-cat-2") {
+      send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "set_model unsupported" } });
+    } else {
+      send({ jsonrpc: "2.0", id: msg.id, result: {} });
+    }
+  } else if (msg.method === "session/set_config_option") {
+    recordedCalls.push({ method: "session/set_config_option", params: msg.params });
+    send({ jsonrpc: "2.0", id: msg.id, result: {} });
+  } else if (msg.method === "session/prompt") {
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: msg.params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: JSON.stringify(recordedCalls) }
+        }
+      }
+    });
+    send({ jsonrpc: "2.0", id: msg.id, result: { stopReason: "end_turn" } });
+  }
+});
+      `.trim()
+    );
+
+    const turn1Events: AcpNormalizedEvent[] = [];
+    const turn2Events: AcpNormalizedEvent[] = [];
+
+    const client = new AcpStdioClient({
+      command: process.execPath,
+      args: [mockServerPath],
+      cwd: dir,
+      onEvent: (ev) => turn1Events.push(ev),
+    });
+
+    try {
+      assert.equal(client.isConnected, false);
+      await client.connect();
+      assert.equal(client.isConnected, true);
+
+      const { sessionId: sid1 } = await client.startOrLoadSession({ cwd: dir });
+      await client.setSessionModel(sid1, "default"); // should skip set_model
+      await client.setSessionModel(sid1, "pro", "high");
+
+      const { sessionId: sid2 } = await client.startOrLoadSession({ cwd: dir });
+      await client.setSessionModel(sid2, "z-ai/glm-5.3-flash");
+
+      // Swap handlers for next turn via setTurnHandlers
+      client.setTurnHandlers({
+        onEvent: (ev) => turn2Events.push(ev),
+      });
+
+      const turnRes = await client.promptTurn(sid2, "Check recorded calls");
+      assert.equal(turnRes.stopReason, "end_turn");
+      assert.equal(turn1Events.length, 0);
+      assert.equal(turn2Events.length, 1);
+
+      const recorded = JSON.parse(turn2Events[0]?.text ?? "[]") as Array<{
+        method: string;
+        params: Record<string, unknown>;
+      }>;
+      assert.deepEqual(recorded, [
+        {
+          method: "session/set_model",
+          params: { sessionId: "ses-cat-1", modelId: "gemini-4-carbon-high" },
+        },
+        {
+          method: "session/set_config_option",
+          params: { sessionId: "ses-cat-1", configId: "thought_level", value: "high" },
+        },
+        {
+          method: "session/set_model",
+          params: { sessionId: "ses-cat-2", modelId: "nvidia/z-ai/glm-5.3-flash" },
+        },
+        {
+          method: "session/set_config_option",
+          params: {
+            sessionId: "ses-cat-2",
+            configId: "model",
+            value: "nvidia/z-ai/glm-5.3-flash",
+          },
+        },
+      ]);
+
+      await client.close();
+      assert.equal(client.isConnected, false);
+    } finally {
+      await client.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
