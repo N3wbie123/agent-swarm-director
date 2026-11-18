@@ -1,177 +1,151 @@
-# Agent Swarm Director (`agent-swarm-director` / ASD v2.7.0)
+# Agent Swarm Director (`ASD` v2.7.0)
 
-**English** | [한국어](./README_ko.md) | [🖥️ ASD-Nexus (Official GUI)](https://github.com/yjsjs0987/ASD-Nexus) | [🏛️ Architecture & Code Reference](./PROJECT_STATUS.md) | [🔌 External SDK & DB Reference](./EXTERNAL_SDK_REFERENCE.md) | [🔗 Harness Integration Reference](./HARNESS_INTEGRATION_REFERENCE.md) | [📋 Patch Notes](./PATCH_NOTES.md) | [📋 패치 노트 (KR)](./PATCH_NOTES_ko.md)
+**English** | [한국어](./README_ko.md) | [🖥️ ASD-Nexus (GUI)](https://github.com/yjsjs0987/ASD-Nexus) | [⚡ ACP Roadmap](./docs/ACP_ROADMAP.md) | [🧭 Routing Guide](./ROUTING_GUIDE.md) | [🏛️ Architecture](./PROJECT_STATUS.md) | [🔌 External SDK](./EXTERNAL_SDK_REFERENCE.md) | [📋 Patch Notes](./PATCH_NOTES.md)
 
 > **Zero-dependency universal multi-agent orchestration harness and SDK across Claude Code, OpenCode, Codex CLI, Antigravity, and Cursor CLI.**
 
-Agent Swarm Director (**ASD v2.7.0**) is the universal multi-harness successor to `agy-agent-swarm-director`. Built purely on native Node.js (`>=22.13.0`) TypeScript execution and `node:sqlite` (WAL mode) with **zero external npm runtime dependencies**, ASD coordinates heterogeneous AI coding harnesses under a single deterministic control plane and exposes a full Node.js SDK for external GUI/IDE integration.
+**Agent Swarm Director (`agent-swarm-director` / ASD v2.7.0)** coordinates five heterogeneous AI coding harnesses under a single deterministic control plane. Built purely on native Node.js (`>=22.13.0`) TypeScript execution and `node:sqlite` (WAL mode) with **zero external npm runtime dependencies (`dependencies: {}`)**, ASD combines **Agent Client Protocol (ACP) v1/v2 orchestration**, **Git worktree isolation**, **cross-model adversarial debate**, and a **1ms fail-closed security policy engine**.
 
 > [!TIP]
-> ### 🖥️ Official Desktop / Web GUI Companion — **[ASD-Nexus](https://github.com/yjsjs0987/ASD-Nexus)**
-> Looking for a full visual workspace to manage 5-harness CLI sessions, inspect 4-way structured transcripts (Thinking / Tool Use / Tool Result / Assistant), stream live multi-harness turns, and promote/demote ASD sessions with one click?  
-> 👉 **[Visit the official GUI project: `yjsjs0987/ASD-Nexus`](https://github.com/yjsjs0987/ASD-Nexus)**
+> **🖥️ Official Desktop / Web GUI — [ASD-Nexus](https://github.com/yjsjs0987/ASD-Nexus)**  
+> Manage all 5 local harness sessions visually, inspect 4-way structured transcripts (*Thinking / Tool Use / Tool Result / Assistant*), stream live multi-harness turns, and promote or demote sessions with one click.
 
 ---
 
-> [!IMPORTANT]
-> ## 🚨 [For Legacy Users ≤ v2.3.2] Built-in SQLite DB Migration (`asd migrate`)
->
-> Starting in **ASD v2.3.3 / v2.4.0**, the per-project hash DB layout (`~/.asd/state/<12-hex-hash>/core.db`) was unified into a **single shared SQLite SSOT (`~/.asd/state/core.db`)**.
->
-> If you used **ASD v2.3.2 or earlier** and want to automatically migrate all existing sessions, tasks, debates, and drivers into the new shared DB (with automatic backup and idempotent safety), use the built-in official command `asd migrate`:
->
-> ```bash
-> # Run migration (automatically backs up shared DB before importing)
-> asd migrate
->
-> # Optional: remove migrated legacy core.db files after completion
-> asd migrate --clean-legacy
-> ```
+## Why ASD?
+
+- **Zero Runtime Dependencies (`dependencies: {}`)** — Runs directly on Node.js `>=22.13.0` native TypeScript strip-types and `node:sqlite`. Zero `npm install` friction on `asd update`, zero supply-chain bloat, and sub-10ms hook startup.
+- **Hybrid ACP-First Subagent Engine (v2.7.0)** — Spawns subagents over pure stdio JSON-RPC 2.0 **ACP v1** (with v2 draft compatibility), enforcing `allowedFiles` and protected-path rules live via bidirectional `session/request_permission` callbacks, auto-mapping `routing.jsonc` model names onto each harness's `session/new` catalog, resuming stalled turns in-place via `session/load`, and falling back seamlessly to hardened streaming CLIs when external bridges are absent.
+- **Non-Blocking OpenCode Async Dispatch (`--async`)** — Detaches wave workers in `<100ms` so OpenCode's main chat never freezes, while the global `asd-guard.js` plugin automatically pushes completion reports back into the idle OpenCode session via `client.session.prompt`.
+- **Dual-Track Execution (`LIGHT` vs `HEAVY`)** — Delegate lightweight work to internal subagents on a clean in-place baseline (`LIGHT`), or fan out across multiple external harnesses in isolated Git worktrees with mutex-serialized `--no-ff` merges (`HEAVY`).
+- **Blind Cross-Model Adversarial Debate (`asd debate`)** — Run parallel Round 1 critiques across distinct model families (`claude`, `gpt`, `gemini`, `glm`, `deepseek`) with code-slice/diff injection, followed by Round 2 binding arbitration.
+- **Global-Only Gap-Filling Sync (`asd sync`)** — Installs skills, 5 specialist personas (`planner`, `architect`, `worker`, `scout`, `critic`), hooks, and missing MCP servers strictly into user home configs without polluting project repositories.
+- **Full External GUI / TUI SDK** — Exposes session discovery (`discoverProjectCliSessions`), 4-way transcript parsing (`readHarnessTranscript`), live streaming turns (`runDriverTurn`), and CLI ↔ ASD session promotion/demotion (`promoteCliSessionToAsd` / `demoteAsdSession`).
 
 ---
 
-## Key Features
+## 5-Harness Support & ACP Matrix
 
-- **Zero External Dependencies (`dependencies: {}`)**: Runs directly on Node.js `>=22.13.0` native TypeScript strip-types, `node:sqlite`, and standard library modules.
-- **5-Harness Universal Control Plane**:
-  - **Claude Code** (`claude`, `@cc`)
-  - **OpenCode** (`opencode`, `@oc`)
-  - **Codex CLI** (`codex`, `@cx`)
-  - **Antigravity** (`agy`, `@ag`)
-  - **Cursor CLI** (`agent` / `cursor-agent`, `@cr`)
-- **Single Shared SQLite SSOT (`~/.asd/state/core.db`)**:
-  - Consolidates all project sessions, tasks, debates, and multi-driver leases (`session_drivers`) into a single WAL-mode SQLite database scoped by `sessions.project_root`.
-- **Bidirectional CLI ↔ ASD Session Management & Streaming SDK (v2.4.0)**:
-  - **Project CLI Session Discovery (`discoverProjectCliSessions`)**: Discovers all local CLI sessions executed in a project across all 5 harnesses and links them against ASD sessions.
-  - **4-Way Transcript Classification (`readHarnessTranscript`)**: Parses local harness transcripts into **Thinking**, **Tool Use**, **Tool Result**, and **User/Assistant Messages** across Claude Code, Codex, OpenCode (`opencode.db`), and Antigravity (`transcript.jsonl` + automatic `transcript_full.jsonl` fallback).
-  - **Real-Time Streaming Turn Execution (`runDriverTurn`)**: Streams live `thinking`, `tool_use`, `tool_result`, and `assistant` events (`onEvent`) while executing interactive turns across harnesses.
-  - **Promote & Demote (`promoteCliSessionToAsd` / `demoteAsdSession` / `asd resume`)**: Seamlessly promote any standalone CLI session into an ASD-managed session or demote an ASD session back to its native interactive CLI.
-- **Capability-Aware Gap-Filling MCP Sync (`asd sync`)**:
-  - Automatically installs global skills (`/asd`, `/asd-plan`, `/asd-run`, `/asd-debate`, `/asd-debug`, `/handoff` / `/asd-handoff`), 5 core specialist agent personas (`planner`, `architect`, `worker`, `scout`, `critic`), safety hooks (`PreToolUse`, `Stop`, Codex `notify`, Cursor `hooks.json`), and MCP servers into global user directories without polluting project repositories.
-  - **Smart Deduplication**: Skips injecting MCP tools where a harness already has native built-in support or where the user already configured the MCP server.
-- **Dual-Track Execution (`LIGHT` Single-Harness vs `HEAVY` Multi-Harness)**:
-  - **LIGHT Track (Current Harness Mode)**: Small tasks are handled directly by the main AI in-place; multi-agent subtasks use internal subagents within the current harness (`claim_only`), followed by automatic git checkpoint commits and instant scoped rollback on test or boundary failure.
-  - **HEAVY Track (Multi-Harness Concurrent Mode)**: Spawns multiple external harnesses concurrently in isolated Git worktrees (`.asd/wt/<turn>-<taskId>`) with automatic `node_modules` junction linking/unlinking and cross-process mutex-serialized (`.asd/merge.lock`) `--no-ff` merging.
-- **Blind Cross-Model Adversarial Debate (`asd debate`)**:
-  - Zero-polling parallel Round 1 critique across diverse model families (`claude`, `gpt`, `gemini`, `glm`) with zero-token code slice injection (`--files`, `--diff`), followed by Round 2 binding arbitration and automatic constraint injection into task acceptance criteria.
-- **1ms Fail-Closed Policy Guard & Subagent Shield**:
-  - Case-normalized realpath boundary enforcement blocking unauthorized edits and protected paths (`.git/`, `.asd/`, `.env*`, `*.pem`, `*.key`).
-  - Subagent Shield prevents infinite stop-hook loops and blocks subagents from calling orchestration tools.
+`asd doctor` probes CLI availability, headless support, and ACP readiness in **~10ms**:
 
----
+| Harness | Tag | CLI Binary | Primary Subagent Transport | Optional ACP Bridge Setup |
+| :--- | :---: | :--- | :--- | :--- |
+| **OpenCode** | `@oc` | `opencode` | **Native ACP** (`opencode acp --pure`) | Built-in (ready out of the box) |
+| **Antigravity** | `@ag` | `agy` | **Native ACP** (`agy acp`) | Built-in (ready out of the box) |
+| **Cursor CLI** | `@cr` | `cursor-agent` / `agent` | **Native ACP** (`cursor-agent acp`) | Built-in (`.ps1` / `.cmd` auto-resolved) |
+| **Claude Code** | `@cc` | `claude` | **ACP Bridge** → *Streaming CLI fallback* | `npm i -g @agentclientprotocol/claude-agent-acp` |
+| **Codex CLI** | `@cx` | `codex` | **ACP Bridge** → *Streaming CLI fallback* | `npm i -g @agentclientprotocol/codex-acp` |
 
-## Requirements
-
-- **Node.js**: `>=22.13.0`
-- **Git**: `>=2.30.0`
+> Claude Code and Codex work out of the box via streaming CLI (`stream-json` / `--json --full-auto`); installing their official ACP bridges automatically upgrades them to bidirectional ACP transport.
 
 ---
 
 ## Quick Start
 
-### A. With Global `PATH` Registration (Default)
+### Requirements
+- **Node.js** `>=22.13.0`
+- **Git** `>=2.30.0`
+
+### 1. Install & Global Sync
 ```bash
-# 1. Synchronize all 5 harnesses globally & automatically register 'asd' on PATH
+# Sync skills, agents, safety hooks, and register 'asd' on global PATH
 node --no-warnings src/cli/index.ts sync
 
-# 2. Run 'asd' directly from ANY project directory
+# Verify environment, harness CLIs, ACP readiness, and PreToolUse security guard
 asd doctor
-asd status
-asd plan get
-asd dispatch --turn 1
-asd verify --task T1.1 --files "src/index.ts" --summary "Implemented feature"
-asd debate --topic "Architecture" --proposal "Use SQLite WAL mode"
-asd resume
-asd handoff
-asd migrate
-asd logs
-asd logs T1.1
-asd ui
-
-# 3. Run the isolated verification test suite
-node scripts/run-tests.mjs
 ```
+*(Pass `--no-path` to `sync` if you prefer invoking `node --no-warnings <path>/src/cli/index.ts <cmd>` without modifying `PATH`.)*
 
-### B. Without Global `PATH` Registration (`--no-path`)
+### 2. Typical CLI Workflow
 ```bash
-# 1. Synchronize harnesses globally without modifying global PATH
-node --no-warnings src/cli/index.ts sync --no-path
-
-# 2. Run commands via Node.js directly
-node --no-warnings src/cli/index.ts doctor
-node --no-warnings src/cli/index.ts status
-node --no-warnings src/cli/index.ts plan get
-node --no-warnings src/cli/index.ts dispatch --turn 1
-node --no-warnings src/cli/index.ts verify --task T1.1 --files "src/index.ts" --summary "Implemented feature"
-node --no-warnings src/cli/index.ts debate --topic "Architecture" --proposal "Use SQLite WAL mode"
-node --no-warnings src/cli/index.ts resume
-node --no-warnings src/cli/index.ts handoff
-node --no-warnings src/cli/index.ts migrate
-node --no-warnings src/cli/index.ts logs
-node --no-warnings src/cli/index.ts ui
+asd status                                                # Live TODO progress board & active session state
+asd plan get                                              # Inspect current .asd/PLAN.md & SQLite tasks
+asd dispatch --turn 1 --mode parallel_spawn               # Execute Turn 1 across routed harnesses (ACP-first)
+asd dispatch --turn 1 --mode parallel_spawn --async       # Non-blocking background wave (required in OpenCode HEAVY)
+asd wait --timeout 600000                                 # Wait for a detached '--async' wave if needed
+asd verify --task T1.1 --summary "Add ACP model mapper"   # Boundary + secret + test gate & clean commit
+asd debate --topic "Storage" --proposal "Use SQLite WAL"  # Cross-model blind critique & binding verdict
+asd handoff                                               # Generate secret-redacted handoff.md
 ```
 
+<details>
+<summary><strong>📦 Upgrading from Legacy ASD ≤ v2.3.2? (<code>asd migrate</code>)</strong></summary>
+
+Starting in **ASD v2.3.3+**, per-project hash databases (`~/.asd/state/<hash>/core.db`) were unified into a single shared WAL database (`~/.asd/state/core.db`). Migrate legacy sessions, tasks, and debates safely with automatic backup:
+
+```bash
+asd migrate
+asd migrate --clean-legacy   # Optional: delete old per-hash core.db files after import
+```
+</details>
+
 ---
 
-## In-Editor AI Skill Commands (`/asd*`, `/handoff`)
+## In-Chat Slash Skills (`/asd*`, `/handoff`)
 
-Once `asd sync` has been run, you can invoke these slash skills directly inside your AI coding chat (**Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, or **Cursor CLI**).
+After running `asd sync`, use these commands directly inside **Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, or **Cursor CLI**:
 
-> **Single Pre-Flight Briefing Rule**: Before modifying any code or spawning external harnesses, every `/asd*` skill presents **one consolidated pre-flight briefing** that:
-> 1. Summarizes the planned tasks, target files, and expected impact.
-> 2. Asks whether to run in **`LIGHT` Mode (Current Harness Only)** or **`HEAVY` Mode (Multi-Harness Concurrent in isolated Git worktrees)**.
-> 3. Bundles any clarifying questions into that single message.
-
-| Skill Command | Purpose | Typical Workflow & Usage |
+| Skill | Purpose | Workflow Summary |
 | :--- | :--- | :--- |
-| **`/asd <request>`** | **End-to-End Autonomous Workflow** | Explores the codebase, presents a single pre-flight summary & `LIGHT`/`HEAVY` mode confirmation, generates `.asd/PLAN.md`, executes tasks wave-by-wave (`asd dispatch` & `asd verify`), displays the live `progressBoard`, and writes `.asd/summary.md`. |
-| **`/asd-plan <request>`** | **Planning & Decomposition Only** | Read-only exploration of the codebase, single pre-plan briefing, and creates `.asd/PLAN.md` + SQLite task breakdown without modifying application code. |
-| **`/asd-run`** | **Execute / Resume `.asd/PLAN.md`** | Reverse-syncs any manual edits from `.asd/PLAN.md` (`asd plan sync_from_md`), confirms execution mode (`LIGHT` vs `HEAVY`), and runs all pending `[ ]` or escalated `[~]` tasks across turns until completion. |
-| **`/asd-debug <symptom>`** | **Hypothesis-Driven Debugging** | Investigates logs/stack traces read-only, presents a single pre-fix briefing, writes a deterministic failing reproduction test first (**Rule Zero**), applies the minimal fix, and verifies zero regressions via `asd verify`. |
-| **`/asd-debate <topic>`** | **Adversarial Architecture Debate** | Summarizes the design proposal and runs blind cross-model critique (`HEAVY` multi-harness or `LIGHT` single-harness), synthesizes a binding verdict (`APPROVE` / `MINOR_AMEND` / `REJECT`), and injects hard constraints into `.asd/PLAN.md`. |
-| **`/handoff`** (or **`/asd-handoff`**) | **Multi-Harness Session Handoff** | Generates `handoff.md` (or invokes `asd handoff`) using active SQLite session/task progress (`asd status`), git state, and conversation history so any of the 5 harnesses can seamlessly resume work in a new session. |
+| **`/asd <goal>`** | **End-to-End Autonomous Execution** | Explores codebase via `asd-scout`, presents a pre-flight plan & `LIGHT`/`HEAVY` recommendation, writes `.asd/PLAN.md`, executes waves, verifies gates, and outputs `.asd/summary.md`. |
+| **`/asd-plan <goal>`** | **Plan Only (Zero Code Edits)** | Read-only discovery, clarifying questions, and `.asd/PLAN.md` + SQLite task generation with mode recommendation. |
+| **`/asd-run`** | **Execute / Resume `.asd/PLAN.md`** | Syncs manual edits from `.asd/PLAN.md` (`asd plan sync_from_md`), confirms `LIGHT` vs `HEAVY`, and runs remaining turns. |
+| **`/asd-debate <topic>`** | **Adversarial Design Debate** | Runs blind multi-model Round 1 critiques + Round 2 arbitration (`APPROVE` / `MINOR_AMEND` / `REJECT`) and binds constraints into tasks. |
+| **`/asd-debug <issue>`** | **Hypothesis-Driven Debugging** | Reproduces the bug with a deterministic test first, diagnoses root cause, applies minimal fix, and verifies via `asd verify`. |
+| **`/handoff`** (`/asd-handoff`) | **Cross-Harness Session Handoff** | Combines SQLite progress, git state, routing summary, and conversation context into `handoff.md` for seamless continuation on any harness. |
 
-### Execution Mode Comparison (`LIGHT` vs `HEAVY`)
+### `LIGHT` vs `HEAVY` Execution Modes
 
-| Mode | How Tasks Are Executed | Workspace Isolation | Best For |
+| Mode | Subagent Delegation | Workspace & Verification Behavior | Best For |
 | :--- | :--- | :--- | :--- |
-| **`LIGHT` (Current Harness)** | Small tasks are edited directly by the main AI; larger subtasks use native subagents inside the current harness (`claim_only`). Never spawns external harness CLIs. | In-place on clean baseline with automatic per-task checkpoint commit & scoped rollback. | Daily features, bug fixes, single-harness workflows, avoiding multi-harness quota usage. |
-| **`HEAVY` (Multi-Harness)** | Spawns external harness CLIs (`claude`, `opencode`, `codex`, `cursor-agent`, `agy`) in parallel according to `routing.jsonc` (`parallel_spawn`). | Dedicated Git worktree per task (`.asd/wt/<turn>-<taskId>`) + mutex-locked merge. | Large full-stack features, parallel multi-domain implementation, cross-model blind review. |
+| **`LIGHT`** *(Single-Harness)* | Native internal `asd-<role>` subagents inside your current harness (`claim_only`). Zero external CLI spawning. | In-place edits; preserves working-tree files on test failure for quick fixes, rolls back scoped files on boundary/secret violations, and writes clean task-ID-free commits. | Focused 1–3 file tasks, bug fixes, preserving multi-harness quotas. |
+| **`HEAVY`** *(Multi-Harness)* | Spawns external harnesses concurrently via ACP / streaming CLI per `routing.jsonc` (`parallel_spawn`, `--async` in OpenCode). | Dedicated Git worktree per task (`.asd/wt/<turn>-<taskId>`) with `node_modules` junction + cross-process mutex `--no-ff` merge. | Disjoint parallel modules, high-risk refactors, cross-model blind review. |
 
 ---
 
-## CLI Commands
+## CLI Command Reference
 
-> **Note:** If installed with `--no-path`, replace `asd <command>` with `node --no-warnings src/cli/index.ts <command>`.
+> When installed with `--no-path`, replace `asd` with `node --no-warnings src/cli/index.ts`.
 
-| Command (with `PATH`) | Command (without `PATH`) | Description |
-| :--- | :--- | :--- |
-| `asd sync [--force] [--no-path] [--no-update-check]` | `node --no-warnings src/cli/index.ts sync [--force] [--no-path] [--no-update-check]` | Synchronizes global skills, 5 core agents, hooks, missing MCP tools across all 5 harnesses, and installs the `asd` CLI shim to global `PATH` (pass `--no-update-check` or set `ASD_NO_UPDATE_CHECK=1` to disable version update checks). |
-| `asd plan [create\|get\|update\|sync_from_md] [--file <path>]` | `node --no-warnings src/cli/index.ts plan [create\|get\|update\|sync_from_md] [--file <path>]` | Creates, queries, updates, or reverse-syncs `.asd/PLAN.md` with the 4-table SQLite SSOT (`~/.asd/state/core.db`). |
-| `asd dispatch [--turn <n>] [--mode <m>]` | `node --no-warnings src/cli/index.ts dispatch [--turn <n>] [--mode <m>]` | Concurrently dispatches wave tasks (`parallel_spawn` or `claim_only`) with automatic upstream `DoneClaim` context injection and zero MCP timeout limits. |
-| `asd verify --task <id> [--files <csv>] [--file <path>]` | `node --no-warnings src/cli/index.ts verify --task <id> [--files <csv>] [--file <path>]` | Enforces `allowedFiles` boundaries, secret redaction checks, test command verification, and LIGHT commit / HEAVY worktree merge. |
-| `asd debate --topic <t> --proposal <p> [--file <path>]` | `node --no-warnings src/cli/index.ts debate --topic <t> --proposal <p> [--file <path>]` | Executes parallel blind cross-model critiques and synthesizes binding arbiter verdicts with real-time progress streaming. |
-| `asd status [--json]` | `node --no-warnings src/cli/index.ts status [--json]` | Displays the current project's SQLite session state, live TODO progress board, and any unapplied auto-stash warnings. |
-| `asd resume [--session <id>] [--print]` | `node --no-warnings src/cli/index.ts resume [--session <id>] [--print]` | Demotes the active ASD session (`demoteAsdSession`) and resumes the native interactive harness CLI (`--print` outputs the command string, `--json` outputs full metadata). |
-| `asd handoff [--output <path>] [--print\|-p] [--json]` | `node --no-warnings src/cli/index.ts handoff [--output <path>] [--print\|-p] [--json]` | Generates a structured, secret-redacted session handoff document (default: `handoff.md`) capturing SQLite session progress, git status, and resume instructions directly via CLI before adding conversational context. |
-| `asd migrate [--clean-legacy] [--json]` | `node --no-warnings src/cli/index.ts migrate [--clean-legacy] [--json]` | Migrates legacy per-project hash `core.db` databases into the shared SSOT (`~/.asd/state/core.db`) with automatic backup (`--clean-legacy` removes old databases after successful migration). |
-| `asd logs [taskId] [--json]` | `node --no-warnings src/cli/index.ts logs [taskId] [--json]` | Displays the most recent subagent prompt & execution log automatically, or inspects a specific task (`T1.1`, `t1.2`, etc.). |
-| `asd ui [--port <num>]` | `node --no-warnings src/cli/index.ts ui [--port <num>]` | Launches a zero-dependency bilingual (Korean/English) local web dashboard (`http://127.0.0.1:3847`) with fast disk-cached model discovery (`~/.asd/state/models-cache.json`). |
-| — | — | **Principle:** `asd ui` web dashboard is feature-frozen — new UI features go to the GUI repo (asd-gui). Core retains CLI + core management + minimal SDK only (see docs/CORE_GUI_BOUNDARY_AUDIT.md). |
-| `asd doctor [--json]` | `node --no-warnings src/cli/index.ts doctor [--json]` | Runs a fast (<100ms) zero-token health check (Node version, SQLite WAL, Git repo, 5 harness CLI binary paths, synthetic `PreToolUse` security probe). |
-| `asd clean [--pop] [--all] [--purge-orphans]` | `node --no-warnings src/cli/index.ts clean [--pop] [--all] [--purge-orphans]` | Removes leftover `.asd/wt/*` worktrees, prunes `asd/*` branches, optionally restores auto-stashed changes (`--pop`), and purges non-existent project sessions from the global DB (`--purge-orphans`). |
-| `asd uninstall` | `node --no-warnings src/cli/index.ts uninstall` | Surgically removes all ASD-managed global hooks, TOML fences, skills, agents, `PATH` shims, and `_asdManaged` MCP entries while preserving user configs 100%. |
+| Command | Description |
+| :--- | :--- |
+| `asd sync [--force] [--refresh-models] [--no-model-probe] [--no-path]` | Sync global skills, 5 core agents, hooks, MCP catalog, and `PATH` shims across all 5 harnesses. |
+| `asd update` | Pull latest ASD release via Git and run a fresh global `asd sync`. |
+| `asd doctor [--json]` | ~10ms zero-token diagnostic: Node `>=22.13.0`, SQLite WAL, Git repo, harness binaries, ACP readiness, and `PreToolUse` probe. |
+| `asd plan [create\|get\|update\|sync_from_md] [--file <path>]` | Create, query, update, or reverse-sync `.asd/PLAN.md` with `~/.asd/state/core.db`. |
+| `asd dispatch [--turn <n>] [--mode <m>] [--async] [--transport <auto\|acp\|cli>]` | Dispatch wave tasks (`parallel_spawn` or `claim_only`); `--async` runs non-blocking in a detached worker. |
+| `asd wait [--session <id>] [--timeout <ms>] [--json]` | Block until an active `asd dispatch --async` wave completes and print results. |
+| `asd verify --task <id> [--summary <text>] [--cmd <cmd>] [--file <path>]` | Enforce `allowedFiles` boundaries, secret scan, and test command (`300s` default timeout), then commit or merge cleanly. |
+| `asd debate --topic <t> --proposal <p> [--harnesses <csv>] [--diff]` | Run parallel blind cross-model critiques and Round 2 arbitration. |
+| `asd status [--json]` | Render live TODO `progressBoard`, active async job state, and auto-stash warnings. |
+| `asd logs [taskId] [--json]` | Inspect the latest (or task-specific) redacted subagent prompt & output log. |
+| `asd resume [--session <id>] [--print\|-p] [--json]` | Demote active ASD session and launch (or print) the native interactive harness CLI resume command. |
+| `asd handoff [-o <path>] [--print\|-p] [--json]` | Generate a secret-redacted cross-harness `handoff.md` snapshot. |
+| `asd clean [--pop] [--all] [--purge-orphans]` | Prune leftover `.asd/wt/*` worktrees/branches, restore auto-stashed work (`--pop`), or purge orphaned DB sessions. |
+| `asd migrate [--clean-legacy] [--json]` | Import legacy per-project/local `core.db` files into `~/.asd/state/core.db`. |
+| `asd ui [-p <port>]` | Launch the lightweight feature-frozen local status dashboard (`http://127.0.0.1:3847`; new UI development lives in **ASD-Nexus**). |
+| `asd uninstall [--home <dir>]` | Surgically remove all ASD-managed global files, hooks, shims, and `_asdManaged` config entries while restoring user configs 100%. |
+
+---
+
+## Documentation
+
+- ⚡ **[ACP Architecture & GUI Roadmap (`docs/ACP_ROADMAP.md`)](./docs/ACP_ROADMAP.md)** — Pure ACP v1/v2 design, OpenCode `--async` callback flow, bridge setup, and deferred GUI (`runDriverTurn`) checklist.
+- 🧭 **[Model Routing Guide (`ROUTING_GUIDE.md`)](./ROUTING_GUIDE.md)** — Configuring `lightSubagents`, `agents`, `categories`, fallbacks, and `thinkingEffort` in `~/.asd/routing.jsonc`.
+- 🏛️ **[Architecture & Code Reference (`PROJECT_STATUS.md`)](./PROJECT_STATUS.md)** — Repository layout, SQLite SSOT schema, and module-by-module reference.
+- 🔌 **[External SDK & DB Reference (`EXTERNAL_SDK_REFERENCE.md`)](./EXTERNAL_SDK_REFERENCE.md)** — Node.js SDK contracts and database schema for **ASD-Nexus** and external tools.
+- 🔗 **[Harness Integration Reference (`HARNESS_INTEGRATION_REFERENCE.md`)](./HARNESS_INTEGRATION_REFERENCE.md)** — Empirical stream formats, session storage paths, and caveats across all 5 harnesses.
+- 🤖 **[AI Workflow Prompt (`AI_WORKFLOW_PROMPT.md`)](./AI_WORKFLOW_PROMPT.md)** — Ready-to-use onboarding prompt for AI coding agents.
+- 📋 **[Patch Notes (EN)](./PATCH_NOTES.md)** · **[패치 노트 (KO)](./PATCH_NOTES_ko.md)** — Full version history through `v2.7.0`.
 
 ---
 
-## Documentation & Reference Guides
+## Testing
 
-- 🏛️ **[Architecture & Per-File/Function Code Reference (`PROJECT_STATUS.md`)](./PROJECT_STATUS.md)** — Detailed architecture overview, 2-path storage & single DB layout, and per-file/per-function documentation across the entire codebase.
-- 🔌 **[External SDK & Single DB Migration Reference (`EXTERNAL_SDK_REFERENCE.md`)](./EXTERNAL_SDK_REFERENCE.md)** — Complete SDK reference for `asd-gui` and external integrations (`discoverProjectCliSessions`, `readHarnessTranscript`, `runDriverTurn`, `promoteCliSessionToAsd`, `unlinkHarnessSessionFromAsdSession`, `buildSessionDemotion`, `listKnownProjects`).
-- 🤖 **[AI Agent Workflow Prompt (`AI_WORKFLOW_PROMPT.md`)](./AI_WORKFLOW_PROMPT.md)** — Copy-and-paste onboarding & rules prompt for delegating tasks to AI coding agents.
-- 📋 **[Patch Notes (English)](./PATCH_NOTES.md)** | **[패치 노트 (한국어)](./PATCH_NOTES_ko.md)** — Chronological changelog from initial foundation to v2.4.0.
-
----
+```bash
+npm run typecheck
+npm test
+```
 
 ## License
 
