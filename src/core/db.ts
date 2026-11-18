@@ -1,5 +1,5 @@
 /**
- * ASD v2.6.0 SQLite SSOT driver (sessions, tasks, debates, session_drivers).
+ * ASD v2.7.0 SQLite SSOT driver (sessions, tasks, debates, session_drivers).
  *
  * Every connection enables WAL + busy_timeout + foreign_keys, and every
  * write goes through `withImmediateTx` (BEGIN IMMEDIATE). Nested calls

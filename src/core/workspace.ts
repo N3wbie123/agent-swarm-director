@@ -1,5 +1,5 @@
 /**
- * ASD v2.6.0 Workspace & Worktree Lifecycle Engine (src/core/workspace.ts)
+ * ASD v2.7.0 Workspace & Worktree Lifecycle Engine (src/core/workspace.ts)
  *
  * Implements:
  * 1. Unborn HEAD Safeguard & Baseline Prep (`prepareBaseline`):

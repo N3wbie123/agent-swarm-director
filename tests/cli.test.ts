@@ -1,5 +1,5 @@
 /**
- * ASD v2.6.0 Unified Terminal CLI & Hook Tests (tests/cli.test.ts)
+ * ASD v2.7.0 Unified Terminal CLI & Hook Tests (tests/cli.test.ts)
  *
  * Verifies:
  * 1. CLI help and unknown command handling.

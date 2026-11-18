@@ -1,5 +1,5 @@
 /**
- * ASD v2.6.0 Security Policy Engine (src/core/policy.ts)
+ * ASD v2.7.0 Security Policy Engine (src/core/policy.ts)
  *
  * Implements:
  * 1. Ancestor-safe path resolution (`resolveSafeTargetPath`) using

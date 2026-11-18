@@ -1,5 +1,5 @@
 /**
- * ASD v2.6.0 MCP Core Server (src/mcp/server.ts).
+ * ASD v2.7.0 MCP Core Server (src/mcp/server.ts).
  *
  * Implements:
  * 1. StdioRpcServer-based JSON-RPC transport handling MCP protocol:

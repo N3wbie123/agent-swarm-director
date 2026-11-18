@@ -1,5 +1,5 @@
 /**
- * ASD v2.6.0 Harness Adapter & Plugin Registry (src/adapters/registry.ts)
+ * ASD v2.7.0 Harness Adapter & Plugin Registry (src/adapters/registry.ts)
  *
  * Provides both the legacy getAdapter resolver and the modern HC-1
  * HarnessRuntimePlugin & HarnessProvisionerPlugin registry for all 5 harnesses.

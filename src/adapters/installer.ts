@@ -1,5 +1,5 @@
 /**
- * ASD v2.6.0 Harness Installer & Control Plane Synchronizer (src/adapters/installer.ts)
+ * ASD v2.7.0 Harness Installer & Control Plane Synchronizer (src/adapters/installer.ts)
  *
  * Implements:
  * 1. Strictly Global-Only `syncHarnessConfigs` / `runAsdSync`:

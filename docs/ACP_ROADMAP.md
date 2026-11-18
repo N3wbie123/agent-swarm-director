@@ -1,6 +1,6 @@
 # ACP(Agent Client Protocol) 아키텍처 및 추후 GUI 연동 관리 문서 (`docs/ACP_ROADMAP.md`)
 
-> **기준 버전**: ASD v2.6.0  
+> **기준 버전**: ASD v2.7.0  
 > **목적**: Core 리포(`asd-multiagent`)에 완료된 **ACP v1 클라이언트 + v2 호환 계층 / 하이브리드 Dispatch / OpenCode 비동기 완료 콜백** 구조와, 추후 **GUI(`ASD-Nexus` / `asd-gui`) 및 `runDriverTurn` 고도화 단계에서 진행할 이월 항목**을 한눈에 관리하기 위한 기준 문서.
 
 ---
@@ -16,7 +16,7 @@
 
 ---
 
-## 2. Core 구현 완료 내역 (v2.6.0)
+## 2. Core 구현 완료 내역 (v2.7.0)
 
 ### 2.1 무의존성 ACP 클라이언트 엔진 (`src/core/acp-types.ts`, `src/core/acp-client.ts`)
 - **프로토콜 협상**: ACP v1(`protocolVersion: 1`, `clientCapabilities: {}`) 기본 핸드셰이크 + ACP v2 초안(즉시 ACK 후 비동기 `session/update` idle/turn_complete 완료 신호) 호환 어댑터 내장.

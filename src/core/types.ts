@@ -1,5 +1,5 @@
 /**
- * ASD v2.6.0 Core Types
+ * ASD v2.7.0 Core Types
  * Single module exporting all type unions, constants, and interfaces.
  * Uses ONLY erasable TypeScript syntax: type unions and as const arrays.
  * No enum, no parameter properties, no namespace.
@@ -24,7 +24,7 @@ function readPackageVersion(): string {
   } catch {
     // Fallback if package.json is unreadable
   }
-  return "2.5.0";
+  return "2.7.0";
 }
 
 export const ASD_VERSION: string = readPackageVersion();

@@ -1,5 +1,5 @@
 /**
- * ASD v2.6.0 Markdown Renderer & Parser.
+ * ASD v2.7.0 Markdown Renderer & Parser.
  *
  * Implements:
  * - renderPlanMd: renders .asd/PLAN.md grouped by Turn with indented metadata lines

@@ -1,8 +1,18 @@
-# 패치 노트 (`agent-swarm-director` / ASD v2.6.0)
+# 패치 노트 (`agent-swarm-director` / ASD v2.7.0)
 
 [English](./PATCH_NOTES.md) | **한국어** | [📖 README로 돌아가기](./README_ko.md) | [🏛️ 아키텍처 및 파일·함수 레퍼런스](./PROJECT_STATUS.md) | [🔌 외부 SDK 레퍼런스](./EXTERNAL_SDK_REFERENCE.md)
 
-**Agent Swarm Director (ASD v2.6.0)**의 초기 아키텍처 구축부터 최신 기능 업데이트까지의 전체 패치 내역을 최신순으로 정리한 문서입니다.
+**Agent Swarm Director (ASD v2.7.0)**의 초기 아키텍처 구축부터 최신 기능 업데이트까지의 전체 패치 내역을 최신순으로 정리한 문서입니다.
+
+---
+
+## 0. 무의존성 ACP 엔진 및 OpenCode 비동기 오케스트레이션 (v2.7.0)
+
+### `v2.7.0` — 하이브리드 ACP v1/v2 클라이언트, OpenCode 비동기 완료 콜백, 카탈로그 모델 자동 매핑 및 코어 안정화
+- **무의존성 ACP 클라이언트 (`src/core/acp-types.ts`, `src/core/acp-client.ts`)**: 외부 런타임 의존성 추가 없이(`dependencies: {}`) 순수 Node.js stdio JSON-RPC 2.0 기반 ACP v1 + v2 초안 호환 클라이언트, `session/request_permission` ↔ `policy.ts` 양방향 보안 검증, 일시적 멈춤 시 `session/load` 제자리 재개, `session/new` 카탈로그 기반 하네스별 모델 ID 자동 매핑(`resolveBestAcpModelId`) 구현.
+- **하이브리드 Dispatch & Debate (`ACP 우선 + 스트리밍 CLI 자동 폴백`)**: `asd dispatch`, `asd debate`, 서브에이전트 제어 전반에 ACP 우선 실행 및 강화된 스트리밍 CLI 폴백(`--transport <auto|acp|cli>`) 적용.
+- **OpenCode 메인 세션 멈춤 해결 (`--async` + `asd-guard.js`)**: `asd dispatch --async` / `asd wait`를 추가하고, 백그라운드 Wave 완료 시 `asd-guard.js`가 `client.session.prompt`로 OpenCode 메인 세션에 결과를 자동 주입하도록 개선.
+- **진단 및 코어 안정성 개선**: ~10ms 단일 패스 `asd doctor` ACP 준비 상태·외부 브리지 설치 안내, `|`·`()` 손상에 면역인 `.asd/PLAN.md` 들여쓰기 메타 포맷, `LIGHT` 모드 테스트 실패 시 작업 파일 보존, `verifyCmd` 기본 타임아웃 300초 상향, Task 번호 없는 순수 내용 커밋 메시지 적용.
 
 ---
 

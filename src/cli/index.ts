@@ -2,7 +2,7 @@
 process.env.NODE_NO_WARNINGS = "1";
 
 /**
- * ASD v2.6.0 Unified Terminal CLI & Internal Hook Runner (src/cli/index.ts)
+ * ASD v2.7.0 Unified Terminal CLI & Internal Hook Runner (src/cli/index.ts)
  *
  * Implements 5 User Commands + 2 Internal Runners:
  * 1. asd sync [--force] [--home <dir>]:

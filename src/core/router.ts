@@ -1,5 +1,5 @@
 /**
- * ASD v2.6.0 Model Router & Diversity Engine (src/core/router.ts).
+ * ASD v2.7.0 Model Router & Diversity Engine (src/core/router.ts).
  *
  * Implements:
  * 1. 4-tier route resolution (Explicit Pin -> Specialist Role -> Domain Category -> Difficulty Tier).

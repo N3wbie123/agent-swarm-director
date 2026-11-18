@@ -1,8 +1,18 @@
-# Patch Notes (`agent-swarm-director` / ASD v2.6.0)
+# Patch Notes (`agent-swarm-director` / ASD v2.7.0)
 
 **English** | [한국어](./PATCH_NOTES_ko.md) | [📖 Back to README](./README.md) | [🏛️ Architecture & Code Reference](./PROJECT_STATUS.md) | [🔌 External SDK Reference](./EXTERNAL_SDK_REFERENCE.md)
 
-Complete chronological patch history for **Agent Swarm Director (ASD v2.6.0)**, organized from the latest updates to the initial foundation.
+Complete chronological patch history for **Agent Swarm Director (ASD v2.7.0)**, organized from the latest updates to the initial foundation.
+
+---
+
+## 0. Pure Zero-Dependency ACP Engine & Async OpenCode Orchestration (v2.7.0)
+
+### `v2.7.0` — Hybrid ACP v1/v2 Client, Non-Blocking OpenCode Dispatch, Catalog Model Mapping & Core Hardening
+- **Zero-Dependency ACP Client (`src/core/acp-types.ts`, `src/core/acp-client.ts`)**: Added pure Node.js stdio JSON-RPC 2.0 ACP v1 client with ACP v2 draft compatibility, bidirectional `session/request_permission` security enforcement via `policy.ts`, in-place `session/load` stall recovery, and automatic catalog-aware model ID mapping (`resolveBestAcpModelId` across OpenCode provider-prefixed IDs, Antigravity tiers, and Cursor bracketed model IDs).
+- **Hybrid Dispatch & Debate (`ACP Primary + Streaming CLI Fallback`)**: Wired ACP-first execution with automatic hardened streaming CLI fallback across `asd dispatch`, `asd debate`, and `runSubagentControlAction` (`--transport <auto|acp|cli>`).
+- **Non-Blocking OpenCode Async Dispatch (`--async` + `asd-guard.js`)**: Added `asd dispatch --async` / `asd wait` and upgraded `asd-guard.js` to push wave completion reports back into idle OpenCode sessions via `client.session.prompt`.
+- **Diagnostics & Core Hardening**: Single-pass ~10ms `asd doctor` ACP readiness & bridge guidance, indented `.asd/PLAN.md` metadata format immune to `|`/`()` corruption, `LIGHT`-mode working-tree preservation on test failure, 300s default `verifyCmd` timeout, and clean task-ID-free commit messages.
 
 ---
 
