@@ -2,7 +2,7 @@
 process.env.NODE_NO_WARNINGS = "1";
 
 /**
- * ASD v2.5.0 Unified Terminal CLI & Internal Hook Runner (src/cli/index.ts)
+ * ASD v2.6.0 Unified Terminal CLI & Internal Hook Runner (src/cli/index.ts)
  *
  * Implements 5 User Commands + 2 Internal Runners:
  * 1. asd sync [--force] [--home <dir>]:
@@ -1990,7 +1990,7 @@ export async function main(
             const changedFiles = options.files
               ? options.files.split(",").map((s) => s.trim()).filter(Boolean)
               : [];
-            const summary = options.summary || parsed.rest[0] || `Verified task ${taskId}`;
+            const summary = options.summary || parsed.rest[0] || "";
             const defaultClaim = {
               summary,
               changed_files: changedFiles,

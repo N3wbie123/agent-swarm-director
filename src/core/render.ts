@@ -1,10 +1,11 @@
 /**
- * ASD v2.5.0 Markdown Renderer & Parser.
+ * ASD v2.6.0 Markdown Renderer & Parser.
  *
  * Implements:
- * - renderPlanMd: renders .asd/PLAN.md using ARCHITECTURE_PLAN.md inline format
- *   grouped by Turn with atomic write (temp file + renameSync).
- * - parsePlanMd: parses inline format and bracketed variant with tolerance for malformed lines.
+ * - renderPlanMd: renders .asd/PLAN.md grouped by Turn with indented metadata lines
+ *   (Files, Hint, Acceptance, DependsOn, VerifyCmd) and atomic write (temp file + renameSync).
+ * - parsePlanMd: parses indented metadata lines AND legacy inline `(Files: ... | Hint: ...)`
+ *   variants safely even when titles/hints contain nested parentheses `()` or pipes `|`.
  * - syncPlanFromMd: reconciles manual edits back into SQLite tasks and increments state_version.
  * - renderProgressBoard: produces live TODO progress board markdown.
  * - renderSessionSummaryMd: writes .asd/sessions/<sessionId>/summary.md with secret redaction.
@@ -52,6 +53,7 @@ export interface ParsedPlanTask {
   targetFiles: string[];
   contextHint: string | null;
   acceptance: string | null;
+  verifyCmd?: string | null;
   dependsOn: string[];
   followUpOf?: string | null;
 }
@@ -174,7 +176,7 @@ export function renderPlanMd(
       const role = t.role ?? "worker";
       const category = t.category ?? "general";
       const difficulty = t.difficulty ?? "medium";
-      const title = t.title;
+      const title = String(t.title ?? "").replace(/\s*\r?\n\s*/g, " ").trim();
 
       // Extract target files
       let files: string[] = [];
@@ -188,30 +190,26 @@ export function renderPlanMd(
         }
       }
 
-      // Extract context hint
+      // Extract context hint & verifyCmd
       const hint =
         ("contextHint" in t ? t.contextHint : (t as TaskRow).context_hint) ?? null;
-
-      const filesPart =
-        files.length > 0 ? `Files: ${files.join(", ")}` : "";
-      const hintPart = hint ? `Hint: ${hint}` : "";
-
-      let tail = "";
-      if (filesPart && hintPart) {
-        tail = ` (${filesPart} | ${hintPart})`;
-      } else if (filesPart) {
-        tail = ` (${filesPart})`;
-      } else if (hintPart) {
-        tail = ` (${hintPart})`;
-      }
+      const verifyCmd =
+        ("verifyCmd" in t ? t.verifyCmd : (t as TaskRow).verify_cmd) ?? null;
 
       lines.push(
-        `- [${marker}] **${taskId}** [Track: ${track} | Role: ${role} | Cat: ${category} | Diff: ${difficulty}]: ${title}${tail}`
+        `- [${marker}] **${taskId}** [Track: ${track} | Role: ${role} | Cat: ${category} | Diff: ${difficulty}]: ${title}`
       );
+
+      if (files.length > 0) {
+        lines.push(`  - Files: ${files.join(", ")}`);
+      }
+      if (hint && hint.trim().length > 0) {
+        lines.push(`  - Hint: ${hint.replace(/\s*\r?\n\s*/g, " ").trim()}`);
+      }
 
       // Optional indented acceptance
       if (t.acceptance && t.acceptance.trim().length > 0) {
-        lines.push(`  - Acceptance: ${t.acceptance.trim()}`);
+        lines.push(`  - Acceptance: ${t.acceptance.replace(/\s*\r?\n\s*/g, " ").trim()}`);
       }
 
       // Optional indented dependsOn
@@ -228,6 +226,9 @@ export function renderPlanMd(
 
       if (deps.length > 0) {
         lines.push(`  - DependsOn: ${deps.join(", ")}`);
+      }
+      if (verifyCmd && verifyCmd.trim().length > 0) {
+        lines.push(`  - VerifyCmd: ${verifyCmd.replace(/\s*\r?\n\s*/g, " ").trim()}`);
       }
 
       const followUpOf =
@@ -266,15 +267,93 @@ export function renderPlanMd(
 // 2. parsePlanMd
 // ============================================================================
 
+function extractTrailingInlineMeta(rawRest: string): {
+  title: string;
+  targetFiles: string[];
+  contextHint: string | null;
+} {
+  const trimmed = rawRest.trim();
+  if (!trimmed.endsWith(")")) {
+    return { title: trimmed, targetFiles: [], contextHint: null };
+  }
+
+  let openIdx = -1;
+  let depth = 0;
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    const ch = trimmed[i];
+    if (ch === ")") {
+      depth++;
+    } else if (ch === "(") {
+      depth--;
+      if (depth === 0) {
+        openIdx = i;
+        break;
+      }
+    }
+  }
+
+  let candidateInner =
+    openIdx > 0 ? trimmed.slice(openIdx + 1, -1).trim() : "";
+
+  if (!/^(?:Files|Hint)\s*:/i.test(candidateInner)) {
+    // Fallback for hints containing unbalanced '(' characters: locate the last ` (Files:` or ` (Hint:`
+    const kwRe = /\s*\((?=(?:Files|Hint)\s*:)/gi;
+    let match: RegExpExecArray | null;
+    let lastMatchIdx = -1;
+    while ((match = kwRe.exec(trimmed)) !== null) {
+      lastMatchIdx = trimmed.indexOf("(", match.index);
+    }
+    if (lastMatchIdx > 0) {
+      openIdx = lastMatchIdx;
+      candidateInner = trimmed.slice(openIdx + 1, -1).trim();
+    } else {
+      return { title: trimmed, targetFiles: [], contextHint: null };
+    }
+  }
+
+  const targetFiles: string[] = [];
+  let contextHint: string | null = null;
+  let matchedAny = false;
+
+  for (const segment of candidateInner.split(/\s*\|\s*(?=(?:Files|Hint)\s*:)/i)) {
+    const s = segment.trim();
+    const fMatch = s.match(/^Files\s*:\s*([\s\S]*)$/i);
+    if (fMatch) {
+      matchedAny = true;
+      targetFiles.push(
+        ...fMatch[1]!
+          .split(",")
+          .map((x) => x.trim())
+          .filter((x) => x && x.toLowerCase() !== "none")
+      );
+      continue;
+    }
+    const hMatch = s.match(/^Hint\s*:\s*([\s\S]*)$/i);
+    if (hMatch) {
+      matchedAny = true;
+      contextHint = hMatch[1]!.trim() || null;
+    }
+  }
+
+  if (!matchedAny) {
+    return { title: trimmed, targetFiles: [], contextHint: null };
+  }
+
+  return {
+    title: trimmed.slice(0, openIdx).trim(),
+    targetFiles,
+    contextHint,
+  };
+}
+
 /**
  * Parses markdown text into an array of ParsedPlanTask.
  *
  * Supports:
- * - ARCHITECTURE_PLAN.md inline format (`TASK_LINE_REGEX`)
+ * - Indented metadata lines (`- Files:`, `- Hint:`, `- Acceptance:`, `- DependsOn:`, `- VerifyCmd:`, `- Status:`)
+ * - Legacy inline `(Files: ... | Hint: ...)` format (safe against nested `()` and `|` characters)
  * - Heading-derived turns (`## Turn <N>`) or taskId-derived turn prefix (`T<turn>.<seq>`)
- * - Trailing `(Files: ... | Hint: ...)` extraction
  * - Bracketed variant `[Turn: 1 | ... | Files: ...]`
- * - Optional indented `- Acceptance:` and `- DependsOn:` lines
  * - Tolerant to malformed lines and arbitrary markdown text without crashing
  */
 export function parsePlanMd(markdownText: string): ParsedPlanTask[] {
@@ -292,8 +371,21 @@ export function parsePlanMd(markdownText: string): ParsedPlanTask[] {
       continue;
     }
 
-    // 2. Check for indented Acceptance / DependsOn under current task
+    // 2. Check for indented metadata bullets under current task
     if (currentTask && /^\s{2,}-\s+/i.test(line)) {
+      const filesMatch = line.match(/^\s{2,}-\s*Files:\s*(.*)$/i);
+      if (filesMatch) {
+        currentTask.targetFiles = filesMatch[1]!
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s && s.toLowerCase() !== "none");
+        continue;
+      }
+      const hintMatch = line.match(/^\s{2,}-\s*Hint:\s*(.*)$/i);
+      if (hintMatch) {
+        currentTask.contextHint = hintMatch[1]!.trim() || null;
+        continue;
+      }
       const acceptanceMatch = line.match(/^\s{2,}-\s*Acceptance:\s*(.*)$/i);
       if (acceptanceMatch) {
         currentTask.acceptance = acceptanceMatch[1]!.trim();
@@ -308,6 +400,11 @@ export function parsePlanMd(markdownText: string): ParsedPlanTask[] {
           .map((s) => s.trim())
           .filter(Boolean);
         currentTask.dependsOn = deps;
+        continue;
+      }
+      const verifyCmdMatch = line.match(/^\s{2,}-\s*VerifyCmd:\s*(.*)$/i);
+      if (verifyCmdMatch) {
+        currentTask.verifyCmd = verifyCmdMatch[1]!.trim() || null;
         continue;
       }
       const followUpMatch = line.match(
@@ -332,81 +429,61 @@ export function parsePlanMd(markdownText: string): ParsedPlanTask[] {
       }
     }
 
-    // 3. Try standard TASK_LINE_REGEX
-    const regexMatch = line.match(TASK_LINE_REGEX);
-    if (regexMatch) {
-      const marker = regexMatch[1]!;
-      const taskId = regexMatch[2]!;
-      const turnFromId = taskId.includes(".")
-        ? parseInt(regexMatch[3]!, 10)
+    // 3. Unified task header line parser (handles standard & bracketed variants + balanced inline metadata)
+    const taskMatch = line.match(
+      /^\s*-\s*\[([ x~X])\]\s+(?:\*\*)?([A-Za-z0-9_.-]+)(?:\*\*)?\s*\[(.*?)\]:\s*(.*)$/
+    );
+    if (taskMatch) {
+      const marker = taskMatch[1]!;
+      const taskId = taskMatch[2]!;
+      const bracketContent = taskMatch[3]!;
+      const rest = taskMatch[4]!.trim();
+      if (!rest) {
+        currentTask = null;
+        continue;
+      }
+
+      const turnFromIdMatch = taskId.match(/^T(\d+)\./i);
+      const turnFromId = turnFromIdMatch
+        ? parseInt(turnFromIdMatch[1]!, 10)
         : undefined;
-      const turnFromBracket = regexMatch[4]
-        ? parseInt(regexMatch[4], 10)
-        : undefined;
-      const track = (
-        regexMatch[5]!.toUpperCase() === "HEAVY" ? "HEAVY" : "LIGHT"
-      ) as TaskTrack;
-      const role = regexMatch[6]!.toLowerCase() as AgentRole;
-      const category = regexMatch[7]!.toLowerCase();
-      const difficulty = regexMatch[8]!.toLowerCase() as DifficultyTier;
-      const filesFromBracket = regexMatch[9]
-        ? regexMatch[9]
+      let turnFromBracket: number | undefined;
+
+      let track: TaskTrack = "LIGHT";
+      let role: AgentRole = "worker";
+      let category = "general";
+      let difficulty: DifficultyTier = "medium";
+      let bracketFiles: string[] = [];
+
+      for (const part of bracketContent.split("|")) {
+        const colonIdx = part.indexOf(":");
+        if (colonIdx === -1) continue;
+        const key = part.slice(0, colonIdx).trim().toLowerCase();
+        const val = part.slice(colonIdx + 1).trim();
+        if (key === "turn") {
+          const parsedTurn = parseInt(val, 10);
+          if (!isNaN(parsedTurn)) turnFromBracket = parsedTurn;
+        } else if (key === "track") {
+          track = val.toUpperCase() === "HEAVY" ? "HEAVY" : "LIGHT";
+        } else if (key === "role") {
+          role = val.toLowerCase() as AgentRole;
+        } else if (key === "cat" || key === "category") {
+          category = val.toLowerCase();
+        } else if (key === "diff" || key === "difficulty") {
+          difficulty = val.toLowerCase() as DifficultyTier;
+        } else if (key === "files") {
+          bracketFiles = val
             .split(",")
             .map((s) => s.trim())
-            .filter((s) => s && s.toLowerCase() !== "none")
-        : [];
-      let title = regexMatch[10]!.trim();
-      const filesFromParens = regexMatch[11]
-        ? regexMatch[11]
-            .split(",")
-            .map((s) => s.trim())
-            .filter((s) => s && s.toLowerCase() !== "none")
-        : [];
-      const hintFromParens = regexMatch[12] ? regexMatch[12].trim() : null;
-
-      let targetFiles =
-        filesFromParens.length > 0 ? filesFromParens : filesFromBracket;
-      let contextHint = hintFromParens;
-
-      // If trailing parens contained only Hint (no Files:), extract it from title
-      const trailingParenMatch = title.match(/^(.*?)(?:\s*\((.*?)\))\s*$/);
-      if (trailingParenMatch) {
-        const candidateTitle = trailingParenMatch[1]!.trim();
-        const parenInner = trailingParenMatch[2]!.trim();
-        let matchedMeta = false;
-        let extractedHint: string | null = null;
-        const extractedFiles: string[] = [];
-
-        for (const segment of parenInner.split("|")) {
-          const s = segment.trim();
-          const fMatch = s.match(/^Files:\s*(.*)$/i);
-          if (fMatch) {
-            matchedMeta = true;
-            extractedFiles.push(
-              ...fMatch[1]!
-                .split(",")
-                .map((x) => x.trim())
-                .filter((x) => x && x.toLowerCase() !== "none")
-            );
-          }
-          const hMatch = s.match(/^Hint:\s*(.*)$/i);
-          if (hMatch) {
-            matchedMeta = true;
-            extractedHint = hMatch[1]!.trim();
-          }
-        }
-
-        if (matchedMeta) {
-          title = candidateTitle;
-          if (extractedFiles.length > 0 && targetFiles.length === 0) {
-            targetFiles = extractedFiles;
-          }
-          if (extractedHint) {
-            contextHint = extractedHint;
-          }
+            .filter((s) => s && s.toLowerCase() !== "none");
         }
       }
 
+      const inlineMeta = extractTrailingInlineMeta(rest);
+      const title = inlineMeta.title;
+      const targetFiles =
+        inlineMeta.targetFiles.length > 0 ? inlineMeta.targetFiles : bracketFiles;
+      const contextHint = inlineMeta.contextHint;
       const turn = turnFromBracket ?? currentTurn ?? turnFromId ?? 1;
 
       let status: TaskStatus = "pending";
@@ -429,118 +506,9 @@ export function parsePlanMd(markdownText: string): ParsedPlanTask[] {
         targetFiles,
         contextHint,
         acceptance: null,
+        verifyCmd: null,
         dependsOn: [],
         followUpOf: titleFollowUpMatch ? titleFollowUpMatch[1]! : null,
-      };
-      tasks.push(currentTask);
-      continue;
-    }
-
-    // 4. Flexible fallback parser (tolerates bracketed Turn/Files variants and slight syntax differences)
-    const taskMatch = line.match(
-      /^\s*-\s*\[([ x~X])\]\s+(?:\*\*)?([A-Za-z0-9_.-]+)(?:\*\*)?\s*\[(.*?)\]:\s*(.*)$/
-    );
-    if (taskMatch) {
-      const marker = taskMatch[1]!;
-      const taskId = taskMatch[2]!;
-      const bracketContent = taskMatch[3]!;
-      const rest = taskMatch[4]!.trim();
-
-      let turn = currentTurn;
-      const turnFromIdMatch = taskId.match(/^T(\d+)\./i);
-      if (turnFromIdMatch) {
-        turn = parseInt(turnFromIdMatch[1]!, 10);
-      }
-
-      let track: TaskTrack = "LIGHT";
-      let role: AgentRole = "worker";
-      let category = "general";
-      let difficulty: DifficultyTier = "medium";
-      let bracketFiles: string[] = [];
-
-      for (const part of bracketContent.split("|")) {
-        const colonIdx = part.indexOf(":");
-        if (colonIdx === -1) continue;
-        const key = part.slice(0, colonIdx).trim().toLowerCase();
-        const val = part.slice(colonIdx + 1).trim();
-        if (key === "turn") {
-          const parsedTurn = parseInt(val, 10);
-          if (!isNaN(parsedTurn)) turn = parsedTurn;
-        } else if (key === "track") {
-          track = val.toUpperCase() === "HEAVY" ? "HEAVY" : "LIGHT";
-        } else if (key === "role") {
-          role = val.toLowerCase() as AgentRole;
-        } else if (key === "cat" || key === "category") {
-          category = val.toLowerCase();
-        } else if (key === "diff" || key === "difficulty") {
-          difficulty = val.toLowerCase() as DifficultyTier;
-        } else if (key === "files") {
-          bracketFiles = val
-            .split(",")
-            .map((s) => s.trim())
-            .filter((s) => s && s.toLowerCase() !== "none");
-        }
-      }
-
-      let title = rest;
-      let targetFiles = bracketFiles;
-      let contextHint: string | null = null;
-
-      // Extract trailing parens e.g. (Files: ... | Hint: ...) or (Files: ...) or (Hint: ...)
-      const parenMatch = rest.match(/^(.*?)(?:\s*\((.*?)\))\s*$/);
-      if (parenMatch) {
-        const candidateTitle = parenMatch[1]!.trim();
-        const parenInner = parenMatch[2]!.trim();
-        let matchedMeta = false;
-        const parenFiles: string[] = [];
-
-        for (const segment of parenInner.split("|")) {
-          const s = segment.trim();
-          const fMatch = s.match(/^Files:\s*(.*)$/i);
-          if (fMatch) {
-            matchedMeta = true;
-            parenFiles.push(
-              ...fMatch[1]!
-                .split(",")
-                .map((x) => x.trim())
-                .filter((x) => x && x.toLowerCase() !== "none")
-            );
-          }
-          const hMatch = s.match(/^Hint:\s*(.*)$/i);
-          if (hMatch) {
-            matchedMeta = true;
-            contextHint = hMatch[1]!.trim();
-          }
-        }
-
-        if (matchedMeta) {
-          title = candidateTitle;
-          if (parenFiles.length > 0) {
-            targetFiles = parenFiles;
-          }
-        }
-      }
-
-      let status: TaskStatus = "pending";
-      if (marker.toLowerCase() === "x") {
-        status = "done";
-      } else if (marker === "~") {
-        status = "failed";
-      }
-
-      currentTask = {
-        taskId,
-        turn,
-        title,
-        track,
-        role,
-        category,
-        difficulty,
-        status,
-        targetFiles,
-        contextHint,
-        acceptance: null,
-        dependsOn: [],
       };
       tasks.push(currentTask);
       continue;
@@ -618,7 +586,7 @@ export function syncPlanFromMd(
         targetFiles: parsed.targetFiles,
         contextHint: parsed.contextHint,
         acceptance: parsed.acceptance ?? existing?.acceptance ?? null,
-        verifyCmd: existing?.verify_cmd ?? null,
+        verifyCmd: parsed.verifyCmd ?? existing?.verify_cmd ?? null,
         followUpOf: parsed.followUpOf ?? existing?.follow_up_of ?? null,
       };
 

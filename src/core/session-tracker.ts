@@ -1,5 +1,5 @@
 /**
- * ASD v2.3 Unified Session Tracker & Multi-Project Indexer (src/core/session-tracker.ts)
+ * ASD v2.6.0 Unified Session Tracker & Multi-Project Indexer (src/core/session-tracker.ts)
  *
  * Implements:
  * 1. Native Harness Session ID extraction (`extractHarnessSessionIdFromOutput`) across

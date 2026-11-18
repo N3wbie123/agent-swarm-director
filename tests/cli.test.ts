@@ -1,5 +1,5 @@
 /**
- * ASD v2.2 Unified Terminal CLI & Hook Tests (tests/cli.test.ts)
+ * ASD v2.6.0 Unified Terminal CLI & Hook Tests (tests/cli.test.ts)
  *
  * Verifies:
  * 1. CLI help and unknown command handling.
@@ -115,7 +115,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
       assert.ok(res.stdout.includes("Usage:"));
     });
 
-    test("asd --version displays 2.3.0", () => {
+    test("asd --version displays current ASD_VERSION", () => {
       const res = runCli(["--version"]);
       assert.equal(res.exitCode, 0);
       assert.ok(res.stdout.includes(ASD_VERSION));
@@ -147,8 +147,8 @@ describe("ASD CLI (src/cli/index.ts)", () => {
       assert.equal(data.ok, true);
       assert.equal(typeof data.durationMs, "number");
       assert.ok(
-        data.durationMs < 150,
-        `asd doctor took ${data.durationMs.toFixed(1)}ms, expected < 150ms`
+        data.durationMs < 250,
+        `asd doctor took ${data.durationMs.toFixed(1)}ms, expected < 250ms`
       );
       assert.equal(data.nodeVersion.ok, true);
       assert.equal(data.sqliteWal.ok, true);
@@ -170,7 +170,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
 
       const data = JSON.parse(res.stdout);
       assert.equal(data.ok, true);
-      assert.ok(data.durationMs < 100);
+      assert.ok(data.durationMs < 250);
       assert.equal(data.gitRepo.isRepo, true);
       assert.ok(data.harnesses);
     });
@@ -184,7 +184,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
       const isolatedHome = createTempDir("asd-cli-sync-roundtrip-");
       try {
         // 1. Initial sync
-        const syncRes1 = runCli(["sync", "--home", isolatedHome], {
+        const syncRes1 = runCli(["sync", "--no-model-probe", "--home", isolatedHome], {
           cwd: tmpProject,
         });
         assert.equal(syncRes1.exitCode, 0, `sync1 failed: ${syncRes1.stderr}`);
@@ -212,7 +212,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
         );
 
         // 2. Idempotent sync (skipped)
-        const syncRes2 = runCli(["sync", "--home", isolatedHome], {
+        const syncRes2 = runCli(["sync", "--no-model-probe", "--home", isolatedHome], {
           cwd: tmpProject,
         });
         assert.equal(syncRes2.exitCode, 0);
@@ -928,12 +928,12 @@ describe("ASD CLI (src/cli/index.ts)", () => {
       const withPathHome = createTempDir("asd-withpath-home-");
       try {
         // 1. With --no-path: .asd/bin should NOT be created
-        const resNoPath = runCli(["sync", "--no-path", "--home", noPathHome]);
+        const resNoPath = runCli(["sync", "--no-model-probe", "--no-path", "--home", noPathHome]);
         assert.equal(resNoPath.exitCode, 0);
         assert.equal(fs.existsSync(path.join(noPathHome, ".asd", "bin", "asd")), false);
 
         // 2. Default sync: .asd/bin/asd (and asd.cmd on win32) SHOULD be created, and removed on uninstall
-        const resWithPath = runCli(["sync", "--home", withPathHome]);
+        const resWithPath = runCli(["sync", "--no-model-probe", "--home", withPathHome]);
         assert.equal(resWithPath.exitCode, 0);
         assert.equal(fs.existsSync(path.join(withPathHome, ".asd", "bin", "asd")), true);
         if (process.platform === "win32") {

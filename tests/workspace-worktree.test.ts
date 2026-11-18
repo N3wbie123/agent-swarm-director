@@ -260,7 +260,7 @@ describe("LIGHT Track Lifecycle", () => {
 
     // Verify commit in Git log
     const t1Log = runGit(["log", "-1", "--format=%s"], { cwd: root });
-    assert.equal(t1Log.stdout.trim(), "asd(T1.1): create t1 module");
+    assert.equal(t1Log.stdout.trim(), "create t1 module");
     assert.ok(fs.existsSync(t1Path), "t1.ts must exist on disk");
 
     // --- Task T1.2: Fails verification (out-of-scope boundary violation) ---
@@ -293,7 +293,7 @@ describe("LIGHT Track Lifecycle", () => {
 
     // Git HEAD still points to T1.1 checkpoint commit
     const headLog = runGit(["log", "-1", "--format=%s"], { cwd: root });
-    assert.equal(headLog.stdout.trim(), "asd(T1.1): create t1 module");
+    assert.equal(headLog.stdout.trim(), "create t1 module");
   });
 
   test("LIGHT rollback catches leaked secret patterns and preserves prior commit", () => {
@@ -330,6 +330,56 @@ describe("LIGHT Track Lifecycle", () => {
     assert.equal(leakResult.rollbackPerformed, true);
     assert.ok(!fs.existsSync(path.join(root, "src", "leak.ts")));
     assert.ok(fs.existsSync(path.join(root, "src", "base.ts")));
+  });
+
+  test("LIGHT verifyCmd failure preserves working tree files, prefers summary without task ID on commit, and skips commitSha on no-op tasks", () => {
+    const root = makeTmpDir("asd-light-preserve-");
+    initGitRepo(root);
+    prepareBaseline(root);
+
+    fs.mkdirSync(path.join(root, "src"), { recursive: true });
+    const targetFile = path.join(root, "src", "feature.ts");
+    fs.writeFileSync(targetFile, "export const broken = 1;\n", "utf8");
+
+    // 1. Test failure in LIGHT mode MUST preserve working tree edits
+    const failRes = verifyAndCommitLightTask({
+      projectRoot: root,
+      taskId: "T1.1",
+      title: "Short title",
+      allowedFiles: ["src/feature.ts"],
+      verifyCmd: 'node -e "process.exit(1)"',
+    });
+    assert.equal(failRes.verified, false);
+    assert.equal(failRes.rollbackPerformed, false);
+    assert.equal(fs.existsSync(targetFile), true, "Working tree file must NOT be deleted on verifyCmd failure");
+
+    // 2. Fix code & pass explicit summary -> commit message is pure summary without task ID
+    fs.writeFileSync(targetFile, "export const fixed = 2;\n", "utf8");
+    const passRes = verifyAndCommitLightTask({
+      projectRoot: root,
+      taskId: "T1.1",
+      title: "Short title",
+      summary: "Implement feature module with clean commit subject",
+      allowedFiles: ["src/feature.ts"],
+      verifyCmd: 'node -e "process.exit(0)"',
+    });
+    assert.equal(passRes.verified, true);
+    assert.ok(passRes.commitSha);
+    const subject = runGit(["log", "-1", "--format=%s"], { cwd: root }).stdout.trim();
+    assert.equal(subject, "Implement feature module with clean commit subject");
+    assert.equal(subject.includes("T1.1"), false);
+    assert.equal(subject.includes("asd("), false);
+
+    // 3. No-op task (0 changed files) must NOT steal previous commitSha
+    const noopRes = verifyAndCommitLightTask({
+      projectRoot: root,
+      taskId: "T1.2",
+      title: "External deployment check",
+      allowedFiles: [],
+      verifyCmd: 'node -e "process.exit(0)"',
+    });
+    assert.equal(noopRes.verified, true);
+    assert.equal(noopRes.commitSha, undefined, "No-op task must not report prior commit SHA");
   });
 });
 

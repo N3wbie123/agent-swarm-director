@@ -1,5 +1,5 @@
 /**
- * ASD v2.5.0 MCP Core Server (src/mcp/server.ts).
+ * ASD v2.6.0 MCP Core Server (src/mcp/server.ts).
  *
  * Implements:
  * 1. StdioRpcServer-based JSON-RPC transport handling MCP protocol:
@@ -1666,12 +1666,15 @@ export class AsdMcpServer {
           input.autoApprove !== undefined
             ? input.autoApprove
             : session.auto_approve !== 0;
+        const parsedReport = parseSubagentReport(readSpawnOutput(spawnResult.metaPath));
         let verifyResult: { verified: boolean; commitSha?: string; error?: string; status?: TaskStatus; changedFiles?: string[] };
         if (t.track === "LIGHT") {
           verifyResult = verifyAndCommitLightTask({
             projectRoot: this.projectRoot,
             taskId: t.task_id,
             title: t.title,
+            summary: parsedReport?.summary,
+            rollbackOnVerifyFailure: true,
             allowedFiles,
             verifyCmd: t.verify_cmd,
             autoApprove: effectiveAutoApprove,
@@ -1684,6 +1687,7 @@ export class AsdMcpServer {
             turn: t.turn,
             taskId: t.task_id,
             title: t.title,
+            summary: parsedReport?.summary,
             wtPath: wtInfo?.wtPath,
             branchName: wtInfo?.branchName,
             allowedFiles,
@@ -1695,7 +1699,6 @@ export class AsdMcpServer {
         }
 
         if (verifyResult.verified) {
-          const parsedReport = parseSubagentReport(readSpawnOutput(spawnResult.metaPath));
           if (verifyResult.status === "verifying") {
             const currentTasks = this.db.getSessionTasks(sessionId);
             renderPlanMd(session, currentTasks);
@@ -2233,12 +2236,23 @@ export class AsdMcpServer {
       status?: TaskStatus;
     };
 
+    const explicitSummary =
+      doneClaim?.summary &&
+      !/^Verified task\s+/i.test(doneClaim.summary.trim())
+        ? doneClaim.summary.trim()
+        : "";
+    const normalizedDoneClaim: DoneClaim = {
+      ...doneClaim,
+      summary: explicitSummary || task.title,
+    };
+
     const autoApprove = session.auto_approve !== 0;
     if (task.track === "LIGHT") {
       verifyResult = verifyAndCommitLightTask({
         projectRoot: this.projectRoot,
         taskId,
         title: task.title,
+        summary: explicitSummary || null,
         allowedFiles,
         verifyCmd: verifyCmd ?? task.verify_cmd,
         sessionId,
@@ -2251,6 +2265,7 @@ export class AsdMcpServer {
         turn: task.turn,
         taskId,
         title: task.title,
+        summary: explicitSummary || null,
         wtPath: task.worktree_path ?? undefined,
         allowedFiles,
         verifyCmd: verifyCmd ?? task.verify_cmd,
@@ -2295,11 +2310,11 @@ export class AsdMcpServer {
     if (verifyResult.verified) {
       if (isPendingApproval) {
         this.db.updateTaskStatus(sessionId, taskId, "verifying", {
-          doneClaimJson: JSON.stringify(doneClaim),
+          doneClaimJson: JSON.stringify(normalizedDoneClaim),
         });
         this.db.resetNoProgress(sessionId);
       } else {
-        this.db.recordTaskVerified(sessionId, taskId, verifyResult.commitSha || "", doneClaim, task.duration_ms ?? 0);
+        this.db.recordTaskVerified(sessionId, taskId, verifyResult.commitSha || "", normalizedDoneClaim, task.duration_ms ?? 0);
         this.db.resetNoProgress(sessionId);
       }
 

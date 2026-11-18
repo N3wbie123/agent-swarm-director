@@ -1,5 +1,5 @@
 /**
- * ASD v2.2 Workspace & Worktree Lifecycle Engine (src/core/workspace.ts)
+ * ASD v2.6.0 Workspace & Worktree Lifecycle Engine (src/core/workspace.ts)
  *
  * Implements:
  * 1. Unborn HEAD Safeguard & Baseline Prep (`prepareBaseline`):
@@ -11,8 +11,8 @@
  * 3. LIGHT Track Lifecycle (`verifyAndCommitLightTask`, `rollbackLightChanges`):
  *    - In-place boundary check (`policy.ts`) & secret scan (`redact.ts`).
  *    - verifyCmd priority resolution (explicit -> package.json typecheck/test -> tsconfig.json -> skip).
- *    - On pass: local checkpoint commit `asd(<taskId>): <title>` with --no-verify.
- *    - On failure: atomic rollback preserving prior checkpoint commits.
+ *    - On pass: clean content-only commit (`summary` if provided, else `title`) with --no-verify; no-op tasks skip fake SHA.
+ *    - On failure: preserves working tree edits on verifyCmd failure; rolls back scoped files on boundary/secret violations.
  * 4. HEAVY Track Worktree Lifecycle (`createTaskWorktree`, `verifyAndMergeHeavyTask`, `cleanupWorktree`):
  *    - Isolated worktree with node_modules junction.
  *    - Strict ordering: boundary check -> test with junction intact -> unlink junction -> commit in wt -> merge with mutex.
@@ -74,8 +74,11 @@ export interface VerifyLightTaskOptions {
   projectRoot: string;
   taskId: string;
   title: string;
+  summary?: string | null;
   allowedFiles?: string[];
   verifyCmd?: string | null;
+  verifyTimeoutMs?: number;
+  rollbackOnVerifyFailure?: boolean;
   sessionId?: string;
   db?: SqliteDriver;
   autoApprove?: boolean;
@@ -99,10 +102,12 @@ export interface VerifyHeavyTaskOptions {
   turn: number;
   taskId: string;
   title: string;
+  summary?: string | null;
   wtPath?: string;
   branchName?: string;
   allowedFiles?: string[];
   verifyCmd?: string | null;
+  verifyTimeoutMs?: number;
   smokeCmd?: string | null;
   sessionId?: string;
   db?: SqliteDriver;
@@ -548,13 +553,37 @@ export function resolveVerifyCmd(
   return null;
 }
 
+export const DEFAULT_VERIFY_TIMEOUT_MS = 300_000;
+
+function resolveDefaultVerifyTimeoutMs(): number {
+  const envVal = Number(process.env.ASD_VERIFY_TIMEOUT_MS);
+  if (Number.isFinite(envVal) && envVal >= 1000) {
+    return Math.floor(envVal);
+  }
+  return DEFAULT_VERIFY_TIMEOUT_MS;
+}
+
+/**
+ * Formats a clean, human-readable commit message without `asd(...)` or task ID prefixes.
+ * Prefers explicit `summary` when provided, falling back to `title`.
+ */
+export function formatTaskCommitMessage(
+  title: string,
+  summary?: string | null
+): string {
+  const cleanSummary = summary ? stripAiAttributionTrailers(summary).trim() : "";
+  const cleanTitle = stripAiAttributionTrailers(title).trim();
+  const chosen = cleanSummary || cleanTitle || "Update project files";
+  return chosen.replace(/^asd\([^)]*\):\s*/i, "").trim() || "Update project files";
+}
+
 /**
  * Executes a verification command in cwd, capturing combined stdout/stderr.
  */
 export function runVerifyCmd(
   verifyCmd: string,
   cwd: string,
-  timeoutMs = 60000
+  timeoutMs = resolveDefaultVerifyTimeoutMs()
 ): { success: boolean; output: string; exitCode: number } {
   try {
     const res = child_process.spawnSync(verifyCmd, {
@@ -564,12 +593,17 @@ export function runVerifyCmd(
       timeout: timeoutMs,
       windowsHide: true,
     });
-    const output = (res.stdout ?? "") + (res.stderr ?? "");
+    const timedOut =
+      (res.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+    const baseOutput = (res.stdout ?? "") + (res.stderr ?? "");
+    const output = timedOut
+      ? `${baseOutput}\n[ASD] Verification command timed out after ${timeoutMs}ms: ${verifyCmd}`.trim()
+      : baseOutput;
     const exitCode = res.status ?? (res.error ? 1 : 0);
     return {
-      success: exitCode === 0,
+      success: !timedOut && exitCode === 0,
       output,
-      exitCode,
+      exitCode: timedOut && exitCode === 0 ? 124 : exitCode,
     };
   } catch (err: unknown) {
     return {
@@ -885,19 +919,26 @@ export function verifyAndCommitLightTask(
     };
   }
 
-  // 2. Run verify command
+  // 2. Run verify command (in LIGHT mode, preserve working tree edits on test failure unless rollbackOnVerifyFailure === true)
   const resolvedCmd = resolveVerifyCmd(projectRoot, verifyCmd);
   if (resolvedCmd) {
-    const cmdRes = runVerifyCmd(resolvedCmd, projectRoot);
+    const cmdRes = runVerifyCmd(
+      resolvedCmd,
+      projectRoot,
+      options.verifyTimeoutMs ?? resolveDefaultVerifyTimeoutMs()
+    );
     if (!cmdRes.success) {
-      rollbackLightChanges(projectRoot, { files: scopedFiles });
+      const shouldRollback = options.rollbackOnVerifyFailure === true;
+      if (shouldRollback) {
+        rollbackLightChanges(projectRoot, { files: scopedFiles });
+      }
       if (db && sessionId) {
         db.updateTaskStatus(sessionId, taskId, "failed");
       }
       return {
         verified: false,
         status: "failed",
-        rollbackPerformed: true,
+        rollbackPerformed: shouldRollback,
         testOutput: cmdRes.output,
         error: `Verification command failed with exit code ${cmdRes.exitCode}: ${resolvedCmd}`,
         changedFiles,
@@ -949,6 +990,8 @@ export function verifyAndCommitLightTask(
   }
 
   // 3. Pass: create checkpoint commit under cross-process merge lock
+  let createdCommit = false;
+  const commitMessage = formatTaskCommitMessage(title, options.summary);
   const lightCommitFailure = withFileMergeLockSync(
     projectRoot,
     `verifyAndCommitLightTask:${taskId}`,
@@ -998,12 +1041,7 @@ export function verifyAndCommitLightTask(
           };
         }
         const commitRes = runGit(
-          [
-            "commit",
-            "-m",
-            `asd(${taskId}): ${stripAiAttributionTrailers(title)}`,
-            "--no-verify",
-          ],
+          ["commit", "-m", commitMessage, "--no-verify"],
           { cwd: projectRoot }
         );
         if (commitRes.exitCode !== 0) {
@@ -1019,6 +1057,7 @@ export function verifyAndCommitLightTask(
             changedFiles: postChangedFiles,
           };
         }
+        createdCommit = true;
       }
       return null;
     }
@@ -1027,18 +1066,22 @@ export function verifyAndCommitLightTask(
     return lightCommitFailure;
   }
 
-  const commitSha = runGit(["rev-parse", "HEAD"], {
-    cwd: projectRoot,
-  }).stdout.trim();
+  const commitSha = createdCommit
+    ? runGit(["rev-parse", "HEAD"], {
+        cwd: projectRoot,
+      }).stdout.trim()
+    : undefined;
 
   if (db && sessionId) {
-    db.updateTaskStatus(sessionId, taskId, "done", { commitSha });
+    db.updateTaskStatus(sessionId, taskId, "done", {
+      commitSha: commitSha ?? null,
+    });
   }
 
   return {
     verified: true,
     status: "done",
-    commitSha,
+    ...(commitSha ? { commitSha } : {}),
     rollbackPerformed: false,
     changedFiles: postChangedFiles,
   };
@@ -1375,7 +1418,11 @@ export async function verifyAndMergeHeavyTask(
   // 2. Run verifyCmd inside wtPath while node_modules junction is intact
   const resolvedCmd = resolveVerifyCmd(wtPath, verifyCmd);
   if (resolvedCmd) {
-    const cmdRes = runVerifyCmd(resolvedCmd, wtPath);
+    const cmdRes = runVerifyCmd(
+      resolvedCmd,
+      wtPath,
+      options.verifyTimeoutMs ?? resolveDefaultVerifyTimeoutMs()
+    );
     if (!cmdRes.success) {
       // Step 4: Test failed - clean up worktree and return failure
       cleanupWorktree(projectRoot, wtPath, branchName, {
@@ -1411,8 +1458,8 @@ export async function verifyAndMergeHeavyTask(
   // 3. Remove node_modules junction immediately before git add -A
   unlinkNodeModulesJunction(wtNm);
 
-  // 5. Commit inside worktree
-  const cleanTaskCommitMsg = `asd(${taskId}): ${stripAiAttributionTrailers(title)}`;
+  // 5. Commit inside worktree (content-only commit message, no task ID prefix)
+  const cleanTaskCommitMsg = formatTaskCommitMessage(title, options.summary);
   runGit(["add", "-A"], { cwd: wtPath });
   const commitRes = runGit(
     ["commit", "-m", cleanTaskCommitMsg, "--no-verify"],
@@ -1447,7 +1494,7 @@ export async function verifyAndMergeHeavyTask(
 
     // Run git merge --no-ff
     const mergeRes = runGit(
-      ["merge", "--no-ff", branchName, "-m", `asd(merge): ${taskId}`],
+      ["merge", "--no-ff", branchName, "-m", cleanTaskCommitMsg],
       { cwd: projectRoot }
     );
 
@@ -1502,20 +1549,22 @@ export async function verifyAndMergeHeavyTask(
       forceBranchDelete: false,
     });
 
-    const finalCommitSha = runGit(["rev-parse", "HEAD"], {
+    const postMergeHead = runGit(["rev-parse", "HEAD"], {
       cwd: projectRoot,
     }).stdout.trim();
+    const finalCommitSha =
+      postMergeHead && postMergeHead !== preMergeSha ? postMergeHead : undefined;
 
     if (db && sessionId) {
       db.updateTaskStatus(sessionId, taskId, "done", {
-        commitSha: finalCommitSha,
+        commitSha: finalCommitSha ?? null,
       });
     }
 
     return {
       verified: true,
       status: "done",
-      commitSha: finalCommitSha,
+      ...(finalCommitSha ? { commitSha: finalCommitSha } : {}),
       changedFiles,
     };
   },
@@ -1900,7 +1949,12 @@ export function rejectPendingTask(options: {
 export function findSessionTaskCommitSha(
   projectRoot: string,
   taskId: string,
-  baseSha?: string | null
+  baseSha?: string | null,
+  options?: {
+    title?: string | null;
+    summary?: string | null;
+    recordedCommitSha?: string | null;
+  }
 ): string | null {
   const cleanBase = baseSha?.trim();
   const headRes = runGit(["rev-parse", "HEAD"], { cwd: projectRoot });
@@ -1924,9 +1978,17 @@ export function findSessionTaskCommitSha(
   if (logRes.exitCode !== 0) return null;
 
   const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(
+  const legacyPattern = new RegExp(
     `^asd\\(${escapedTaskId}\\):|^asd\\(merge\\):\\s*${escapedTaskId}(?:\\b|\\s|$)`
   );
+  const expectedSubjects = new Set<string>();
+  if (options?.title && options.title.trim()) {
+    expectedSubjects.add(formatTaskCommitMessage(options.title, null).split(/\r?\n/)[0]!.trim());
+  }
+  if (options?.summary && options.summary.trim()) {
+    expectedSubjects.add(formatTaskCommitMessage("", options.summary).split(/\r?\n/)[0]!.trim());
+  }
+  const recordedSha = options?.recordedCommitSha?.trim() || "";
 
   for (const rawLine of logRes.stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -1935,7 +1997,10 @@ export function findSessionTaskCommitSha(
     if (spaceIdx === -1) continue;
     const sha = line.slice(0, spaceIdx).trim();
     const subject = line.slice(spaceIdx + 1).trim();
-    if (pattern.test(subject)) {
+    if (recordedSha && sha.startsWith(recordedSha)) {
+      return sha;
+    }
+    if (legacyPattern.test(subject) || expectedSubjects.has(subject)) {
       return sha;
     }
   }
@@ -2140,7 +2205,11 @@ export function recoverOrphanedTasks(input: {
     const existingCommitSha = findSessionTaskCommitSha(
       projectRoot,
       t.task_id,
-      sessionRow?.base_sha
+      sessionRow?.base_sha,
+      {
+        title: t.title,
+        recordedCommitSha: t.commit_sha,
+      }
     );
     if (existingCommitSha) {
       if (meta && metaPath) {
@@ -2242,13 +2311,14 @@ export function recoverOrphanedTasks(input: {
           cleanStaleWorktreeLock(wtPath, 0);
           unlinkNodeModulesJunction(path.join(wtPath, "node_modules"));
 
+          const promoMsg = formatTaskCommitMessage(t.title, inspection.summary);
           runGit(["add", "-A"], { cwd: wtPath });
-          runGit(["commit", "-m", `asd(${t.task_id}): ${t.title}`, "--no-verify"], {
+          runGit(["commit", "-m", promoMsg, "--no-verify"], {
             cwd: wtPath,
           });
 
           const mergeRes = runGit(
-            ["merge", "--no-ff", branchName, "-m", `asd(merge): ${t.task_id}`],
+            ["merge", "--no-ff", branchName, "-m", promoMsg],
             { cwd: projectRoot }
           );
           if (mergeRes.exitCode !== 0) {

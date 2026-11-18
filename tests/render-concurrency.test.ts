@@ -230,7 +230,7 @@ test("renderPlanMd: generates inline format grouped by turn with acceptance and 
   assert.ok(rendered.includes("## Turn 2"));
   assert.ok(
     rendered.includes(
-      "- [ ] **T1.1** [Track: LIGHT | Role: worker | Cat: general | Diff: medium]: DB 초기화 (Files: src/db.ts | Hint: WAL 필수)"
+      "- [ ] **T1.1** [Track: LIGHT | Role: worker | Cat: general | Diff: medium]: DB 초기화"
     )
   );
   assert.ok(rendered.includes("  - Acceptance: WAL 모드 활성화"));
@@ -725,4 +725,60 @@ test("F06: renderPlanMd -> syncPlanFromMd round-trip preserves all 7 TaskStatus 
   } finally {
     db.close();
   }
+});
+
+test("renderPlanMd & parsePlanMd: preserves pipes (|), nested parentheses (), and complex hints without truncating title or losing targetFiles", () => {
+  const dir = tempDir("asd-plan-pipes-parens-");
+  const planPath = path.join(dir, "PLAN.md");
+  const session = { project_root: dir, session_id: "s-pipes-1" };
+
+  const complexTasks: TaskInput[] = [
+    {
+      taskId: "T3.1",
+      turn: 3,
+      title: "CLI (--async / --transport <auto|acp|cli> / wait) 및 로드맵 문서화",
+      track: "LIGHT",
+      role: "worker",
+      category: "writing",
+      difficulty: "medium",
+      targetFiles: ["src/cli/index.ts", "docs/ACP_ROADMAP.md", "tests/cli-commands.test.ts"],
+      contextHint:
+        "(1) In src/cli/index.ts: add '--async' and '--transport <auto|acp|cli>' (default: auto). (2) Handle session/update (agent_message_chunk | thought_chunk).",
+      acceptance: "CLI supports '--async' | '--transport' and full 'npm run typecheck && npm test' passes.",
+      verifyCmd: "npm run typecheck && npm test",
+    },
+  ];
+
+  const rendered = renderPlanMd(session, complexTasks, planPath);
+  assert.ok(rendered.includes("  - Files: src/cli/index.ts, docs/ACP_ROADMAP.md, tests/cli-commands.test.ts"));
+  assert.ok(rendered.includes("  - Hint: (1) In src/cli/index.ts:"));
+  const parsedRoundTrip = parsePlanMd(rendered);
+  assert.equal(parsedRoundTrip.length, 1);
+  assert.equal(
+    parsedRoundTrip[0]!.title,
+    "CLI (--async / --transport <auto|acp|cli> / wait) 및 로드맵 문서화"
+  );
+  assert.deepEqual(parsedRoundTrip[0]!.targetFiles, [
+    "src/cli/index.ts",
+    "docs/ACP_ROADMAP.md",
+    "tests/cli-commands.test.ts",
+  ]);
+  assert.equal(
+    parsedRoundTrip[0]!.contextHint,
+    "(1) In src/cli/index.ts: add '--async' and '--transport <auto|acp|cli>' (default: auto). (2) Handle session/update (agent_message_chunk | thought_chunk)."
+  );
+  assert.equal(parsedRoundTrip[0]!.verifyCmd, "npm run typecheck && npm test");
+
+  const legacyInline = `- [ ] **T3.1** [Track: LIGHT | Role: worker | Cat: writing | Diff: medium]: CLI (--async / --transport) (Files: src/cli/index.ts, docs/ACP_ROADMAP.md | Hint: (1) add '--transport <auto|acp|cli>' (default: auto))`;
+  const parsedLegacy = parsePlanMd(legacyInline);
+  assert.equal(parsedLegacy.length, 1);
+  assert.equal(parsedLegacy[0]!.title, "CLI (--async / --transport)");
+  assert.deepEqual(parsedLegacy[0]!.targetFiles, [
+    "src/cli/index.ts",
+    "docs/ACP_ROADMAP.md",
+  ]);
+  assert.equal(
+    parsedLegacy[0]!.contextHint,
+    "(1) add '--transport <auto|acp|cli>' (default: auto)"
+  );
 });

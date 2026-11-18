@@ -1,5 +1,5 @@
 /**
- * ASD v2.2 Lightweight Zero-Dependency Web Dashboard (src/cli/dashboard.ts)
+ * ASD v2.6.0 Lightweight Zero-Dependency Web Dashboard (src/cli/dashboard.ts)
  *
  * Uses built-in `node:http` with zero external runtime dependencies.
  * Provides:

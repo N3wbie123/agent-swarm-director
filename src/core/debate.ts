@@ -1,5 +1,5 @@
 /**
- * ASD v2.2 Core Broker Blind Debate Engine (src/core/debate.ts).
+ * ASD v2.6.0 Core Broker Blind Debate Engine (src/core/debate.ts).
  *
  * Implements:
  * 1. Zero-polling parallel blind cross-model debate.

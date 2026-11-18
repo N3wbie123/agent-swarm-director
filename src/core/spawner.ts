@@ -1,5 +1,5 @@
 /**
- * ASD v2.2 Subagent Spawner (src/core/spawner.ts)
+ * ASD v2.6.0 Subagent Spawner (src/core/spawner.ts)
  *
  * Spawns isolated subagent processes with:
  * - Session artifact logging under

@@ -1,5 +1,5 @@
 /**
- * ASD v2.2 Model Router & Diversity Engine (src/core/router.ts).
+ * ASD v2.6.0 Model Router & Diversity Engine (src/core/router.ts).
  *
  * Implements:
  * 1. 4-tier route resolution (Explicit Pin -> Specialist Role -> Domain Category -> Difficulty Tier).
@@ -490,6 +490,48 @@ export function resolveNextLightSubagentFallback(
   return route.fallbacks[0]?.model;
 }
 
+const PROCESS_PATH_DIR_CACHE_TTL_MS = 5_000;
+let cachedProcessPathKey = "";
+let cachedProcessPathExpiresAt = 0;
+let cachedProcessPathDirs = new Map<string, Map<string, string>>();
+
+function getProcessPathDirEntries(pathEnv: string): Map<string, Map<string, string>> {
+  const now = Date.now();
+  if (
+    pathEnv === cachedProcessPathKey &&
+    now < cachedProcessPathExpiresAt &&
+    cachedProcessPathDirs.size > 0
+  ) {
+    return cachedProcessPathDirs;
+  }
+
+  const caseInsensitive = process.platform === "win32";
+  const nextCache = new Map<string, Map<string, string>>();
+  for (const dir of pathEnv.split(path.delimiter).filter(Boolean)) {
+    if (nextCache.has(dir)) continue;
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      const fileMap = new Map<string, string>();
+      for (const entry of entries) {
+        if (entry.isFile() || entry.isSymbolicLink()) {
+          const k = caseInsensitive ? entry.name.toLowerCase() : entry.name;
+          if (!fileMap.has(k)) {
+            fileMap.set(k, entry.name);
+          }
+        }
+      }
+      nextCache.set(dir, fileMap);
+    } catch {
+      // Ignore unreadable PATH directory
+    }
+  }
+
+  cachedProcessPathKey = pathEnv;
+  cachedProcessPathExpiresAt = now + PROCESS_PATH_DIR_CACHE_TTL_MS;
+  cachedProcessPathDirs = nextCache;
+  return nextCache;
+}
+
 /**
  * Resolves the absolute path of a binary on PATH across POSIX and Windows.
  */
@@ -501,6 +543,24 @@ export function resolveBinaryOnPath(
   const dirs = pathEnv.split(path.delimiter).filter(Boolean);
   const extensions =
     process.platform === "win32" ? [".exe", ".cmd", ".bat", ".ps1", ""] : [""];
+
+  if (env === process.env) {
+    const caseInsensitive = process.platform === "win32";
+    const dirIndex = getProcessPathDirEntries(pathEnv);
+    for (const dir of dirs) {
+      const fileMap = dirIndex.get(dir);
+      if (!fileMap) continue;
+      for (const ext of extensions) {
+        const candidate = `${binaryName}${ext}`;
+        const key = caseInsensitive ? candidate.toLowerCase() : candidate;
+        const actual = fileMap.get(key);
+        if (actual) {
+          return path.join(dir, actual);
+        }
+      }
+    }
+    return null;
+  }
 
   for (const dir of dirs) {
     for (const ext of extensions) {
