@@ -1,85 +1,87 @@
-# ASD v2.4.2 모델 라우팅 설정 가이드 (`routing.jsonc`)
+# ASD v2.4.2 Model Routing Configuration Guide (`routing.jsonc`)
 
-ASD(Agent Swarm Director)는 작업 실행 방식에 따라 **`LIGHT` 모드(현재 하네스 내부 서브에이전트 위임)**와 **`HEAVY` 모드(외부 하네스 CLI 병렬 프로세스 스폰 & 블라인드 디베이트)**를 구분하여 모델을 라우팅합니다.
+**English** | [한국어](./ROUTING_GUIDE_ko.md) | [📖 Back to README](./README.md)
+
+ASD (Agent Swarm Director) routes models differently depending on the execution mode: **`LIGHT` mode (internal subagent delegation within the active harness)** and **`HEAVY` mode (external harness CLI parallel process spawning & blind debate)**.
 
 ---
 
-## 1. 설정 파일 위치 및 우선순위
+## 1. Configuration File Locations & Precedence
 
-ASD는 다음 순서로 `routing.jsonc`를 읽어 들입니다:
+ASD loads `routing.jsonc` in the following order of precedence:
 
-1. **프로젝트별 로컬 설정 (1순위)**: `<프로젝트 루트>/.asd/routing.jsonc`
-   - 특정 프로젝트에서만 다른 모델/폴백 구성을 쓰고 싶을 때 생성합니다.
-2. **사용자 글로벌 설정 (기본값)**: `~/.asd/routing.jsonc` (Windows: `C:\Users\<사용자>\.asd\routing.jsonc`)
-   - 모든 프로젝트에 공통 적용되는 전역 설정입니다.
+1. **Project-Local Configuration (Priority 1)**: `<project-root>/.asd/routing.jsonc`
+   - Create this file when you want a custom model or fallback configuration for a specific project only.
+2. **User Global Configuration (Default)**: `~/.asd/routing.jsonc` (Windows: `C:\Users\<user>\.asd\routing.jsonc`)
+   - The global configuration applied across all projects by default.
 
 > [!IMPORTANT]
-> **설정 변경 시 반영 시점 (`LIGHT` 모드)**:
-> - ASD는 `asd plan`, `asd dispatch`, 또는 대시보드(`asd ui`)에서 라우팅 설정을 저장할 때마다 `routing.jsonc`의 변경 여부를 감지하여 각 하네스의 에이전트 마크다운 파일(`~/.claude/agents/asd-*.md`, `~/.config/opencode/agent/asd-*.md`, `~/.gemini/config/agents/asd-*.md`, `~/.cursor/agents/asd-*.md`)의 `model:` 값을 **자동으로 즉시 갱신**합니다 (`asd sync --force`를 수동으로 실행해도 동일하게 갱신됩니다).
-> - **하네스별 세션 중 반영 차이**:
->   - **Antigravity / Codex / Cursor**: `PreToolUse` 훅 및 디스패치 브리핑 시점에 `routing.jsonc`를 실시간으로 읽으므로 **현재 세션 즉시 반영**됩니다.
->   - **Claude Code**: 파일 감시(Watcher) 및 `Agent` 도구의 `model` 파라미터 주입을 모두 지원하므로 **재시작 없이 현재 세션에 즉시 반영**됩니다.
->   - **OpenCode**: OpenCode 자체 `Task` 도구는 모델 파라미터가 없고 세션 시작 시점에 `.md` 파일을 메모리에 캐싱(Lazy-load 고정)하므로, **세션 도중 `routing.jsonc`를 수정한 경우 OpenCode를 재시작(또는 새 세션 시작)해야** 변경된 `model:`이 적용됩니다.
+> **When Configuration Changes Take Effect (`LIGHT` Mode)**:
+> - Whenever ASD runs `asd plan`, `asd dispatch`, or saves routing configuration in the dashboard (`asd ui`), it automatically detects changes to `routing.jsonc` and **immediately updates** the `model:` field in each harness's agent Markdown files (`~/.claude/agents/asd-*.md`, `~/.config/opencode/agent/asd-*.md`, `~/.gemini/config/agents/asd-*.md`, `~/.cursor/agents/asd-*.md`). Running `asd sync --force` manually performs the same update.
+> - **Mid-Session Reload Behavior by Harness**:
+>   - **Antigravity / Codex / Cursor**: Reads `routing.jsonc` in real time during `PreToolUse` hooks and dispatch briefings, so changes **take effect immediately in the active session**.
+>   - **Claude Code**: Supports both file watching and `model` parameter injection on the `Agent` tool, so changes **take effect immediately in the active session without restarting**.
+>   - **OpenCode**: OpenCode's native `Task` tool does not accept a runtime model parameter and caches `.md` agent definitions in memory at session startup (lazy-loaded and pinned). **If you edit `routing.jsonc` mid-session, you must restart OpenCode (or start a new session)** for the updated `model:` to apply.
 
 ---
 
-## 2. `LIGHT` 모드 vs `HEAVY` 모드 라우팅 구조 한눈에 보기
+## 2. `LIGHT` Mode vs `HEAVY` Mode Routing Structure at a Glance
 
-| 구분 | `lightSubagents` (`LIGHT` 모드 전용) | `agents` & `categories` / `heavyRouting` (`HEAVY` 모드 전용) |
+| Dimension | `lightSubagents` (`LIGHT` Mode Only) | `agents` & `categories` / `heavyRouting` (`HEAVY` Mode Only) |
 | :--- | :--- | :--- |
-| **작동 시점** | 단일 하네스 내부 서브에이전트 위임 (`invoke_subagent`, `Task`, `task`), `PreToolUse` 모델 강제 치환(`overwrite`), `asd sync` 에이전트 파일 생성 | `asd dispatch --mode parallel_spawn` (외부 CLI 멀티프로세스 스폰), `asd debate` (크로스 하네스 토론) |
-| **하네스 전환 여부** | **현재 실행 중인 하네스 고정** (예: Antigravity 안에서는 Antigravity 서브에이전트만 실행) | **하네스 간 교차 실행 가능** (예: 1순위 OpenCode 실패 시 2순위 Codex CLI로 폴백) |
-| **모델 표기 형식** | 각 하네스가 인식하는 **네이티브 모델 티어/ID** (`flash_lite`, `flash`, `pro`, `haiku`, `sonnet`, `opus` 등) | 각 CLI의 `--model` 플래그에 전달할 **정식 모델 문자열** (`claude-sonnet-4-6`, `gpt-5-codex`, `glm-5` 등) |
+| **When Active** | Single-harness internal subagent delegation (`invoke_subagent`, `Task`, `task`), `PreToolUse` forced model replacement (`overwrite`), `asd sync` agent file generation | `asd dispatch --mode parallel_spawn` (external CLI multi-process spawn), `asd debate` (cross-harness debate) |
+| **Cross-Harness Switching** | **Pinned to the currently active harness** (e.g., inside Antigravity, only Antigravity subagents run) | **Cross-harness execution enabled** (e.g., if Priority 1 OpenCode fails, falls back to Priority 2 Codex CLI) |
+| **Model Identifier Format** | **Native model tier/ID** recognized by each harness (`flash_lite`, `flash`, `pro`, `haiku`, `sonnet`, `opus`, etc.) | **Full canonical model string** passed to each CLI's `--model` flag (`claude-sonnet-4-6`, `gpt-5-codex`, `glm-5`, etc.) |
 
 ---
 
-## 3. `lightSubagents` 설정 방법 (`LIGHT` 모드 + Fallback 지정)
+## 3. Configuring `lightSubagents` (`LIGHT` Mode + Fallbacks)
 
-`lightSubagents`는 각 하네스(`antigravity`, `claude-code`, `opencode`, `codex`, `cursor`) 내부에서 5대 역할(`scout`, `worker`, `planner`, `architect`, `critic`) 및 기본 모델(`defaultModel`)이 사용할 모델과 **동일 하네스 내 폴백(Fallback) 모델 순서**를 정의합니다.
+`lightSubagents` defines the primary model and **same-harness fallback model order** for the 5 specialist roles (`scout`, `worker`, `planner`, `architect`, `critic`) and `defaultModel` inside each harness (`antigravity`, `claude-code`, `opencode`, `codex`, `cursor`).
 
-### 3.1. 지원하는 3가지 표기법 (혼용 가능)
+### 3.1. Three Supported Notations (Interchangeable)
 
-각 역할(`worker`, `scout` 등)과 `defaultModel`에는 아래 3가지 방식 중 편한 방식을 자유롭게 쓸 수 있습니다:
+You can freely use any of the following three formats for each role (`worker`, `scout`, etc.) and `defaultModel`:
 
-1. **단일 문자열 표기 (1순위 모델만 지정)**
+1. **Single String Notation (Primary model only)**
    ```jsonc
    "worker": "flash"
    ```
-2. **배열 표기 (`[1순위 모델, 1차 폴백, 2차 폴백, ...]`)**
+2. **Array Notation (`[primary, fallback1, fallback2, ...]`)**
    ```jsonc
    "worker": ["flash", "flash_lite", "pro"]
    ```
-3. **객체 표기 (`{ "model": "1순위", "fallbacks": ["1차 폴백", "2차 폴백"] }`)**
+3. **Object Notation (`{ "model": "primary", "fallbacks": ["fallback1", "fallback2"] }`)**
    ```jsonc
    "worker": { "model": "flash", "fallbacks": ["flash_lite", "pro"] }
    ```
-4. **하네스 공통 폴백 (`"fallbacks"` 배열)**
-   - 하네스 블록에 `"fallbacks": ["flash_lite"]`를 추가하면, 개별 역할의 폴백 목록 뒤에 자동으로 합쳐집니다(중복 제거).
+4. **Harness-Wide Common Fallbacks (`"fallbacks"` array)**
+   - Adding `"fallbacks": ["flash_lite"]` at the harness block level automatically appends those fallbacks after each role's individual fallback list (deduplicated).
 
 ---
 
-### 3.2. 왜 하네스마다 모델 값 규격과 기본 예시 형태가 다른가?
+### 3.2. Why Do Model Value Formats and Default Examples Differ Across Harnesses?
 
-1. **JSON 표기 형태 차이 (`"문자열"` vs `{ "model", "fallbacks" }`)**:
-   - 기본 생성된 `routing.jsonc`에서 `antigravity`와 `claude-code`는 역할별 기본 폴백이 있어서 `{ "model": "...", "fallbacks": [...] }` 객체 형태로 적혀 있고, `opencode`는 기본 폴백이 비어 있어 `"scout": "glm-5"` 단축 문자열 형태로 적혀 있을 뿐입니다.
-   - **5개 하네스 모두** 3.1절의 3가지 표기법(단일 문자열 / 배열 / `{ model, fallbacks }` 객체)과 역할별 키(`scout`, `worker`, `planner`, `architect`, `critic`, `defaultModel`)를 **100% 동일하게 지원**합니다.
-2. **하네스별 허용 모델 식별자 규격 차이**:
+1. **JSON Notation Differences (`"string"` vs `{ "model", "fallbacks" }`)**:
+   - In the default generated `routing.jsonc`, `antigravity` and `claude-code` define role-specific default fallbacks and therefore use the `{ "model": "...", "fallbacks": [...] }` object form, whereas `opencode` has empty role-level fallbacks by default and uses the shorthand string form `"scout": "glm-5"`.
+   - **All 5 harnesses** support all three notations from Section 3.1 (single string / array / `{ model, fallbacks }` object) and all role keys (`scout`, `worker`, `planner`, `architect`, `critic`, `defaultModel`) **100% identically**.
+2. **Harness-Specific Allowed Model Identifier Rules**:
 
-| 하네스 | 허용되는 모델 값 형식 | 이유 및 동작 원리 |
+| Harness | Accepted Model Value Format | Reason & Mechanism |
 | :--- | :--- | :--- |
-| **Antigravity** | `"flash_lite"`, `"flash"`, `"pro"` | Antigravity의 내장 `invoke_subagent` 도구는 `Model` 파라미터 스키마가 `enum: ["inherit", "flash_lite", "flash", "pro"]` 4가지로 고정되어 있습니다. 실수로 `"gemini-3.8-flash"`나 `"inherit"`을 적어도 ASD 라우터가 자동으로 위 3가지 티어 중 하나로 정규화하여 부모 모델 쿼터를 보호합니다. |
-| **Claude Code** | `"haiku"`, `"sonnet"`, `"opus"` 또는 정식 모델 ID (`"claude-sonnet-4-6"` 등) | Claude Code의 `Agent` 도구와 `~/.claude/agents/asd-*.md` 프론트매터(`model:`)는 단축 티어 별칭과 정식 모델 ID를 모두 지원합니다. |
-| **OpenCode** | `"provider/model"` 또는 모델 ID (`"glm-5"`, `"nvidia/z-ai/glm-5.3-flash"` 등) | OpenCode는 `haiku`/`flash` 같은 별칭 규격이 없으며, `~/.config/opencode/agent/asd-*.md`의 `model:` 필드에 실제 프로바이더/모델 ID를 그대로 기입해야 작동합니다. |
-| **Codex CLI** | 정식 모델 ID (`"gpt-5-codex"`, `"gpt-6-luna"` 등) | Codex 서브에이전트 브리핑 및 `AGENTS.md` 모델 지침에 정식 모델명이 주입됩니다. |
-| **Cursor CLI** | 정식 모델 ID (`"claude-sonnet-4-6"`, `"gpt-5.4"` 등) | `~/.cursor/agents/asd-*.md` 및 `PreToolUse` 훅 검증에 정식 모델명이 사용됩니다. |
+| **Antigravity** | `"flash_lite"`, `"flash"`, `"pro"` | Antigravity's built-in `invoke_subagent` tool enforces a strict schema of `enum: ["inherit", "flash_lite", "flash", "pro"]` on its `Model` parameter. Even if you accidentally specify `"gemini-3.8-flash"` or `"inherit"`, the ASD router automatically normalizes it to one of the 3 explicit tiers above to protect the parent model's quota. |
+| **Claude Code** | `"haiku"`, `"sonnet"`, `"opus"` or full model ID (`"claude-sonnet-4-6"`, etc.) | Claude Code's `Agent` tool and `~/.claude/agents/asd-*.md` frontmatter (`model:`) accept both shorthand tier aliases and full canonical model IDs. |
+| **OpenCode** | `"provider/model"` or model ID (`"glm-5"`, `"nvidia/z-ai/glm-5.3-flash"`, etc.) | OpenCode has no tier aliases like `haiku` or `flash`; the actual provider/model ID must be written directly into the `model:` field of `~/.config/opencode/agent/asd-*.md`. |
+| **Codex CLI** | Full model ID (`"gpt-5-codex"`, `"gpt-6-luna"`, etc.) | Full model names are injected into Codex subagent briefings and `AGENTS.md` model instructions. |
+| **Cursor CLI** | Full model ID (`"claude-sonnet-4-6"`, `"gpt-5.4"`, etc.) | Full model names are used in `~/.cursor/agents/asd-*.md` and `PreToolUse` hook validation. |
 
 ```jsonc
 {
   "_asdVersion": "2.4.2",
   "lightSubagents": {
-    // 1) Antigravity: 반드시 "flash_lite" | "flash" | "pro" 중 하나를 사용합니다.
-    //    ("inherit"이나 "gemini-3.8-flash"를 적어도 ASD가 자동으로 위 3개 티어로 정규화하여
-    //     부모 Gemini 4 Argon 주간 쿼터 고갈을 방지합니다.)
+    // 1) Antigravity: Must use one of "flash_lite" | "flash" | "pro".
+    //    (Even if "inherit" or "gemini-3.8-flash" is written, ASD automatically normalizes it
+    //     to one of the 3 tiers above to prevent exhausting the parent Gemini 4 Argon weekly quota.)
     "antigravity": {
       "scout": { "model": "flash_lite", "fallbacks": ["flash"] },
       "worker": { "model": "flash", "fallbacks": ["flash_lite", "pro"] },
@@ -90,7 +92,7 @@ ASD는 다음 순서로 `routing.jsonc`를 읽어 들입니다:
       "fallbacks": ["flash_lite"]
     },
 
-    // 2) Claude Code: "haiku" | "sonnet" | "opus" (또는 정식 claude-* 모델명)
+    // 2) Claude Code: "haiku" | "sonnet" | "opus" (or full claude-* model ID)
     "claude-code": {
       "scout": { "model": "haiku", "fallbacks": ["sonnet"] },
       "worker": { "model": "sonnet", "fallbacks": ["haiku", "opus"] },
@@ -101,7 +103,7 @@ ASD는 다음 순서로 `routing.jsonc`를 읽어 들입니다:
       "fallbacks": ["haiku"]
     },
 
-    // 3) OpenCode: provider/model 형식 지원 (단일 문자열, 배열, 객체 모두 사용 가능)
+    // 3) OpenCode: Supports provider/model format (single string, array, or object all supported)
     "opencode": {
       "scout": "nvidia/z-ai/glm-5.3-flash",
       "worker": {
@@ -115,13 +117,13 @@ ASD는 다음 순서로 `routing.jsonc`를 읽어 들입니다:
       "fallbacks": ["glm-5"]
     },
 
-    // 4) Codex CLI (역할별 키 생략 시 defaultModel 적용, 필요 시 scout/worker 등 개별 지정 가능)
+    // 4) Codex CLI (applies defaultModel when role keys are omitted; scout/worker etc. can be specified individually)
     "codex": {
       "defaultModel": "gpt-6-luna",
       "fallbacks": ["gpt-6.1-sol"]
     },
 
-    // 5) Cursor CLI (역할별 키 생략 시 defaultModel 적용, 필요 시 scout/worker 등 개별 지정 가능)
+    // 5) Cursor CLI (applies defaultModel when role keys are omitted; scout/worker etc. can be specified individually)
     "cursor": {
       "defaultModel": "claude-sonnet-4-6",
       "fallbacks": ["gpt-5.4"]
@@ -130,10 +132,10 @@ ASD는 다음 순서로 `routing.jsonc`를 읽어 들입니다:
 }
 ```
 
-### 3.3. Antigravity에서 외부 플러그인 서브에이전트(`explore`, `sisyphus-junior` 등) 모델 오버라이드
+### 3.3. Overriding External Plugin Subagent Models in Antigravity (`explore`, `sisyphus-junior`, etc.)
 
-Antigravity의 `PreToolUse` 훅은 `asd-*` 에이전트뿐만 아니라 OMO 등 외부 플러그인 서브에이전트를 `invoke_subagent`로 호출할 때도 `Model: "inherit"`을 가로채어 경량 티어로 자동 치환합니다.
-특정 외부 서브에이전트 이름(`TypeName`)을 직접 매핑하고 싶다면 `lightSubagents.antigravity` 안에 그대로 키를 추가할 수 있습니다:
+Antigravity's `PreToolUse` hook intercepts `Model: "inherit"` and replaces it with a lightweight tier not only for `asd-*` agents, but also when external plugin subagents (such as OMO) are invoked via `invoke_subagent`.
+If you want to map a specific external subagent name (`TypeName`) directly, add its key inside `lightSubagents.antigravity`:
 
 ```jsonc
 "antigravity": {
@@ -148,14 +150,14 @@ Antigravity의 `PreToolUse` 훅은 `asd-*` 에이전트뿐만 아니라 OMO 등 
 
 ---
 
-## 4. `HEAVY` 모드 설정 방법 (`agents` & `categories` 또는 `heavyRouting`)
+## 4. Configuring `HEAVY` Mode (`agents` & `categories` or `heavyRouting`)
 
-외부 CLI를 멀티프로세스 + Git Worktree로 띄우는 `HEAVY` 모드(`asd dispatch --mode parallel_spawn` 및 `asd debate`)는 기존 `agents`와 `categories` 블록(또는 `heavyRouting: { agents, categories }` 래퍼)을 사용합니다.
+`HEAVY` mode (`asd dispatch --mode parallel_spawn` and `asd debate`), which spawns external CLIs via multi-process + Git Worktrees, uses the `agents` and `categories` blocks (or the `heavyRouting: { agents, categories }` wrapper).
 
-- **`agents`**: 전문 역할(`planner`, `architect`, `worker`, `scout`, `critic`)별 1순위 하네스/모델 및 크로스 하네스 `fallbacks` 배열
+- **`agents`**: Priority 1 harness/model and cross-harness `fallbacks` array for each specialist role (`planner`, `architect`, `worker`, `scout`, `critic`)
 - **`categories`**:
-  - 도메인 카테고리: `visual-ui`, `design`, `research`, `writing`, `general`
-  - 난이도 티어(`worker` + `general`일 때 사용): `low`, `medium`, `high`
+  - Domain categories: `visual-ui`, `design`, `research`, `writing`, `general`
+  - Difficulty tiers (used when role is `worker` + category is `general`): `low`, `medium`, `high`
 
 ```jsonc
 {
@@ -175,43 +177,43 @@ Antigravity의 `PreToolUse` 훅은 `asd-*` 에이전트뿐만 아니라 OMO 등 
 
 ---
 
-## 5. `/asd-debate` (`HEAVY` 모드) 참여 하네스·역할·개수 지정 방법
+## 5. Specifying Participating Harnesses, Roles, and Count in `/asd-debate` (`HEAVY` Mode)
 
-`/asd-debate`를 `HEAVY` 모드(외부 CLI 블라인드 토론)로 실행할 때, AI가 먼저 **참여할 하네스의 종류와 수**를 물어봅니다. 직접 지정하거나 **"알아서 배정해줘"**(AI 자율 배정 또는 `routing.jsonc` 역할 기반 배정)로 실행할 수 있습니다.
+When running `/asd-debate` in `HEAVY` mode (external CLI blind debate), the AI first asks for **which harnesses and how many participants** to include. You can specify them explicitly or ask the AI to **auto-assign** (autonomous selection or `routing.jsonc` role-based assignment).
 
-1. **참여할 하네스 종류 직접 지정 (`--harnesses`)**:
-   - 모델명을 일일이 적지 않고 하네스 이름만 지정하면 `routing.jsonc`에 설정된 해당 하네스의 대표 모델/폴백을 자동으로 매핑합니다.
+1. **Directly Specify Participating Harnesses (`--harnesses`)**:
+   - Specify harness names without typing full model IDs; ASD automatically maps each harness to its primary model and fallbacks configured in `routing.jsonc`.
    ```bash
-   asd debate --topic "아키텍처 검증" --proposal "..." --harnesses "opencode,codex,claude-code" --diff
+   asd debate --topic "Architecture verification" --proposal "..." --harnesses "opencode,codex,claude-code" --diff
    ```
-2. **`routing.jsonc` 역할 기반 배정 (`--roles`)**:
-   - `routing.jsonc`의 `agents`에 정의된 역할(`critic`, `architect`, `planner`, `worker`, `scout`)을 골라 배정합니다.
+2. **Role-Based Assignment from `routing.jsonc` (`--roles`)**:
+   - Assign specific roles (`critic`, `architect`, `planner`, `worker`, `scout`) defined under `agents` in `routing.jsonc`.
    ```bash
-   asd debate --topic "보안 및 설계 검토" --proposal "..." --roles "critic,architect,planner" --diff
+   asd debate --topic "Security and design review" --proposal "..." --roles "critic,architect,planner" --diff
    ```
-3. **참여 에이전트 수 지정 (`--count`) 또는 모델 직접 지정 (`--models`)**:
+3. **Specify Participant Count (`--count`) or Explicit Models (`--models`)**:
    ```bash
-   # routing.jsonc에서 3개 역할을 다양성 우선으로 자동 선발
-   asd debate --topic "설계 검토" --proposal "..." --count 3
+   # Auto-select 3 roles from routing.jsonc prioritizing model-family diversity
+   asd debate --topic "Design review" --proposal "..." --count 3
 
-   # 역할@하네스:모델 직접 지정
-   asd debate --topic "설계 검토" --proposal "..." --models "critic@opencode:nvidia/z-ai/glm-5.3-flash,architect@codex:gpt-6.1-sol"
+   # Explicitly specify role@harness:model
+   asd debate --topic "Design review" --proposal "..." --models "critic@opencode:nvidia/z-ai/glm-5.3-flash,architect@codex:gpt-6.1-sol"
    ```
 
 ---
 
-## 6. 설정 변경 후 적용 및 확인 명령어
+## 6. Commands to Apply and Verify Configuration Changes
 
-1. **전역 하네스 및 스탠드얼론 런타임 동기화**:
+1. **Synchronize Global Harnesses and Standalone Runtime**:
    ```bash
    asd sync --force
    ```
-2. **현재 상태 및 진단 확인**:
+2. **Check Current Status and Diagnostics**:
    ```bash
    asd doctor
    ```
-3. **웹 대시보드(`asd ui`)에서 시각적으로 확인/편집**:
+3. **Visually Inspect and Edit in the Web Dashboard (`asd ui`)**:
    ```bash
    asd ui
    ```
-   - 브라우저에서 **라우팅 편집** 버튼을 눌러 프로젝트별 `.asd/routing.jsonc`를 저장하거나, 서브에이전트 Inspector에서 **폴백 실행(`fallback`)** / **선택 실행(`custom`)**을 테스트할 수 있습니다.
+   - Click **Edit Routing** in the browser to save a project-specific `.asd/routing.jsonc`, or test **Fallback Execution (`fallback`)** / **Custom Execution (`custom`)** in the Subagent Inspector.
