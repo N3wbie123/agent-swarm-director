@@ -1,112 +1,72 @@
 ---
 name: asd
-description: Universal end-to-end multi-agent autonomous workflow for ASD v2.7.0. Plans, executes across waves, displays live progress boards, and generates final summary across 5 harnesses (Claude Code, OpenCode, Codex CLI, Antigravity, Cursor).
+description: ASD v2.7.0 universal autonomous workflow orchestrator supporting DIRECT, LIGHT, and HEAVY tracks across 5 harnesses.
 ---
 
-# ASD v2.7.0 — Universal Autonomous Workflow (`/asd`)
+> **Protected `.asd/` Directory & Official CLI-Only Rule**: NEVER directly create, edit, or overwrite files inside `.asd/` (enforced by `PreToolUse` hook). ALWAYS use official `asd` CLI commands (`asd plan|dispatch|verify|debate|handoff|status|clean`), and **IMMEDIATELY HALT** if no official CLI command exists.
 
-You are the **Director** orchestrating an end-to-end multi-agent software engineering workflow across **Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, and **Cursor CLI**.
-
-> [!IMPORTANT]
-> **Protected `.asd/` Directory & Official CLI-Only Rule**
-> - **NEVER** directly create, edit, or overwrite any file inside `.asd/` (such as `.asd/PLAN.md`, `.asd/core.db`, `.asd/sessions/**`, `.asd/handoff.md`) using file-editing tools (`edit_file`, `write_file`, `Edit`, `Write`, or shell redirection `>` / `>>`). The `.asd/` directory is strictly protected by the `PreToolUse` security hook.
-> - For ANY ASD state or `.asd/` operation, **ALWAYS** use the official `asd` CLI commands (`asd plan create|update|sync_from_md|get`, `asd dispatch`, `asd verify`, `asd debate`, `asd handoff`, `asd status`, `asd clean`) or official ASD MCP tools.
-> - If an operation on `.asd/` has **no corresponding official `asd` CLI command or MCP tool**, **IMMEDIATELY HALT** execution and explain the situation to the user rather than attempting direct file manipulation or workarounds.
-
-> **Response Language Policy**
-> - Respond, explain plans/verdicts, ask confirmation questions, and summarize `progressBoard` or tool output naturally in the **user's language** (translating English runtime labels when helpful for non-English users), while preserving exact CLI commands, flags, file paths, task IDs, and structured JSON keys.
+**Response Language Policy**: Respond in the user's language while preserving exact CLI commands, flags, file paths, task IDs, and JSON keys.
 
 ## 1. The 5 Core Roles
 
-ASD v2.7.0 defines exactly five specialist subagent roles (`AGENT_ROLES`), synced per harness into `asd-<role>` personas using the harness's highest-priority model from `routing.jsonc`:
+| Role | Responsibility | Default Focus |
+| :--- | :--- | :--- |
+| `planner` | Task decomposition, wave planning, risk triage | Plans & acceptance criteria |
+| `architect` | System design, API/schema contracts, boundaries | Architecture & cross-module invariants |
+| `worker` | Scoped implementation, bug fixes, refactoring, tests | Idiomatic code & `targetFiles` compliance |
+| `scout` | Read-only codebase/docs exploration & symbol tracing | Fast, zero-mutation context gathering |
+| `critic` | Post-edit review, edge-case & regression auditing | Verification & failure root-cause critique |
 
-| Role | Responsibility |
-| :--- | :--- |
-| `planner` | Task decomposition, requirements analysis, plan authoring |
-| `architect` | Interfaces, system boundaries, arbitration, escalation design |
-| `worker` | Scoped implementation within `allowedFiles`, minimal diffs, tests |
-| `scout` | Read-only codebase exploration and reference gathering |
-| `critic` | Hostile adversarial review, blind-spot and security analysis |
+## 2. 3-Track Mode Classification
 
-> Legacy roles (`builder`, `analyst`, `verifier`) were removed in v2.3: `builder`/`analyst` work is absorbed by `worker`/`planner`, and verification is a CLI gate (`asd verify`), not a role.
-
-## 2. Mode Classification Criteria (`LIGHT` vs `HEAVY`)
-
-- **`LIGHT` (Single-Harness Internal Subagent Delegation)**: focused scope (1–3 files or one module), low merge risk, no worktree isolation needed. Internal `asd-<role>` subagents run on the current harness's synced `routing.jsonc` model. Never spawn external CLIs.
-- **`HEAVY` (Multi-Harness External CLI & Git Worktree Execution)**: independent parallel tasks across disjoint modules, high-risk architecture/security changes, or blind cross-harness debate. Tasks run in isolated worktrees (`.asd/wt/<turn>-<taskId>`) via external harness CLIs (`claude`, `opencode`, `codex`, `agy`, `agent`/`cursor-agent`).
+- **`DIRECT`**: 1–3 files, sequential changes executed directly by the main session (zero subagent spawn overhead; optional `asd-scout` for broad read-only search). Gate via `asd verify`.
+- **`LIGHT`**: Single-harness internal `asd-<role>` subagents on synced `routing.jsonc` models (no external CLI spawns, no worktrees). Same-turn multiple `worker` tasks MUST run sequentially or have strictly disjoint `targetFiles`.
+- **`HEAVY`**: Multi-harness external CLI/ACP + isolated git worktrees (`.asd/wt/<turn>-<taskId>`) for parallel disjoint subsystems or cross-model blind debate.
 
 ## 3. Execution Protocol
 
-1. **Step 1: Context & Codebase Discovery (Internal Delegation)**
-   - Inspect the repository structure and existing `.asd/PLAN.md`.
-   - Delegate non-trivial read-only exploration to `asd-scout` via your harness's native subagent tool (`task` with `subagent_type: "asd-scout"` in OpenCode, `Agent`/`Task` in Claude Code, `invoke_subagent(TypeName="asd-scout", Model="flash_lite")` in Antigravity — **never pass `Model: "inherit"`**).
-   - If the user request is ambiguous, ask brief, targeted clarifying questions before planning.
+### Step 1: Discovery
+Inspect the repository and `.asd/PLAN.md` (via `asd status` or `asd plan get`). Delegate broad read-only exploration to `asd-scout`:
+<!-- @harness:opencode -->- Invoke `task` with `subagent_type: "asd-scout"`.<!-- @end -->
+<!-- @harness:claude-code -->- Invoke `Agent` / `Task` with `subagent_type: "asd-scout"`.<!-- @end -->
+<!-- @harness:antigravity -->- Call `invoke_subagent(TypeName="asd-scout", Model="{{LIGHT_SCOUT_MODEL}}")` (never `"inherit"`).<!-- @end -->
+<!-- @harness:codex -->- Delegate read-only exploration to the `asd-scout` subagent or run targeted local search.<!-- @end -->
+<!-- @harness:cursor -->- Delegate read-only exploration to the `asd-scout` subagent or run targeted local search.<!-- @end -->
 
-2. **Step 2: Generate Plan (`asd plan`) & Recommend Mode**
-   - Decompose the goal into tasks with:
-     - `taskId` (e.g., `T1.1`; `id: "T-1"` also accepted), `title`, `turn` (wave >= 1)
-     - `role` — one of the 5 core roles (`planner`, `architect`, `worker`, `scout`, `critic`)
-     - **Required routing classification** (`category` and `difficulty` — never omit them; `HEAVY` mode resolves `routing.jsonc` models directly from these fields):
-       - `category` (`visual-ui` | `design` | `research` | `writing` | `general`):
-         - `visual-ui`: Web/Desktop GUI, TUI, HTML/CSS/layout, UI components, styling, or interactive views
-         - `design`: architecture/interface/API contracts, state/UX structure design
-         - `research`: external/codebase investigation, comparative evaluation, trade-off analysis
-         - `writing`: documentation, guides, patch notes, skill/prompt authoring
-         - `general`: pure backend logic, CLI/runtime plumbing, refactoring, tests, infra (routed by `difficulty`)
-       - `difficulty` (`low` | `medium` | `high`) — selects the Tier 4 model for `general` tasks
-       - **Routing Tier & UI Separation Rule**: Domain categories (`visual-ui`, `design`, `research`, `writing`) trigger Tier 3 routing **only when `role: "worker"`** (specialist roles `architect`/`planner`/`scout`/`critic` always override `category` via Tier 2). Never lump UI/TUI/frontend work into a `general` backend task — split UI work into its own `role: "worker", category: "visual-ui"` task so `routing.jsonc` selects the dedicated UI model.
-     - optional `dependsOn`, `contextHint`, `acceptance`
-     - `track` (`"LIGHT"` or `"HEAVY"`), `targetFiles` (strict boundaries; `allowedFiles` accepted), `verifyCmd` (automated test command; `verificationCmd` accepted)
-     - **Test File Permission & Scoped Verification Rule**: When a task modifies constants, types, or behavior covered by existing tests, always include the relevant test files (`tests/*.test.ts`) in `targetFiles` (or allow test file updates) so the subagent can update test assertions in the same turn, and scope `verifyCmd` to the relevant test file (or non-code verification command for docs/skills tasks) so unrelated tests do not cause false-negative rollbacks.
-   - Persist to the SQLite SSOT and `.asd/PLAN.md`:
-     ```bash
-     # Cross-platform payload file (Windows PowerShell/cmd, macOS, Linux):
-     asd plan create --file <path.json>
+### Step 2: Plan
+Run `asd plan schema` for the full schema. Create or update the plan via `asd plan create --file <path.json>` or stdin (`--file -`):
+```bash
+asd plan create --file - <<'EOF'
+{"goal":"<goal>","turns":[{"turn":1,"tasks":[{"id":"T1.1","role":"worker","category":"general","targetFiles":["src/app.ts","tests/app.test.ts"],"prompt":"..."}]}]}
+EOF
+```
+Note: Domain `category` applies to `role: "worker"` (specialist roles take Tier 2 precedence); always include relevant test files in `targetFiles`.
 
-     # Or via stdin payload (POSIX bash / PowerShell):
-     asd plan create --payload - <<'EOF'
-     {"tasks":[{"taskId":"T1.1","turn":1,"title":"<Task>","track":"HEAVY","role":"worker","category":"visual-ui","difficulty":"medium","targetFiles":["src/...","tests/..."],"verifyCmd":"npm test"}]}
-     EOF
-     # PowerShell: Get-Content plan.json -Raw | asd plan create --payload -
-     ```
-     *(Or via CLI flags: `asd plan --title "<Goal>" --tasks '<JSON_ARRAY>'`)*
-   - Render the initial `progressBoard`.
+### Step 3: User Confirmation Gate
+Present the plan summary, recommend `DIRECT`, `LIGHT`, or `HEAVY` (plus optional `/asd-debate` for high-risk decisions), and wait for explicit user confirmation.
 
-3. **Step 3: User Confirmation Gate (Mandatory Mode Selection & AI Recommendation)**
-   - Present the plan and your mode recommendation (`LIGHT (Recommended)` or `HEAVY (Recommended)`) with a 1–2 sentence rationale.
-   - Ask the user to confirm: (1) optional adversarial debate first (`/asd-debate` or skip), and (2) execution mode (`LIGHT` vs `HEAVY`).
-   - **Wait for explicit confirmation before Step 4.**
+### Step 4: Wave Execution Loop
+- **`DIRECT`**: Claim via `asd dispatch --turn <N> --mode claim_only` or execute directly within `targetFiles`, then gate with `asd verify --turn <N>`.
+- **`LIGHT`**: Strictly forbid external CLI spawns. Run `asd dispatch --turn <N> --mode claim_only`, enforce sequential execution or strictly disjoint `targetFiles` across concurrent `worker` tasks, invoke internal `asd-<role>` subagents, and gate with `asd verify --turn <N>`:
+<!-- @harness:opencode -->  - Invoke `task` with `subagent_type: "asd-<role>"`.<!-- @end -->
+<!-- @harness:claude-code -->  - Invoke `Agent` / `Task` with `subagent_type: "asd-<role>"`.<!-- @end -->
+<!-- @harness:antigravity -->  - Call `invoke_subagent(TypeName="asd-<role>", Model="<model>")` using synced models: `{{LIGHT_SCOUT_MODEL}}`, `{{LIGHT_WORKER_MODEL}}`, `{{LIGHT_PLANNER_MODEL}}`, `{{LIGHT_ARCHITECT_MODEL}}`, `{{LIGHT_CRITIC_MODEL}}` (never `"inherit"`).<!-- @end -->
+<!-- @harness:codex -->  - Spawn internal `asd-<role>` subagent on its synced `routing.jsonc` model.<!-- @end -->
+<!-- @harness:cursor -->  - Spawn internal `asd-<role>` subagent on its synced `routing.jsonc` model.<!-- @end -->
+- **`HEAVY`**: Dispatch isolated worktree workers and gate with `asd verify --turn <N>`:
+<!-- @harness:opencode -->  - MUST pass `--async`: `asd dispatch --turn <N> --mode parallel_spawn --async` (`asd-guard.js` auto-notifies on completion).<!-- @end -->
+<!-- @harness:claude-code -->  - Run `asd dispatch --turn <N> --mode parallel_spawn`.<!-- @end -->
+<!-- @harness:antigravity -->  - Run `asd dispatch --turn <N> --mode parallel_spawn`.<!-- @end -->
+<!-- @harness:codex -->  - Run `asd dispatch --turn <N> --mode parallel_spawn`.<!-- @end -->
+<!-- @harness:cursor -->  - Run `asd dispatch --turn <N> --mode parallel_spawn`.<!-- @end -->
+- **3-Strike Verification Failure Escalation**:
+  - **Strike 1**: In-place fix within `targetFiles` and re-run `asd verify`.
+  - **Strike 2**: Raise `thinkingEffort` or invoke `asd-critic` for root-cause critique, fix, and re-verify.
+  - **Strike 3**: Escalate to `HEAVY` `asd debate` or halt with a structured failure summary.
 
-4. **Step 4: Wave Execution Loop (Turn 1..N)**
-   - **`LIGHT` Confirmed (Internal Subagent Delegation — NO External CLI Spawning)**:
-     - **STRICT PROHIBITION**: Do **NOT** run `asd dispatch --mode parallel_spawn`, do **NOT** run `asd debate` via CLI, and do **NOT** spawn external `opencode run`, `claude -p`, `codex exec`, `agy`, or `cursor-agent` processes via Bash.
-     - Ensure `track: "LIGHT"` in `.asd/PLAN.md`, then claim ownership:
-       ```bash
-       asd dispatch --turn <N> --mode claim_only
-       ```
-     - Delegate each task via the **current harness's native subagent tool** (`task(subagent_type="asd-<role>")` in OpenCode, `Agent`/`Task` in Claude Code, `invoke_subagent(TypeName="asd-<role>", Model="flash"|"flash_lite"|"pro")` in Antigravity according to `lightSubagents.antigravity` — `scout`=`"flash_lite"`, `worker`/`planner`=`"flash"`, `architect`/`critic`=`"pro"`, **never `"inherit"`**; Codex CLI and Cursor CLI: use native subagent support or execute directly within `allowedFiles` — Cursor personas are synced to `~/.cursor/agents/asd-<role>.md`).
-     - After each task, gate verification: `asd verify --task <T-ID> --cmd "<verifyCmd>"` (or cross-platform: `asd verify --file <path.json>`).
-   - **`HEAVY` Confirmed (Multi-Harness External CLI/ACP & Worktree Spawn)**:
-     - **OpenCode Non-Blocking Rule**: Because OpenCode lacks background shell tasks and freezes its main session while a synchronous Bash command runs, in **OpenCode** you **MUST** pass `--async` so dispatch returns immediately (<100ms) while `asd-guard.js` automatically injects the wave completion report via `client.session.prompt` once done:
-       ```bash
-       # OpenCode (non-blocking detached wave):
-       asd dispatch --turn <N> --mode parallel_spawn --async
-       # (Optional manual check/block if needed: asd status | asd wait)
-       ```
-     - **Other Harnesses (or synchronous execution)**:
-       ```bash
-       asd dispatch --turn <N> --mode parallel_spawn
-       asd verify --task <T-ID> --cmd "<verifyCmd>"
-       # Optional transport override: --transport <auto|acp|cli> (default: auto = ACP primary + streaming CLI fallback)
-       # Or cross-platform payload: asd verify --file <path.json>
-       ```
-   - Render the updated `progressBoard` after every wave.
+### Step 5: Cross-Scope Requests
+- **`autoCreatedTasks`**: Max 2 per task, scheduled for the next turn; enforce `targetFiles` boundaries.
+- **`deferredCrossScopeRequests`**: Do not edit out-of-scope files; record and surface them to the user.
 
-5. **Step 5: Cross-Scope Requests (autoCreatedTasks & deferredCrossScopeRequests)**
-   - Subagents may emit an `asd-report` JSON block requesting edits to files outside their `allowedFiles`.
-   - At `dispatch`/`verify`, ASD processes these requests:
-     - **Auto-accepted (max 2 per subagent task)**: eligible requests (non-protected target, cross-scope chain depth <= 2) are auto-created as `[Cross-Scope ...]` tasks scheduled into the **next turn**, with the requesting task's changed files bundled as `dependsOn` dependencies. They appear in the dispatch/verify output as `autoCreatedTasks` — include them in the next wave.
-     - **Deferred (`deferredCrossScopeRequests`)**: requests beyond the max-2 quota, targeting protected paths (`.git/`, `.asd/`, `.env*`, `*.pem`, `*.key`), or exceeding chain depth are deferred to the Main Director for review, each with a `deferReason`. Never silently drop them — surface them to the user and either schedule them manually or record them as pending work.
-
-6. **Step 6: Final Summary**
-   - Output the final `progressBoard` (including any auto-created cross-scope tasks), list all verified tasks and modified files, summarize verification results, and report any deferred cross-scope requests.
+### Step 6: Final Summary
+Present the final `progressBoard`, verified tasks and files, verification/telemetry summary, and any `deferredCrossScopeRequests`.
