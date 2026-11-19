@@ -595,6 +595,12 @@ function renderDashboardHtml(
         colFallbacks: "2순위+ Fallback 체인 (harness:model, 쉼표 구분)",
         savedAlert: "프로젝트 라우팅(.asd/routing.jsonc)이 저장되었습니다.",
         resetAlert: "프로젝트 로컬 라우팅을 삭제하고 글로벌 기본값으로 복원했습니다.",
+        saveFailedPrefix: "라우팅 저장 실패: ",
+        resetFailedPrefix: "라우팅 초기화 실패: ",
+        csrfExpiredHint: "대시보드 서버가 재시작되어 세션 토큰이 만료되었습니다. 페이지를 새로고침(F5)한 뒤 다시 시도하세요.",
+        serverUnreachable: "대시보드 서버(asd ui)에 연결할 수 없습니다. 서버가 실행 중인지 확인하세요.",
+        stateNotLoaded: "상태를 아직 불러오지 못했습니다. 서버 연결을 확인하세요.",
+        pollErrorPrefix: "연결 오류: ",
         updatedPrefix: "최근 갱신: ",
         sessionsSectionTitle: "세션 목록 (클릭하여 상세 보기 · 메모 관리)",
         noSessions: "기록된 세션이 없습니다.",
@@ -666,6 +672,12 @@ function renderDashboardHtml(
         colFallbacks: "2nd+ Fallbacks (harness:model, comma-separated)",
         savedAlert: "Saved project routing config to .asd/routing.jsonc.",
         resetAlert: "Removed local override and restored global routing config.",
+        saveFailedPrefix: "Failed to save routing: ",
+        resetFailedPrefix: "Failed to reset routing: ",
+        csrfExpiredHint: "Dashboard server was restarted and the session token expired. Reload the page (F5) and try again.",
+        serverUnreachable: "Cannot reach the dashboard server (asd ui). Check if the server is running.",
+        stateNotLoaded: "State has not loaded yet. Check server connection.",
+        pollErrorPrefix: "Connection error: ",
         updatedPrefix: "Updated: ",
         sessionsSectionTitle: "Sessions (Click to inspect · Manage memos)",
         noSessions: "No sessions recorded.",
@@ -724,6 +736,7 @@ function renderDashboardHtml(
     let editingMemoSessionId = null;
     let editingMemoDraft = "";
     let routingEditorOpen = false;
+    let routingEditorRendered = false;
     let modelsModalOpen = false;
     let refreshingModels = false;
     let customHarnessPick = "opencode";
@@ -990,6 +1003,8 @@ function renderDashboardHtml(
       card.style.display = routingEditorOpen ? "block" : "none";
       if (routingEditorOpen && latestState) {
         renderRoutingEditor(latestState);
+      } else {
+        routingEditorRendered = false;
       }
     }
 
@@ -1072,13 +1087,37 @@ function renderDashboardHtml(
           <tbody>\${renderRoutingRows("categories", cfg.categories)}</tbody>
         </table>
       \`;
+      routingEditorRendered = true;
+    }
+
+    async function readHttpErrorDetail(res, t) {
+      let msg = "";
+      try {
+        const text = await res.text();
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && typeof parsed.error === "string") msg = parsed.error;
+        } catch {
+          msg = text.trim();
+        }
+      } catch {}
+      if (res.status === 403 && /csrf/i.test(msg)) {
+        return t.csrfExpiredHint;
+      }
+      return msg || ("HTTP " + res.status);
     }
 
     async function saveRouting() {
-      if (!latestState || !latestState.routingConfig) return;
       const t = I18N[currentLang];
+      if (!latestState || !latestState.routingConfig) {
+        window.alert(t.saveFailedPrefix + t.stateNotLoaded);
+        return;
+      }
       const nextCfg = {
         _asdVersion: latestState.routingConfig._asdVersion || "${ASD_VERSION}",
+        ...(latestState.routingConfig.lightSubagents
+          ? { lightSubagents: latestState.routingConfig.lightSubagents }
+          : {}),
         agents: {},
         categories: {}
       };
@@ -1116,35 +1155,57 @@ function renderDashboardHtml(
         else nextCfg.categories[key] = entry;
       });
 
-      const res = await fetch("/api/routing", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-ASD-CSRF-Token": ASD_CSRF_TOKEN
-        },
-        body: JSON.stringify({ action: "save", routingConfig: nextCfg })
-      });
-      if (res.ok) {
-        await poll();
-        renderRoutingEditor(latestState);
-        window.alert(t.savedAlert);
+      const saveBtn = document.getElementById("btnSaveRouting");
+      if (saveBtn) saveBtn.disabled = true;
+      try {
+        const res = await fetch("/api/routing", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-ASD-CSRF-Token": ASD_CSRF_TOKEN
+          },
+          body: JSON.stringify({ action: "save", routingConfig: nextCfg })
+        });
+        if (res.ok) {
+          await poll();
+          renderRoutingEditor(latestState);
+          window.alert(t.savedAlert);
+        } else {
+          const detail = await readHttpErrorDetail(res, t);
+          window.alert(t.saveFailedPrefix + detail);
+        }
+      } catch {
+        window.alert(t.saveFailedPrefix + t.serverUnreachable);
+      } finally {
+        if (saveBtn) saveBtn.disabled = false;
       }
     }
 
     async function resetRouting() {
       const t = I18N[currentLang];
-      const res = await fetch("/api/routing", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-ASD-CSRF-Token": ASD_CSRF_TOKEN
-        },
-        body: JSON.stringify({ action: "reset" })
-      });
-      if (res.ok) {
-        await poll();
-        renderRoutingEditor(latestState);
-        window.alert(t.resetAlert);
+      const resetBtn = document.getElementById("btnResetRouting");
+      if (resetBtn) resetBtn.disabled = true;
+      try {
+        const res = await fetch("/api/routing", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-ASD-CSRF-Token": ASD_CSRF_TOKEN
+          },
+          body: JSON.stringify({ action: "reset" })
+        });
+        if (res.ok) {
+          await poll();
+          renderRoutingEditor(latestState);
+          window.alert(t.resetAlert);
+        } else {
+          const detail = await readHttpErrorDetail(res, t);
+          window.alert(t.resetFailedPrefix + detail);
+        }
+      } catch {
+        window.alert(t.resetFailedPrefix + t.serverUnreachable);
+      } finally {
+        if (resetBtn) resetBtn.disabled = false;
       }
     }
 
@@ -1339,10 +1400,15 @@ function renderDashboardHtml(
       if (data.availableModels) {
         availableModelsByHarness = data.availableModels;
       }
+      if (routingEditorOpen && !routingEditorRendered && data.routingConfig) {
+        renderRoutingEditor(data);
+      }
       const t = I18N[currentLang];
 
       document.getElementById("projPath").textContent = data.projectRoot;
-      document.getElementById("lastUpdated").textContent =
+      const lastUpdatedEl = document.getElementById("lastUpdated");
+      lastUpdatedEl.style.color = "";
+      lastUpdatedEl.textContent =
         t.updatedPrefix + new Date(data.timestamp).toLocaleTimeString(currentLang === "ko" ? "ko-KR" : "en-US");
 
       const sessions = data.sessions || (data.session ? [data.session] : []);
@@ -1630,10 +1696,23 @@ function renderDashboardHtml(
 
     updateLangButtons();
     async function poll() {
+      const t = I18N[currentLang];
+      const lastUpdatedEl = document.getElementById("lastUpdated");
       try {
         const res = await fetch("/api/state");
-        if (res.ok) render(await res.json());
-      } catch {}
+        if (res.ok) {
+          render(await res.json());
+        } else if (lastUpdatedEl) {
+          const detail = await readHttpErrorDetail(res, t);
+          lastUpdatedEl.style.color = "var(--err)";
+          lastUpdatedEl.textContent = t.pollErrorPrefix + detail;
+        }
+      } catch {
+        if (lastUpdatedEl) {
+          lastUpdatedEl.style.color = "var(--err)";
+          lastUpdatedEl.textContent = t.pollErrorPrefix + t.serverUnreachable;
+        }
+      }
     }
     poll();
     setInterval(poll, 2000);

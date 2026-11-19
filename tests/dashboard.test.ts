@@ -381,3 +381,113 @@ test("Dashboard HTML & Security: closes #modelsModalBackdrop, escapes XSS entiti
     fs.rmSync(projDir, { recursive: true, force: true });
   }
 });
+
+test("Dashboard Routing Save: preserves lightSubagents, surfaces save/reset/poll errors, and auto-renders editor on delayed state load", async () => {
+  const homeDir = makeTempDir("asd-ui-rt-home-");
+  const projDir = makeTempDir("asd-ui-rt-proj-");
+  const handle = await startDashboardServer({
+    port: 0,
+    projectRoot: projDir,
+    homeDir,
+  });
+  try {
+    const html = await (await fetch(handle.url)).text();
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch?.[1], "Inline <script> block must exist");
+    const script = scriptMatch[1]!;
+
+    // Verify client JS syntax & fixes for issues 1-3
+    assert.doesNotThrow(() => new Function(script), "Updated inline <script> must parse cleanly");
+    assert.ok(
+      script.includes("lightSubagents: latestState.routingConfig.lightSubagents"),
+      "saveRouting() must preserve lightSubagents when constructing nextCfg"
+    );
+    assert.ok(
+      script.includes("t.saveFailedPrefix") && script.includes("t.resetFailedPrefix"),
+      "saveRouting() and resetRouting() must alert on HTTP/network failure"
+    );
+    assert.ok(
+      script.includes("t.csrfExpiredHint") && script.includes("t.serverUnreachable"),
+      "Client error handler must provide clear CSRF expiry and unreachable-server messages"
+    );
+    assert.ok(
+      script.includes("t.pollErrorPrefix"),
+      "poll() must surface HTTP/network errors in #lastUpdated instead of silently swallowing them"
+    );
+    assert.ok(
+      script.includes("routingEditorOpen && !routingEditorRendered && data.routingConfig"),
+      "render() must auto-render routing editor if opened before initial poll completed"
+    );
+
+    // End-to-end save round-trip: lightSubagents must survive POST /api/routing -> GET /api/state
+    const initialState = (await (await fetch(`${handle.url}/api/state`)).json()) as {
+      hasLocalRouting: boolean;
+      routingConfig: {
+        _asdVersion?: string;
+        lightSubagents?: Record<string, unknown>;
+        agents: Record<string, { harness: string; model: string; modelFamily: string; fallbacks: unknown[] }>;
+        categories: Record<string, { harness: string; model: string; modelFamily: string; fallbacks: unknown[] }>;
+      };
+    };
+    const originalLightKeys = Object.keys(initialState.routingConfig.lightSubagents ?? {});
+    assert.ok(originalLightKeys.length > 0, "Default routing config should contain lightSubagents");
+
+    const payloadCfg = {
+      _asdVersion: initialState.routingConfig._asdVersion,
+      lightSubagents: initialState.routingConfig.lightSubagents,
+      agents: {
+        ...initialState.routingConfig.agents,
+        worker: {
+          ...initialState.routingConfig.agents.worker!,
+          model: "claude-sonnet-5-5-custom-test",
+        },
+      },
+      categories: initialState.routingConfig.categories,
+    };
+
+    const saveRes = await rawHttpRequest({
+      port: handle.port,
+      method: "POST",
+      path: "/api/routing",
+      headers: {
+        Host: `127.0.0.1:${handle.port}`,
+        Origin: handle.url,
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+        "X-ASD-CSRF-Token": handle.csrfToken,
+      },
+      body: JSON.stringify({ action: "save", routingConfig: payloadCfg }),
+    });
+    assert.equal(saveRes.statusCode, 200);
+
+    const savedState = (await (await fetch(`${handle.url}/api/state`)).json()) as typeof initialState;
+    assert.equal(savedState.hasLocalRouting, true);
+    assert.equal(savedState.routingConfig.agents.worker?.model, "claude-sonnet-5-5-custom-test");
+    assert.deepEqual(
+      Object.keys(savedState.routingConfig.lightSubagents ?? {}),
+      originalLightKeys,
+      "Saved project .asd/routing.jsonc must preserve all lightSubagents entries"
+    );
+
+    // Stale CSRF token returns 403 with 'CSRF' in error message so client triggers csrfExpiredHint
+    const staleCsrfRes = await rawHttpRequest({
+      port: handle.port,
+      method: "POST",
+      path: "/api/routing",
+      headers: {
+        Host: `127.0.0.1:${handle.port}`,
+        Origin: handle.url,
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+        "X-ASD-CSRF-Token": "0".repeat(handle.csrfToken.length),
+      },
+      body: JSON.stringify({ action: "save", routingConfig: payloadCfg }),
+    });
+    assert.equal(staleCsrfRes.statusCode, 403);
+    assert.match(staleCsrfRes.body, /csrf/i);
+  } finally {
+    await handle.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+    fs.rmSync(projDir, { recursive: true, force: true });
+  }
+});
