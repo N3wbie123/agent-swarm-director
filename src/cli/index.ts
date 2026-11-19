@@ -1037,6 +1037,83 @@ Options:
 }
 
 // ============================================================================
+// Terminal ANSI Formatting Helpers
+// ============================================================================
+
+const ANSI_RESET = "\x1b[0m";
+const ANSI_YELLOW = "\x1b[33m";
+const ANSI_BOLD_YELLOW = "\x1b[1;33m";
+const ANSI_BOLD_BRIGHT_CYAN = "\x1b[1;96m";
+
+export function shouldUseTerminalColor(options?: {
+  env?: NodeJS.ProcessEnv;
+  isTTY?: boolean;
+}): boolean {
+  const env = options?.env ?? process.env;
+  if (env.NO_COLOR !== undefined && env.NO_COLOR !== "") return false;
+  if (env.FORCE_COLOR !== undefined) {
+    return env.FORCE_COLOR !== "0" && env.FORCE_COLOR.toLowerCase() !== "false";
+  }
+  if ((env.TERM ?? "").toLowerCase() === "dumb") return false;
+  return Boolean(options?.isTTY ?? process.stdout.isTTY);
+}
+
+function formatAcpBridgeHintLine(hint: string, useColor: boolean): string {
+  if (!useColor) return `  - ${hint}`;
+  const cmdMatch = /\b(npm\s+(?:install|i)\s+-g\s+.+)$/.exec(hint);
+  const cmdPart = cmdMatch ? cmdMatch[1]! : "";
+  const bodyPart = cmdMatch ? hint.slice(0, cmdMatch.index) : hint;
+
+  const labelMatch = /^([^:]+:)\s*(.*)$/.exec(bodyPart);
+  let formattedBody: string;
+  if (labelMatch) {
+    const label = `${ANSI_BOLD_YELLOW}${labelMatch[1]!}${ANSI_RESET}`;
+    const rest = labelMatch[2]!;
+    formattedBody = rest
+      ? `${label} ${ANSI_YELLOW}${rest}${ANSI_RESET}`
+      : `${label}${bodyPart.endsWith(" ") ? " " : ""}`;
+  } else {
+    formattedBody = bodyPart ? `${ANSI_YELLOW}${bodyPart}${ANSI_RESET}` : "";
+  }
+
+  const formattedCmd = cmdPart
+    ? `${ANSI_BOLD_BRIGHT_CYAN}${cmdPart}${ANSI_RESET}`
+    : "";
+  return `  ${ANSI_YELLOW}-${ANSI_RESET} ${formattedBody}${formattedCmd}`;
+}
+
+export function formatAcpBridgeGuidance(
+  hints: string[],
+  options?: {
+    useColor?: boolean;
+    leadingNewline?: boolean;
+    env?: NodeJS.ProcessEnv;
+    isTTY?: boolean;
+  }
+): string {
+  if (!hints || hints.length === 0) return "";
+  const useColor =
+    options?.useColor ??
+    shouldUseTerminalColor({ env: options?.env, isTTY: options?.isTTY });
+  const header = useColor
+    ? `${ANSI_BOLD_YELLOW}ACP Bridge Setup Guidance (optional):${ANSI_RESET}`
+    : "ACP Bridge Setup Guidance (optional):";
+  const lines = [
+    header,
+    ...hints.map((hint) => formatAcpBridgeHintLine(hint, useColor)),
+  ];
+  return `${options?.leadingNewline ? "\n" : ""}${lines.join("\n")}`;
+}
+
+function printAcpBridgeGuidance(
+  hints: string[] | undefined,
+  options?: { leadingNewline?: boolean }
+): void {
+  if (!hints || hints.length === 0) return;
+  console.log(formatAcpBridgeGuidance(hints, options));
+}
+
+// ============================================================================
 // Main CLI Router
 // ============================================================================
 
@@ -1180,12 +1257,7 @@ export async function main(
                 `  Tip: Run 'asd sync --refresh-models' to automatically remap missing models in routing.jsonc.`
               );
             }
-            if (res.acpBridgeHints && res.acpBridgeHints.length > 0) {
-              console.log(`ACP Bridge Setup Guidance (optional):`);
-              for (const hint of res.acpBridgeHints) {
-                console.log(`  - ${hint}`);
-              }
-            }
+            printAcpBridgeGuidance(res.acpBridgeHints);
             await printUpdateBannerIfAvailable();
           }
           return 0;
@@ -1442,12 +1514,16 @@ export async function main(
           );
           console.log(`Policy Probe: ${res.policyProbe.ok ? "OK" : "FAIL"}`);
           console.log("Harness CLI Availability:");
+          const useDoctorColor = shouldUseTerminalColor();
           for (const [h, info] of Object.entries(res.harnesses)) {
+            const rawMissingAcp = info.acp
+              ? `[ACP: missing ${info.acp.command} -> CLI stream fallback]`
+              : "";
             const acpSuffix = info.acp
               ? info.acp.supported
                 ? ` [ACP: ${info.acp.mode} ready]`
                 : info.installed
-                  ? ` [ACP: missing ${info.acp.command} -> CLI stream fallback]`
+                  ? ` ${useDoctorColor ? `${ANSI_YELLOW}${rawMissingAcp}${ANSI_RESET}` : rawMissingAcp}`
                   : ""
               : "";
             const detail = info.installed
@@ -1455,12 +1531,7 @@ export async function main(
               : "Not found";
             console.log(`  - ${h}: ${detail}`);
           }
-          if (res.acpBridgeHints && res.acpBridgeHints.length > 0) {
-            console.log("ACP Bridge Setup Guidance (optional):");
-            for (const hint of res.acpBridgeHints) {
-              console.log(`  - ${hint}`);
-            }
-          }
+          printAcpBridgeGuidance(res.acpBridgeHints);
           console.log(`Duration: ${res.durationMs.toFixed(1)}ms`);
           if (!res.ok) {
             console.error("\nErrors detected:");
@@ -1981,12 +2052,7 @@ export async function main(
                   `- ${r.taskId}: ${r.status} (${tag})${r.error ? ` [Error: ${r.error}]` : ""}`
                 );
               }
-              if (res.acpBridgeHints && res.acpBridgeHints.length > 0) {
-                console.log("\nACP Bridge Setup Guidance (optional):");
-                for (const hint of res.acpBridgeHints) {
-                  console.log(`  - ${hint}`);
-                }
-              }
+              printAcpBridgeGuidance(res.acpBridgeHints, { leadingNewline: true });
             }
             return 0;
           }
@@ -2023,6 +2089,7 @@ export async function main(
                   res.commitSha ? ` | commit: ${res.commitSha}` : ""
                 }${res.error ? `\nReason: ${res.error}` : ""}`
               );
+              printAcpBridgeGuidance(res.acpBridgeHints, { leadingNewline: true });
             }
             return res.verified ? 0 : 1;
           }

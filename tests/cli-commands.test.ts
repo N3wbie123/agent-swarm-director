@@ -12,11 +12,13 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 
 import {
+  formatAcpBridgeGuidance,
   main,
   parseCliArgs,
   runAsdClean,
   runAsdHandoff,
   runAsdMigrate,
+  shouldUseTerminalColor,
 } from "../src/cli/index.ts";
 import { checkForRemoteUpdate, isUpdateCheckDisabled } from "../src/core/config.ts";
 import { openProjectDb } from "../src/core/db.ts";
@@ -475,5 +477,41 @@ describe("CLI Parser, Hook Latency, Clean Safety, Handoff, Migrate & Update Chec
       fs.rmSync(tmpHome, { recursive: true, force: true });
       fs.rmSync(tmpProj, { recursive: true, force: true });
     }
+  });
+
+  test("9. formatAcpBridgeGuidance highlights ACP bridge setup guidance with ANSI colors and respects NO_COLOR/FORCE_COLOR", () => {
+    const hints = [
+      "claude-code: ACP bridge not found (streaming CLI fallback remains active). Optional setup: npm install -g @agentclientprotocol/claude-agent-acp",
+      "codex: ACP bridge not found (streaming CLI fallback remains active). Optional setup: npm install -g @agentclientprotocol/codex-acp",
+      "Install both ACP bridges at once: npm i -g @agentclientprotocol/claude-agent-acp @agentclientprotocol/codex-acp",
+    ];
+
+    assert.equal(shouldUseTerminalColor({ env: { NO_COLOR: "1" }, isTTY: true }), false);
+    assert.equal(shouldUseTerminalColor({ env: { FORCE_COLOR: "1" }, isTTY: false }), true);
+    assert.equal(shouldUseTerminalColor({ env: { FORCE_COLOR: "0" }, isTTY: true }), false);
+    assert.equal(shouldUseTerminalColor({ env: {}, isTTY: true }), true);
+    assert.equal(shouldUseTerminalColor({ env: {}, isTTY: false }), false);
+
+    const colored = formatAcpBridgeGuidance(hints, { useColor: true });
+    const plain = formatAcpBridgeGuidance(hints, { useColor: false });
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+    assert.ok(colored.includes("\x1b[1;33mACP Bridge Setup Guidance (optional):\x1b[0m"));
+    assert.ok(colored.includes("\x1b[1;33mclaude-code:\x1b[0m"));
+    assert.ok(colored.includes("\x1b[1;33mcodex:\x1b[0m"));
+    assert.ok(colored.includes("\x1b[1;33mInstall both ACP bridges at once:\x1b[0m"));
+    assert.ok(colored.includes("\x1b[1;96mnpm install -g @agentclientprotocol/claude-agent-acp\x1b[0m"));
+    assert.ok(colored.includes("\x1b[1;96mnpm install -g @agentclientprotocol/codex-acp\x1b[0m"));
+    assert.ok(
+      colored.includes(
+        "\x1b[1;96mnpm i -g @agentclientprotocol/claude-agent-acp @agentclientprotocol/codex-acp\x1b[0m"
+      )
+    );
+    assert.equal(stripAnsi(colored), plain, "ANSI-colored guidance must preserve exact plain text");
+    assert.equal(plain.includes("\x1b["), false, "Plain mode must not include ANSI escape sequences");
+
+    const withNewline = formatAcpBridgeGuidance(hints, { useColor: true, leadingNewline: true });
+    assert.ok(withNewline.startsWith("\n\x1b[1;33mACP Bridge Setup Guidance (optional):"));
+    assert.equal(formatAcpBridgeGuidance([], { useColor: true }), "");
   });
 });
