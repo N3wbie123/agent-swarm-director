@@ -43,6 +43,8 @@ import {
   runGit,
   ensureGitUserIdentity,
   unlinkNodeModulesJunction,
+  summarizeTestOutput,
+  isInPlaceTrack,
 } from "../src/core/workspace.ts";
 import { SqliteDriver } from "../src/core/db.ts";
 
@@ -1163,5 +1165,95 @@ describe("W4: createTaskWorktree junction creation failure warning", () => {
     const allLog = runGit(["log", "--format=%an|%ae|%cn|%ce|%B"], { cwd: root }).stdout;
     assert.equal(/sisyphus-dev-ai|noreply@anthropic\.com|co-authored-by/i.test(allLog), false, `Expected zero AI attribution in merged history:\n${allLog}`);
     assert.ok(allLog.includes("N3wbie123|85443999+N3wbie123@users.noreply.github.com"));
+  });
+});
+
+// ============================================================================
+// T3.3: summarizeTestOutput & DIRECT Track Support
+// ============================================================================
+
+describe("summarizeTestOutput & oversized test output capping", () => {
+  test("returns short output untouched with truncated=false and optionally persists logPath", () => {
+    const root = makeTmpDir("asd-summarize-short-");
+    const logPath = path.join(root, "logs", "short.log");
+    const raw = "line 1\nline 2\nline 3";
+
+    const res = summarizeTestOutput(raw, { maxLines: 10, maxChars: 1000, logPath });
+    assert.equal(res.truncated, false);
+    assert.equal(res.output, raw);
+    assert.equal(res.logPath, logPath);
+    assert.equal(fs.readFileSync(logPath, "utf8"), raw);
+  });
+
+  test("caps oversized line/char output to tail window and writes full raw output to logPath", () => {
+    const root = makeTmpDir("asd-summarize-long-");
+    const logPath = path.join(root, "logs", "full.log");
+    const rawLines = Array.from({ length: 120 }, (_, i) => `test-line-${i + 1}`);
+    const raw = rawLines.join("\n");
+
+    const res = summarizeTestOutput(raw, { maxLines: 10, maxChars: 200, logPath });
+    assert.equal(res.truncated, true);
+    assert.equal(res.logPath, logPath);
+    assert.ok(res.output.includes(logPath), "Truncated output must include logPath pointer");
+    assert.ok(res.output.includes("test-line-120"), "Tail must retain final line");
+    assert.equal(res.output.includes("test-line-1\n"), false, "Head lines must be omitted");
+    assert.equal(fs.readFileSync(logPath, "utf8"), raw, "Full raw output must be written to logPath");
+  });
+
+  test("verifyAndCommitLightTask and verifyAndMergeHeavyTask cap oversized testOutput with truncation metadata and log pointer", async () => {
+    const root = makeTmpDir("asd-output-cap-");
+    initGitRepo(root);
+    prepareBaseline(root);
+
+    fs.mkdirSync(path.join(root, "src"), { recursive: true });
+    fs.writeFileSync(path.join(root, "src", "fail.ts"), "export const x = 1;\n", "utf8");
+
+    const noisyFailCmd = `node -e "for (let i = 1; i <= 100; i++) console.log('noisy-line-' + i + '-' + 'x'.repeat(60)); process.exit(1);"`;
+
+    // 1. LIGHT / DIRECT in-place failure
+    const lightRes = verifyAndCommitLightTask({
+      projectRoot: root,
+      taskId: "T3.3-L",
+      title: "Noisy light failure",
+      track: "DIRECT",
+      allowedFiles: ["src/fail.ts"],
+      verifyCmd: noisyFailCmd,
+    });
+    assert.equal(lightRes.verified, false);
+    assert.equal(lightRes.testOutputTruncated, true);
+    assert.ok(lightRes.testOutputLogPath && fs.existsSync(lightRes.testOutputLogPath));
+    assert.ok(lightRes.testOutput?.includes("noisy-line-100-"));
+    assert.ok(lightRes.testOutput?.includes(lightRes.testOutputLogPath));
+    assert.ok(fs.readFileSync(lightRes.testOutputLogPath, "utf8").includes("noisy-line-1-"));
+
+    // 2. HEAVY worktree failure
+    const wt = createTaskWorktree(root, 1, "T3.3-H");
+    fs.mkdirSync(path.join(wt.wtPath, "src"), { recursive: true });
+    fs.writeFileSync(path.join(wt.wtPath, "src", "heavy-fail.ts"), "export const y = 2;\n", "utf8");
+
+    const heavyRes = await verifyAndMergeHeavyTask({
+      projectRoot: root,
+      turn: 1,
+      taskId: "T3.3-H",
+      title: "Noisy heavy failure",
+      wtPath: wt.wtPath,
+      branchName: wt.branchName,
+      allowedFiles: ["src/heavy-fail.ts"],
+      verifyCmd: noisyFailCmd,
+    });
+    assert.equal(heavyRes.verified, false);
+    assert.equal(heavyRes.status, "failed");
+    assert.equal(heavyRes.testOutputTruncated, true);
+    assert.ok(heavyRes.testOutputLogPath && fs.existsSync(heavyRes.testOutputLogPath));
+    assert.ok(heavyRes.testOutput?.includes("noisy-line-100-"));
+    assert.ok(heavyRes.testOutput?.includes(heavyRes.testOutputLogPath));
+    assert.ok(fs.readFileSync(heavyRes.testOutputLogPath, "utf8").includes("noisy-line-1-"));
+  });
+
+  test("isInPlaceTrack recognizes DIRECT and LIGHT but not HEAVY", () => {
+    assert.equal(isInPlaceTrack("DIRECT"), true);
+    assert.equal(isInPlaceTrack("LIGHT"), true);
+    assert.equal(isInPlaceTrack("HEAVY"), false);
+    assert.equal(isInPlaceTrack(undefined), false);
   });
 });

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { openProjectDb } from "../src/core/db.ts";
 import {
+  approvePendingTask,
   ensureGitUserIdentity,
   prepareBaseline,
   rejectPendingTask,
@@ -113,6 +114,88 @@ test("CR-07: verifyAndCommitLightTask failure rolls back only scoped files and p
     // Direct rollbackLightChanges with explicit files option
     rollbackLightChanges(root, { files: ["notes.txt"] });
     assert.equal(fs.readFileSync(path.join(root, "notes.txt"), "utf8"), "committed note\n");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DIRECT track reuses in-place verify/commit/approve/reject lifecycle identically to LIGHT", async () => {
+  const root = makeTempRepo("asd-direct-track-");
+  try {
+    const db = openProjectDb(root);
+    const sessionId = "asd-20261120-035500-dir1";
+    db.createOrGetSession({
+      sessionId,
+      projectRoot: root,
+      mainHarness: "claude-code",
+    });
+    db.upsertTasks(sessionId, [
+      {
+        taskId: "T1.1",
+        turn: 1,
+        title: "Direct approve task",
+        track: "DIRECT",
+        role: "worker",
+        targetFiles: ["src/**"],
+      },
+      {
+        taskId: "T1.2",
+        turn: 1,
+        title: "Direct reject task",
+        track: "DIRECT",
+        role: "worker",
+        targetFiles: ["src/**"],
+      },
+    ]);
+
+    // 1. DIRECT task verify (autoApprove=false) -> approvePendingTask commits in-place
+    fs.writeFileSync(path.join(root, "src/a.ts"), "export const a = 42;\n", "utf8");
+    const verifyRes = verifyAndCommitLightTask({
+      projectRoot: root,
+      taskId: "T1.1",
+      title: "Direct approve task",
+      track: "DIRECT",
+      allowedFiles: ["src/**"],
+      verifyCmd: 'node -e "process.exit(0)"',
+      sessionId,
+      db,
+      autoApprove: false,
+    });
+    assert.equal(verifyRes.verified, true);
+    assert.equal(verifyRes.status, "verifying");
+    assert.equal(verifyRes.pendingApproval, true);
+
+    const approveRes = await approvePendingTask({
+      projectRoot: root,
+      sessionId,
+      taskId: "T1.1",
+      db,
+    });
+    assert.equal(approveRes.ok, true);
+    assert.equal(approveRes.status, "done");
+    assert.ok(approveRes.commitSha);
+    assert.equal(fs.readFileSync(path.join(root, "src/a.ts"), "utf8"), "export const a = 42;\n");
+
+    // 2. DIRECT task rejectPendingTask rolls back only scoped files, preserving out-of-scope user edits
+    db.updateTaskStatus(sessionId, "T1.2", "verifying");
+    fs.writeFileSync(path.join(root, "notes.txt"), "user direct note\n", "utf8");
+    fs.writeFileSync(path.join(root, "src/a.ts"), "export const a = 999;\n", "utf8");
+    fs.writeFileSync(path.join(root, "src/direct-temp.ts"), "export const tmp = 1;\n", "utf8");
+
+    const rejectRes = rejectPendingTask({
+      projectRoot: root,
+      sessionId,
+      taskId: "T1.2",
+      db,
+    });
+    assert.equal(rejectRes.ok, true);
+    assert.equal(rejectRes.status, "failed");
+    assert.ok(rejectRes.untouchedFiles?.includes("notes.txt"));
+    assert.equal(fs.readFileSync(path.join(root, "src/a.ts"), "utf8"), "export const a = 42;\n");
+    assert.equal(fs.existsSync(path.join(root, "src/direct-temp.ts")), false);
+    assert.equal(fs.readFileSync(path.join(root, "notes.txt"), "utf8"), "user direct note\n");
+
+    db.close();
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
