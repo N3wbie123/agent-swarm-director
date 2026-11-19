@@ -37,7 +37,7 @@ import { verifyChangedFilesBoundary } from "./policy.ts";
 import { hasLeakedSecrets } from "./redact.ts";
 import { renderPlanMd, renderSessionSummaryMd } from "./render.ts";
 import { finalizeSubagentArtifacts } from "./spawner.ts";
-import type { DoneClaim, TaskStatus } from "./types.ts";
+import type { DoneClaim, TaskStatus, TaskTrack } from "./types.ts";
 
 export { ensureGitExclude, getGitExcludePath };
 
@@ -74,10 +74,12 @@ export interface VerifyLightTaskOptions {
   projectRoot: string;
   taskId: string;
   title: string;
+  track?: TaskTrack;
   summary?: string | null;
   allowedFiles?: string[];
   verifyCmd?: string | null;
   verifyTimeoutMs?: number;
+  testOutputLogPath?: string;
   rollbackOnVerifyFailure?: boolean;
   sessionId?: string;
   db?: SqliteDriver;
@@ -92,6 +94,8 @@ export interface VerifyTaskResult {
   rollbackPerformed?: boolean;
   violations?: string[];
   testOutput?: string;
+  testOutputTruncated?: boolean;
+  testOutputLogPath?: string;
   error?: string;
   changedFiles?: string[];
   untouchedFiles?: string[];
@@ -108,6 +112,7 @@ export interface VerifyHeavyTaskOptions {
   allowedFiles?: string[];
   verifyCmd?: string | null;
   verifyTimeoutMs?: number;
+  testOutputLogPath?: string;
   smokeCmd?: string | null;
   sessionId?: string;
   db?: SqliteDriver;
@@ -121,9 +126,23 @@ export interface VerifyHeavyTaskResult {
   commitSha?: string;
   violations?: string[];
   testOutput?: string;
+  testOutputTruncated?: boolean;
+  testOutputLogPath?: string;
   error?: string;
   rolledBackTo?: string;
   changedFiles?: string[];
+}
+
+export interface SummarizeTestOutputOptions {
+  maxLines?: number;
+  maxChars?: number;
+  logPath?: string;
+}
+
+export interface SummarizeTestOutputResult {
+  output: string;
+  truncated: boolean;
+  logPath?: string;
 }
 
 export interface BoundaryAndSecretCheckResult {
@@ -554,6 +573,66 @@ export function resolveVerifyCmd(
 }
 
 export const DEFAULT_VERIFY_TIMEOUT_MS = 300_000;
+export const DEFAULT_TEST_OUTPUT_MAX_LINES = 40;
+export const DEFAULT_TEST_OUTPUT_MAX_CHARS = 4096;
+
+/**
+ * Returns true if the track executes in-place in projectRoot (DIRECT or LIGHT),
+ * as opposed to an isolated worktree (HEAVY).
+ */
+export function isInPlaceTrack(track?: TaskTrack | string | null): boolean {
+  return track === "DIRECT" || track === "LIGHT";
+}
+
+/**
+ * Caps returned test output to a clean tail window (default 40 lines / 4KB)
+ * and optionally writes the full raw output to `opts.logPath`.
+ */
+export function summarizeTestOutput(
+  raw: string,
+  opts?: SummarizeTestOutputOptions
+): SummarizeTestOutputResult {
+  const maxLines = Math.max(1, opts?.maxLines ?? DEFAULT_TEST_OUTPUT_MAX_LINES);
+  const maxChars = Math.max(1, opts?.maxChars ?? DEFAULT_TEST_OUTPUT_MAX_CHARS);
+  let writtenLogPath: string | undefined;
+
+  if (opts?.logPath) {
+    try {
+      fs.mkdirSync(path.dirname(opts.logPath), { recursive: true });
+      fs.writeFileSync(opts.logPath, raw, "utf8");
+      writtenLogPath = opts.logPath;
+    } catch {
+      // Best-effort log persistence; never fail verification due to log write error
+    }
+  }
+
+  const lines = raw.split(/\r?\n/);
+  const exceedsLines = lines.length > maxLines;
+  const exceedsChars = raw.length > maxChars;
+
+  if (!exceedsLines && !exceedsChars) {
+    return {
+      output: raw,
+      truncated: false,
+      ...(writtenLogPath ? { logPath: writtenLogPath } : {}),
+    };
+  }
+
+  let tail = exceedsLines ? lines.slice(-maxLines).join("\n") : raw;
+  if (tail.length > maxChars) {
+    tail = tail.slice(-maxChars);
+  }
+
+  const header = writtenLogPath
+    ? `[ASD] test output truncated (showing tail; full log: ${writtenLogPath})`
+    : `[ASD] test output truncated (showing tail of ${lines.length} lines / ${raw.length} chars)`;
+
+  return {
+    output: `${header}\n${tail}`,
+    truncated: true,
+    ...(writtenLogPath ? { logPath: writtenLogPath } : {}),
+  };
+}
 
 function resolveDefaultVerifyTimeoutMs(): number {
   const envVal = Number(process.env.ASD_VERIFY_TIMEOUT_MS);
@@ -935,11 +1014,19 @@ export function verifyAndCommitLightTask(
       if (db && sessionId) {
         db.updateTaskStatus(sessionId, taskId, "failed");
       }
+      const logPath =
+        options.testOutputLogPath ??
+        (sessionId
+          ? path.join(projectRoot, ".asd", "sessions", sessionId, "logs", `${taskId}-verify.log`)
+          : path.join(projectRoot, ".asd", "logs", `${taskId}-verify.log`));
+      const summarized = summarizeTestOutput(cmdRes.output, { logPath });
       return {
         verified: false,
         status: "failed",
         rollbackPerformed: shouldRollback,
-        testOutput: cmdRes.output,
+        testOutput: summarized.output,
+        testOutputTruncated: summarized.truncated,
+        ...(summarized.logPath ? { testOutputLogPath: summarized.logPath } : {}),
         error: `Verification command failed with exit code ${cmdRes.exitCode}: ${resolvedCmd}`,
         changedFiles,
         untouchedFiles,
@@ -1431,10 +1518,18 @@ export async function verifyAndMergeHeavyTask(
       if (db && sessionId) {
         db.updateTaskStatus(sessionId, taskId, "failed");
       }
+      const logPath =
+        options.testOutputLogPath ??
+        (sessionId
+          ? path.join(projectRoot, ".asd", "sessions", sessionId, "logs", `${taskId}-verify.log`)
+          : path.join(projectRoot, ".asd", "logs", `${taskId}-verify.log`));
+      const summarized = summarizeTestOutput(cmdRes.output, { logPath });
       return {
         verified: false,
         status: "failed",
-        testOutput: cmdRes.output,
+        testOutput: summarized.output,
+        testOutputTruncated: summarized.truncated,
+        ...(summarized.logPath ? { testOutputLogPath: summarized.logPath } : {}),
         error: `Verification command failed with exit code ${cmdRes.exitCode}: ${resolvedCmd}`,
       };
     }
@@ -1535,10 +1630,19 @@ export async function verifyAndMergeHeavyTask(
         if (db && sessionId) {
           db.updateTaskStatus(sessionId, taskId, "failed");
         }
+        const logPath =
+          options.testOutputLogPath ??
+          (sessionId
+            ? path.join(projectRoot, ".asd", "sessions", sessionId, "logs", `${taskId}-smoke.log`)
+            : path.join(projectRoot, ".asd", "logs", `${taskId}-smoke.log`));
+        const summarized = summarizeTestOutput(smokeRes.output, { logPath });
         return {
           verified: false,
           status: "failed",
-          error: `Smoke check failed after merge: ${smokeRes.output}`,
+          testOutput: summarized.output,
+          testOutputTruncated: summarized.truncated,
+          ...(summarized.logPath ? { testOutputLogPath: summarized.logPath } : {}),
+          error: `Smoke check failed after merge: ${summarized.output}`,
           rolledBackTo: preMergeSha,
         };
       }
@@ -1801,7 +1905,10 @@ export async function approvePendingTask(options: {
     }
   };
 
-  if (task.track === "HEAVY" || (task.worktree_path && fs.existsSync(task.worktree_path))) {
+  if (
+    task.track === "HEAVY" ||
+    (!isInPlaceTrack(task.track) && task.worktree_path && fs.existsSync(task.worktree_path))
+  ) {
     const res = await verifyAndMergeHeavyTask({
       projectRoot,
       turn: task.turn,
@@ -1845,6 +1952,7 @@ export async function approvePendingTask(options: {
     projectRoot,
     taskId: task.task_id,
     title: task.title,
+    track: task.track,
     allowedFiles,
     verifyCmd: task.verify_cmd,
     sessionId,
@@ -1898,7 +2006,10 @@ export function rejectPendingTask(options: {
   let untouchedFiles: string[] | undefined;
 
   withFileMergeLockSync(projectRoot, `rejectPendingTask:${taskId}`, () => {
-    if (task.track === "HEAVY" || fs.existsSync(wtPath)) {
+    if (
+      task.track === "HEAVY" ||
+      (!isInPlaceTrack(task.track) && fs.existsSync(wtPath))
+    ) {
       cleanupWorktree(projectRoot, wtPath, branchName, {
         forceBranchDelete: true,
       });
