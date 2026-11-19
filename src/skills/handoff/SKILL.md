@@ -1,81 +1,66 @@
 ---
 name: handoff
-description: Multi-harness session handoff skill for ASD v2.7.0. Summarizes conversation history, SQLite session/task state, progressBoard, and multi-harness routing context into handoff.md for seamless continuation across Claude Code, OpenCode, Codex CLI, Antigravity, and Cursor CLI.
+description: ASD v2.7.0 canonical session handoff skill (`/handoff`, `/asd-handoff`) summarizing conversation history, SQLite state, `progressBoard`, and 3-track routing context into `handoff.md`.
 ---
 
-# ASD v2.7.0 — Multi-Harness Session Handoff (`/asd-handoff`, `/handoff`)
+# Session Handoff (`/handoff`, `/asd-handoff`)
 
-You are generating a structured, high-signal session handoff document (`handoff.md`) so the user or another AI coding harness (**Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, or **Cursor CLI**) can seamlessly resume work in a new session without losing context.
+## Protected `.asd/` Directory & Official CLI-Only Rule
 
-> [!IMPORTANT]
-> **Protected `.asd/` Directory & Official CLI-Only Rule**
-> - **NEVER** directly create, edit, or overwrite any file inside `.asd/` (such as `.asd/PLAN.md`, `.asd/core.db`, `.asd/sessions/**`, `.asd/handoff.md`) using file-editing tools (`edit_file`, `write_file`, `Edit`, `Write`, or shell redirection `>` / `>>`). The `.asd/` directory is strictly protected by the `PreToolUse` security hook.
-> - For ANY ASD state or `.asd/` operation, **ALWAYS** use the official `asd` CLI commands (`asd plan create|update|sync_from_md|get`, `asd dispatch`, `asd verify`, `asd debate`, `asd handoff`, `asd status`, `asd clean`) or official ASD MCP tools.
-> - If an operation on `.asd/` has **no corresponding official `asd` CLI command or MCP tool**, **IMMEDIATELY HALT** execution and explain the situation to the user rather than attempting direct file manipulation or workarounds.
+> NEVER directly edit or create files inside `.asd/` (protected by `PreToolUse` hook). ALWAYS use official `asd` CLI commands, and **IMMEDIATELY HALT** if no official CLI command exists.
 
-> **Response Language Policy**
-> - Respond, explain plans/verdicts, ask confirmation questions, and summarize `progressBoard` or tool output naturally in the **user's language** (translating English runtime labels when helpful for non-English users), while preserving exact CLI commands, flags, file paths, task IDs, and structured JSON keys.
+**Response Language Policy:** Respond in the user's language while preserving exact CLI commands, flags, file paths, task IDs, and JSON keys.
 
-## Workflow
+## Step 1: Gather Live State (Read-Only)
 
-### Step 1: Gather Current Project & Multi-Harness State (Read-Only)
-Before writing `handoff.md`, inspect the live repository and ASD state:
-1. Generate the initial secret-redacted baseline via the official CLI command:
-   ```bash
-   asd handoff [--output <path>] [--print|-p] [--json]
-   ```
-   *(Or inspect manually with `asd status` / `node --no-warnings src/cli/index.ts status` to check the active SQLite session, `progressBoard`, and auto-stash warnings).*
-2. Check `.asd/PLAN.md` and `.asd/sessions/` (if present) for active or pending tasks (`[ ]`), auto-created cross-scope tasks (`[Cross-Scope ...]`), escalated tasks (`[~]`), completed tasks (`[x]`), deferred cross-scope requests, and subagent logs.
-3. Run `git status --short` and `git log -n 5 --oneline` to capture current branch, recent commits, and any uncommitted or untracked files.
+1. Generate the redacted baseline via `asd handoff [--output <path>] [--print|-p] [--json]` (or inspect live state via `asd status`).
+2. Check `.asd/PLAN.md` and `.asd/sessions/` (read-only) for pending `[ ]`, `[Cross-Scope ...]`, escalated `[~]`, and completed `[x]` tasks, retry/telemetry metrics, `deferredCrossScopeRequests`, and subagent logs.
+3. Run `git status --short` and `git log -n 5 --oneline`.
 
-### Step 2: Write or Enrich `handoff.md` in the Exact Standard Format
-Agents and users can run `asd handoff` to directly generate `handoff.md` with live SQLite session and Git state, then enrich it with conversational context using the exact section structure below. Keep every bullet concise, factual, and verifiable:
+## Step 2: Enrich `handoff.md` in Exact Standard Format
+
+Write `<projectRoot>/handoff.md` (outside `.asd/`, or the `--output <path>` target) by merging the `asd handoff` baseline with conversation context using this exact `HANDOFF CONTEXT` block:
 
 ```markdown
-HANDOFF CONTEXT
-===============
+# HANDOFF CONTEXT
 
-USER REQUESTS (AS-IS)
----------------------
-- <List the user's chronological requests from the session verbatim (as-is)>
+## USER REQUESTS (AS-IS)
+- <verbatim user requests>
 
-GOAL
-----
-<1-2 sentences describing the overarching objective to continue or maintain in the next session across any ASD harness>
+## GOAL
+<concise session objective>
 
-WORK COMPLETED
---------------
-- <Detailed bullet points of code changes, CLI commands run, architecture updates, tests verified, and commits pushed>
+## WORK COMPLETED
+- <completed tasks, modified files, and verified results>
 
-CURRENT STATE
--------------
-- <Current Git branch, HEAD commit SHA, and sync status with origin>
-- <Test suite status (e.g., X/X passing tests)>
-- <Multi-harness sync status (`asd sync`) across Claude Code, OpenCode, Codex CLI, Antigravity, and Cursor CLI>
-- <Active ASD session ID, execution mode (`LIGHT` single-harness vs `HEAVY` multi-harness worktree), and `progressBoard` summary if a session is active>
-- <Modified or untracked local files in workspace root>
+## CURRENT STATE
+- **Active ASD Session ID:** <session ID>
+- **Execution Track:** <`DIRECT` | `LIGHT` | `HEAVY`>
+- **Retry / Telemetry:** <retries, failures, and telemetry summary>
+- **progressBoard:** <current `progressBoard` snapshot>
+- **Git:** <branch @ SHA and working tree status>
+- **Tests:** <latest test run scope and pass/fail status>
+- **Multi-Harness Sync:** <`asd sync` status>
 
-PENDING TASKS
--------------
-- <Remaining tasks from `.asd/PLAN.md` or user requests, including any pending auto-created `[Cross-Scope ...]` tasks and `deferredCrossScopeRequests` awaiting Main Director review, or "None pending; all requested tasks are complete.">
+## PENDING TASKS
+- [ ] <pending tasks>
+- [Cross-Scope ...] <`deferredCrossScopeRequests` items>
 
-KEY FILES
----------
-- <path/to/file> - <1-line description of role and recent changes>
+## KEY FILES
+- `<path>` — <purpose/status>
 
-IMPORTANT DECISIONS
--------------------
-- <Key architectural, routing (`LIGHT` vs `HEAVY`), fallback, or implementation decisions made during the session>
+## IMPORTANT DECISIONS
+- <`DIRECT` / `LIGHT` / `HEAVY` routing & fallback choices, plus key design decisions>
 
-EXPLICIT CONSTRAINTS
---------------------
-- <User-defined rules (e.g., pre-confirmation rules, error-handling rules) and technical invariants (e.g., zero external dependencies, Node >=22.13.0 erasable TypeScript)>
+## EXPLICIT CONSTRAINTS
+- <user rules>
+- Zero runtime dependencies; Node >=22.13.0 erasable TypeScript
 
-CONTEXT FOR CONTINUATION
-------------------------
-- <Actionable commands and tips for resuming in the same or a different harness (e.g., checking `.asd/PLAN.md`, running `/asd-run`, `asd status`, `asd logs`, or `asd sync --force`)>
+## CONTEXT FOR CONTINUATION
+<immediate next step, open blockers, and assumptions to verify>
 ```
 
-### Step 3: Present Summary to User
-- Confirm that `handoff.md` has been saved at `<projectRoot>/handoff.md`.
-- Print the current `progressBoard` (if an active ASD session exists) and a brief summary of the handoff state.
+## Step 3: Present Summary
+
+1. Confirm `<projectRoot>/handoff.md` has been saved.
+2. Print the current `progressBoard` and a brief continuation summary.
