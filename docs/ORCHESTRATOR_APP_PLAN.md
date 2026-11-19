@@ -1,72 +1,74 @@
-# ASD 오케스트레이터 TUI/GUI 앱 개발 계획
+# ASD Orchestrator TUI/GUI App Development Plan
 
-> 작성일: 2026-11-06 · 근거: 5개 하네스 로컬 실측 + 공식 문서 조사 + ASD v2.4.2 코드 검증
-> 상태: 기획 (구현 미착수)
-> 갱신 (2026-11-13, ASD v2.6.0 기준): §0 표의 스냅샷·명령 조립 위치를 최신 코드에 맞춤. 어댑터의 headless/resume/interactive 빌더 메서드는 v2.6.0에서 삭제되었고 명령 조립은 `src/core/session-tracker.ts`의 `buildSpawnSpec` 계열 단일 경로임. 부록 B 갭 1(zstd)은 해결 확인. GUI(TUI 포함) 리포는 ASD-Nexus를 완전히 새로 작성함.
+**English** | [한국어](./ORCHESTRATOR_APP_PLAN_ko.md)
+
+> Date: 2026-11-06 · Basis: Empirical local measurements across 5 harnesses + official documentation survey + ASD v2.4.2 code verification
+> Status: Planning (implementation not started)
+> Update (2026-11-13, ASD v2.6.0 baseline): Updated snapshot and command-assembly locations in the Section 0 table to match the latest code. Adapter headless/resume/interactive builder methods were removed in v2.6.0, leaving the `buildSpawnSpec` family in `src/core/session-tracker.ts` as the single command-assembly path. Appendix B Gap 1 (`zstd`) is confirmed resolved. The GUI (including TUI) repository is being rewritten from scratch as ASD-Nexus.
 
 ---
 
-## 0. 핵심 전제 — 이미 구현된 것을 다시 만들지 않는다
+## 0. Core Premise — Do Not Rebuild What Already Exists
 
-ASD v2.4.2(`asd-multiagent`)에는 앱의 코어 로직 대부분이 이미 구현·출시 상태다.
-새 앱은 **"새 하네스 연동 레이어"가 아니라 "기존 ASD SDK 위의 쉘"**이다.
+Most of the core application logic is already implemented and shipped in ASD v2.4.2 (`asd-multiagent`).
+The new application is **not a "new harness integration layer", but a "shell on top of the existing ASD SDK"**.
 
-| 계획한 기능 | 기존 구현 | 위치 |
+| Planned Capability | Existing Implementation | Location |
 |---|---|---|
-| 하네스 호출 + 실시간 스트리밍(thinking/tool_use/tool_result/assistant) | `runDriverTurn` + `parseDriverStreamLine` | `src/core/drivers.ts` |
-| 세션 기록 불러오기(4분류 파싱) | `readHarnessTranscript` | `src/core/transcripts.ts` |
-| 프로젝트 세션 자동 탐색 | `discoverProjectCliSessions` | `src/core/session-tracker.ts` |
-| ASD 진행도 보드 | `renderProgressBoard`, `asd status --json` | `src/core/render.ts`, `src/cli/index.ts` |
-| 전체 상태 스냅샷 | `collectDashboardSnapshot()` | `src/core/session-services.ts` |
-| 웹 UI 원형 | `asd ui` (node:http, :3847) | `src/cli/dashboard.ts` |
-| 서브세션 스폰/로그 | `spawnSubagent`, `scanSubagentLogs` | `src/core/spawner.ts` |
-| 하네스 명령 조립 | `buildSpawnSpec` / `buildHeadlessHarnessCommand` / `buildResumeHarnessCommand` / `buildInteractiveResumeHarnessCommand` | `src/core/session-tracker.ts` |
-| GUI 프로젝트 | ASD-Nexus (`https://github.com/N3wbie123/ASD-Nexus`) | 별도 리포 |
+| Harness invocation + real-time streaming (`thinking`/`tool_use`/`tool_result`/`assistant`) | `runDriverTurn` + `parseDriverStreamLine` | `src/core/drivers.ts` |
+| Session transcript loading (4-category parsing) | `readHarnessTranscript` | `src/core/transcripts.ts` |
+| Automatic project session discovery | `discoverProjectCliSessions` | `src/core/session-tracker.ts` |
+| ASD progress board | `renderProgressBoard`, `asd status --json` | `src/core/render.ts`, `src/cli/index.ts` |
+| Full state snapshot | `collectDashboardSnapshot()` | `src/core/session-services.ts` |
+| Web UI prototype | `asd ui` (`node:http`, `:3847`) | `src/cli/dashboard.ts` |
+| Subsession spawning / logs | `spawnSubagent`, `scanSubagentLogs` | `src/core/spawner.ts` |
+| Harness command assembly | `buildSpawnSpec` / `buildHeadlessHarnessCommand` / `buildResumeHarnessCommand` / `buildInteractiveResumeHarnessCommand` | `src/core/session-tracker.ts` |
+| GUI Project | ASD-Nexus (`https://github.com/N3wbie123/ASD-Nexus`) | Separate repository |
 
 ---
 
-## 1. 하네스별 실측 매트릭스
+## 1. Per-Harness Empirical Matrix
 
-| 하네스 | 세션 저장 | 스트리밍 1순위 | 스트리밍 2순위(CLI 파이프) | 세션 이어가기 | 증거 |
+| Harness | Session Storage | Primary Streaming | Secondary Streaming (CLI Pipe) | Session Resume | Evidence |
 |---|---|---|---|---|---|
-| OpenCode | `~/.local/share/opencode/opencode.db` (SQLite WAL, 단일) | `opencode serve` + SSE `GET /api/event/subscribe` | `opencode run "..." --format json` | `-s <id>` / `-c` / `--fork`, `opencode export <id>` | 데모 실행 ✅ |
-| Claude Code | `~/.claude/projects/<cwd인코딩>/<uuid>.jsonl` | Agent SDK `query({ resume, includePartialMessages })` | `claude -p --output-format stream-json --verbose --include-partial-messages` | `--resume <id>` + 스트림 동시 공식 지원, `--fork-session` | 스트림 이벤트 실측 ✅ |
-| Codex CLI | `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl` (구세션 `.zst`) | `codex app-server` JSON-RPC (양방향, 런타임 승인 가능) | `codex exec --json` | `codex exec resume <id>`, `codex fork` | **데모 완주 ✅** |
-| Cursor CLI | `~/.cursor/chats/<workspace-md5>/<uuid>/store.db` (SQLite) + `meta.json` | `@cursor/sdk` (GA) | `cursor-agent -p --output-format stream-json --stream-partial-output` | `--resume <chatId>`, `create-chat` | 헬프+문서+저장소 실측 |
-| Antigravity | `~/.gemini/antigravity-cli/conversations/<id>.db` + `brain/<id>/.system_generated/logs/transcript.jsonl`(→`transcript_full.jsonl` 폴백) | Python/Rust SDK | `agy -p --output-format stream-json`, `--input-format stream-json`(상주 멀티턴) | `--conversation <id>`, `-c` | 헬프+문서+디렉토리 실측 |
+| OpenCode | `~/.local/share/opencode/opencode.db` (SQLite WAL, single DB) | `opencode serve` + SSE `GET /api/event/subscribe` | `opencode run "..." --format json` | `-s <id>` / `-c` / `--fork`, `opencode export <id>` | Live demo run ✅ |
+| Claude Code | `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` | Agent SDK `query({ resume, includePartialMessages })` | `claude -p --output-format stream-json --verbose --include-partial-messages` | Official simultaneous `--resume <id>` + streaming support, `--fork-session` | Stream events verified ✅ |
+| Codex CLI | `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl` (legacy `.zst`) | `codex app-server` JSON-RPC (bidirectional, runtime approval supported) | `codex exec --json` | `codex exec resume <id>`, `codex fork` | **Full demo completed ✅** |
+| Cursor CLI | `~/.cursor/chats/<workspace-md5>/<uuid>/store.db` (SQLite) + `meta.json` | `@cursor/sdk` (GA) | `cursor-agent -p --output-format stream-json --stream-partial-output` | `--resume <chatId>`, `create-chat` | Help + docs + storage verified |
+| Antigravity | `~/.gemini/antigravity-cli/conversations/<id>.db` + `brain/<id>/.system_generated/logs/transcript.jsonl` (→ `transcript_full.jsonl` fallback) | Python/Rust SDK | `agy -p --output-format stream-json`, `--input-format stream-json` (resident multi-turn) | `--conversation <id>`, `-c` | Help + docs + directory verified |
 
-### 하네스별 핵심 노트
+### Key Notes per Harness
 
-- **OpenCode**: TUI 자체가 서버 클라이언트. `run --attach http://localhost:4096`으로 웜 서버 재사용(MCP 콜드부트 회피). 공식 SDK `@opencode/sdk`(임베디드)/`@opencode/client`.
-- **Claude**: 세션 JSONL에 thinking/tool_use/tool_result 전부 저장. 단 **포맷 불안정 공식 경고** → `readHarnessTranscript` 파서 유지보수 필요. Agent SDK로 권한 승인 UI(`canUseTool`)까지 제어 가능.
-- **Codex**: app-server는 `initialize` 핸드셰이크 → `thread/start|resume|fork`, `turn/start|steer|interrupt`, `item/agentMessage/delta` 알림, 승인 RPC(`execCommandApproval`) 제공. `codex app-server generate-ts`로 TS 바인딩 자동 생성. 구 `codex mcp` 서버는 제거됨(app-server가 후계). 실측 함정: stdin 파이프 환경에서 stdin을 닫아야 함.
-- **Cursor**: `--stream-partial-output`에서 `model_call_id` 없으면 진짜 델타, 있으면 버퍼 플러시(중복 스킵). IDE와 CLI 세션 저장소 분리.
-- **Antigravity**: `agy acp`(ACP stdio JSON-RPC 서버) 존재. App(IDE) 쪽 아티팩트는 `~/.gemini/antigravity/brain/<id>/task.md` 등 Markdown.
+- **OpenCode**: The TUI itself is a server client. Reuse a warm server via `run --attach http://localhost:4096` (avoids MCP cold boot). Official SDKs: `@opencode/sdk` (embedded) / `@opencode/client`.
+- **Claude**: Stores all `thinking`/`tool_use`/`tool_result` entries in session JSONL. However, there is an **official warning that the format is unstable** → `readHarnessTranscript` parser requires ongoing maintenance. The Agent SDK can also control permission approval UI (`canUseTool`).
+- **Codex**: `app-server` provides an `initialize` handshake → `thread/start|resume|fork`, `turn/start|steer|interrupt`, `item/agentMessage/delta` notifications, and approval RPC (`execCommandApproval`). Generate TypeScript bindings automatically via `codex app-server generate-ts`. Legacy `codex mcp` server was removed (`app-server` is its successor). Empirical pitfall: `stdin` must be closed in piped-stdin environments.
+- **Cursor**: Under `--stream-partial-output`, events without `model_call_id` are true deltas, whereas events with `model_call_id` are buffer flushes (skip duplicates). IDE and CLI session stores are separate.
+- **Antigravity**: Includes `agy acp` (ACP stdio JSON-RPC server). App (IDE) artifacts are Markdown files under `~/.gemini/antigravity/brain/<id>/task.md`, etc.
 
-### 공통 결론
+### Common Conclusion
 
-5종 전부 **자식 프로세스 stdout JSONL 파싱만으로 실시간 스트리밍 가능**. OpenCode·Codex·Claude는 추가로 상주 서버/프로토콜 경로 제공. 세션 렌더링(과거 기록)은 전부 저장 파일/DB 파싱으로 해결.
+All 5 harnesses **support real-time streaming purely by parsing child-process `stdout` JSONL**. OpenCode, Codex, and Claude additionally offer resident server/protocol paths. Session rendering (historical transcripts) is solved across all 5 by parsing stored files or SQLite databases.
 
 ---
 
-## 2. 아키텍처 — 코어 서버 + 2개 클라이언트 (OpenCode 패턴 채택)
+## 2. Architecture — Core Server + 2 Clients (Adopting the OpenCode Pattern)
 
 ```
-┌──────────────┐   SSE/HTTP    ┌───────────────────────────────┐   자식 프로세스
-│  TUI 클라이언트│ ────────────▶ │ 오케스트레이터 서버 (GUI 리포)  │ ──▶ claude -p --output-format stream-json
-│  (터미널)     │ ◀──────────── │  - asd-gui src/server 확장     │ ──▶ codex exec --json
-└──────────────┘   SSE 이벤트   │  - runDriverTurn (Core SDK)    │ ──▶ opencode run --format json
-┌──────────────┐               │  - openProjectDb (core.db)    │ ──▶ agy -p --output-format stream-json
-│  GUI 클라이언트│ ────────────▶ │  - 이벤트 정규화 + 브로드캐스트  │ ──▶ cursor-agent -p --output-format stream-json
-│ (Tauri/Electron)│ ◀────────── └───────────────────────────────┘
-└──────────────┘
+┌───────────────┐   SSE/HTTP    ┌──────────────────────────────────┐   Child Process
+│  TUI Client   │ ────────────▶ │ Orchestrator Server (GUI Repo)   │ ──▶ claude -p --output-format stream-json
+│  (Terminal)   │ ◀──────────── │  - Extends asd-gui src/server    │ ──▶ codex exec --json
+└───────────────┘   SSE Events  │  - runDriverTurn (Core SDK)      │ ──▶ opencode run --format json
+┌───────────────┐               │  - openProjectDb (core.db)       │ ──▶ agy -p --output-format stream-json
+│  GUI Client   │ ────────────▶ │  - Event normalization/broadcast │ ──▶ cursor-agent -p --output-format stream-json
+│ (Tauri/Electron)│ ◀────────── └──────────────────────────────────┘
+└───────────────┘
 ```
 
-- **오케스트레이터 서버(GUI 리포 소속)**: `asd-gui`의 `src/server`(HTTP+WS)를 확장. 신규 엔드포인트: `/api/turn/stream`(POST: 프롬프트→SSE 정규화 이벤트 푸시), `/api/sessions`, `/api/transcript/:harness/:id`, `/api/board`, `/api/subagents`.
-- **경계 원칙 (2026-11-06 확정)**: Core(asd-multiagent)는 **CLI + 코어 관리(계획·`asd ui` 대시보드·git worktree 등) + 최소 SDK/API**만 유지하고, 모든 UI·서버·렌더링은 GUI 리포가 담당한다. `asd ui`는 기능 동결(확장 금지 — 새 UI 기능은 GUI 리포로). Core 경계 위반 정리는 [CORE_GUI_BOUNDARY_AUDIT.md](./CORE_GUI_BOUNDARY_AUDIT.md) 참조.
-- **TUI**: 같은 SSE 소비. GUI: 같은 SSE 소비(웹뷰는 얇다). ASD-Nexus는 이 코어 서버 기반으로 발전시키는 것 권장(SDK가 `asd-gui` 연동 전제로 설계됨).
+- **Orchestrator Server (owned by the GUI repository)**: Extends `src/server` (HTTP+WS) in `asd-gui`. New endpoints: `/api/turn/stream` (POST: prompt → SSE normalized event push), `/api/sessions`, `/api/transcript/:harness/:id`, `/api/board`, `/api/subagents`.
+- **Boundary Principle (confirmed 2026-11-06)**: Core (`asd-multiagent`) retains only **CLI + Core management (planning, `asd ui` dashboard, git worktree, etc.) + minimal SDK/API**, while all UI, server hosting, and rendering belong to the GUI repository. `asd ui` is feature-frozen (no further expansion — new UI features go to the GUI repo). For Core boundary violation cleanup, see [CORE_GUI_BOUNDARY_AUDIT.md](./CORE_GUI_BOUNDARY_AUDIT.md).
+- **TUI**: Consumes the same SSE stream. **GUI**: Consumes the same SSE stream (keeping the webview thin). Recommended to evolve ASD-Nexus on top of this core server (the SDK is designed around `asd-gui` integration).
 
-### 이벤트 정규화 계약
+### Event Normalization Contract
 
 ```ts
 type OrchestratorEvent = DriverStreamEvent & {
@@ -77,67 +79,67 @@ type OrchestratorEvent = DriverStreamEvent & {
 };
 ```
 
-렌더링 규칙(하네스 무관): thinking=접이식 실시간 append, tool_use=아이콘+이름+인자+스피너, tool_result=접이식(is_error시 빨강), text=마크다운 점진 렌더, usage=턴 푸터.
+Rendering rules (harness-agnostic): `thinking` = collapsible real-time append, `tool_use` = icon + name + args + spinner, `tool_result` = collapsible (red when `is_error`), `text` = incremental Markdown render, `usage` = turn footer.
 
-### 승인(권한) 처리
+### Approval (Permission) Handling
 
-- v1: 자동승인 플래그(`--auto`, `--dangerously-skip-permissions`, `--force`) — ASD 기존 방식.
-- v2: Claude=Agent SDK `canUseTool`, Codex=`app-server` 승인 RPC, OpenCode=permissions API, Cursor=`--auto-review`.
+- v1: Auto-approve flags (`--auto`, `--dangerously-skip-permissions`, `--force`) — existing ASD approach.
+- v2: Claude = Agent SDK `canUseTool`, Codex = `app-server` approval RPC, OpenCode = permissions API, Cursor = `--auto-review`.
 
-### 스택 권장
+### Recommended Stack
 
-| 레이어 | 권장 | 이유 |
+| Layer | Recommendation | Rationale |
 |---|---|---|
-| Core | Node 22+ TS, `agent-swarm-director` import, 의존성 0 유지 | SDK 그대로 import |
-| TUI | Ink (React for CLIs) | 채팅 스트림+포커스+스크롤 신속 구현. 우선순위 낮으면 v1은 `asd ui` 강화로 대체 |
-| GUI | Tauri + React (대안: Electron) | 코어 서버 분리로 웹뷰 얇음. Electron은 ASD-Nexus 재사용에 유리 |
+| Core | Node 22+ TS, import `agent-swarm-director`, keep 0 dependencies | Import the SDK directly |
+| TUI | Ink (React for CLIs) | Rapid implementation of chat stream + focus + scrolling. If lower priority, replace v1 with enhanced `asd ui` |
+| GUI | Tauri + React (Alternative: Electron) | Thin webview thanks to separate core server. Electron is advantageous for reusing ASD-Nexus |
 
 ---
 
-## 3. 세션 자동 로드 + 서브세션/진행도 모니터링
+## 3. Automatic Session Loading + Subsession & Progress Monitoring
 
-### 3.1 메인 세션 오픈 시 자동 로드 (3단계)
+### 3.1 Automatic Loading When Opening a Main Session (3 Steps)
 
-1. **세션 후보 수집**: `openProjectDb(projectRoot)` → ASD 세션 목록 + `discoverProjectCliSessions(projectRoot)` → 5하네스 CLI 세션 일괄(승격 여부 포함).
-2. **트랜스크립트 복원**: `readHarnessTranscript({ harness, projectRoot, harnessSessionId })` → 4분류 렌더.
-3. **이어달리기**: `session_drivers.harness_session_id`로 다음 턴부터 `runDriverTurn`이 resume 플래그로 이어감.
+1. **Collect Session Candidates**: `openProjectDb(projectRoot)` → ASD session list + `discoverProjectCliSessions(projectRoot)` → batch discovery of all 5 harness CLI sessions (including promotion status).
+2. **Restore Transcript**: `readHarnessTranscript({ harness, projectRoot, harnessSessionId })` → 4-category rendering.
+3. **Continue Conversation**: From the next turn onward, `runDriverTurn` resumes via `session_drivers.harness_session_id` using the harness resume flag.
 
-### 3.2 실시간 갱신 전략
+### 3.2 Real-Time Refresh Strategy
 
-- 파일형(Claude jsonl / Codex rollout / agy transcript): `chokidar` append 감지 → 증분 파싱. **Codex 구세션 `.zst`는 로드 시 zstd 복원 필요(발견된 갭).**
-- DB형(OpenCode `opencode.db` 2.29GB / Cursor `store.db`): 세션ID 스코프 쿼리만 + 1~2초 폴링. OpenCode는 서버 SSE가 폴링 대체.
-- Claude jsonl 포맷 불안정 → 파서 버전별 회귀테스트.
+- File-backed (Claude JSONL / Codex rollout / Antigravity transcript): `chokidar` append detection → incremental parsing. **Legacy Codex `.zst` sessions require zstd decompression on load (identified gap).**
+- DB-backed (OpenCode `opencode.db` 2.29GB / Cursor `store.db`): Session-ID-scoped queries only + 1–2s polling. For OpenCode, server SSE replaces polling.
+- Claude JSONL format instability → per-version parser regression tests.
 
-### 3.3 단축키 모니터링 패널 (Ctrl+B 오버레이)
+### 3.3 Hotkey Monitoring Panel (`Ctrl+B` Overlay)
 
-| 섹션 | 데이터 소스 (전부 기존 구현) |
+| Section | Data Source (All Existing Implementations) |
 |---|---|
-| 진행 보드 | `asd status --json` → `progressBoard` |
-| 서브세션 목록 | `collectDashboardSnapshot()` tasks + `session_drivers` |
-| 서브세션 라이브 로그 | `scanSubagentLogs()` (`output.log` 실시간 append) + `sub_session_id` tail |
-| HEAVY 모드 | `.asd/wt/<turn>-<task>` 확인 + `getWorktreeDiff()` |
-| 컨트롤 | `/api/subagent-action` (kill/retry/fallback/resume) |
+| Progress Board | `asd status --json` → `progressBoard` |
+| Subsession List | `collectDashboardSnapshot()` tasks + `session_drivers` |
+| Subsession Live Logs | `scanSubagentLogs()` (real-time `output.log` append) + `sub_session_id` tail |
+| HEAVY Mode | Inspect `.asd/wt/<turn>-<task>` + `getWorktreeDiff()` |
+| Controls | `/api/subagent-action` (`kill`/`retry`/`fallback`/`resume`) |
 
-키맵 제안: Ctrl+B 보드, Ctrl+L 로그, Ctrl+D diff. 갱신: 패널 열림 중 1초 폴링 + 로그 tail.
-
----
-
-## 4. 하네스 전환 이어가기 — 제외 확정
-
-세션 포맷이 하네스마다 완전히 달라 무손실 이관은 비용 대비 가치 없음. **`/handoff`(asd-handoff) 스킬의 "대화 요약 → 어느 하네스에서든 재개"를 표준 방법으로 채택**. 변환 레이어/신규 DB 미생성.
+Proposed keymap: `Ctrl+B` board, `Ctrl+L` logs, `Ctrl+D` diff. Refresh: 1s polling + log tailing while the panel is open.
 
 ---
 
-## 5. 구현 시퀀스
+## 4. Cross-Harness Seamless Continuation — Confirmed Excluded
 
-- **M1**: 오케스트레이터 서버(GUI 리포 소속, SSE 스트리밍, Claude 1하네스) + 웹 채팅 화면
-- **M2**: 5하네스 어댑터 완성 + 세션 자동 로드
-- **M3**: 단축키 모니터링 패널 + 승인 UI(v2 착수)
-- **M4**: TUI 쉘 → GUI 패키징
+Because session storage formats differ completely across harnesses, lossless migration offers poor value relative to cost. **Adopted the `/handoff` (`asd-handoff`) skill workflow ("summarize conversation → resume in any harness") as the standard mechanism**. No translation layer or new database will be created.
 
 ---
 
-## 부록 A. 실측 증거 발췌
+## 5. Implementation Sequence
+
+- **M1**: Orchestrator server (in GUI repo, SSE streaming, 1 harness: Claude) + web chat view
+- **M2**: Complete all 5 harness adapters + automatic session loading
+- **M3**: Hotkey monitoring panel + approval UI (begin v2)
+- **M4**: TUI shell → GUI packaging
+
+---
+
+## Appendix A. Empirical Evidence Excerpts
 
 ```
 $ codex exec --json "Reply with exactly: OK" --skip-git-repo-check --sandbox read-only
@@ -153,51 +155,51 @@ $ opencode run "Reply with exactly: OK" --format json
 
 $ claude -p "..." --output-format stream-json --verbose
 {"type":"system","subtype":"init",...,"session_id":"...","tools":[...]}
-{"type":"system","subtype":"api_retry",...}   ← 모델 프록시 오류로 턴 미완주, 프로토콜은 정상
+{"type":"system","subtype":"api_retry",...}   <- Turn incomplete due to model proxy error; protocol itself verified
 ```
 
-## 부록 B. 알려진 갭/리스크
+## Appendix B. Known Gaps & Risks
 
-1. Codex 구세션 `.jsonl.zst` — 히스토리 전체 로드 시 zstd 복원 필요 (**해결 확인**: `core/transcripts.ts`의 `decompressZstdBuffer`가 `node:zlib` `zstdDecompressSync` + `zstd -dc` CLI 폴백으로 `.jsonl.zst`를 자동 복원함).
-2. Claude 세션 JSONL 공식 "포맷 불안정" — 파서 회귀테스트 필요.
-3. OpenCode `opencode.db` 2.29GB — 전체 로드 금지, 세션 스코프 쿼리만.
-4. agy 어댑터의 stream-json 플래그 미사용 — 라이브 실측으로 확정, 부록 C 참조.
+1. Legacy Codex sessions `.jsonl.zst` — requires `zstd` decompression when loading full history (**Confirmed Resolved**: `decompressZstdBuffer` in `core/transcripts.ts` automatically decompresses `.jsonl.zst` via `node:zlib` `zstdDecompressSync` + `zstd -dc` CLI fallback).
+2. Claude session JSONL official "unstable format" — requires parser regression tests.
+3. OpenCode `opencode.db` 2.29GB — never load in full; use session-scoped queries only.
+4. Antigravity adapter not using `stream-json` flag — confirmed via live measurement; see Appendix C.
 
 ---
 
-## 부록 C. ASD-Nexus 스트리밍 미작동 원인 (2026-11-06 라이브 실측 확정)
+## Appendix C. Root Cause of Non-Working Streaming in ASD-Nexus (Confirmed via Live Measurement on 2026-11-06)
 
-### 원인 매트릭스
+### Cause Matrix
 
-| 하네스 | 현재 실행 명령(어댑터) | 실측 결과 | 판정 |
+| Harness | Current Execution Command (Adapter) | Measured Behavior | Verdict |
 |---|---|---|---|
-| Claude Code | 어댑터 `--output-format json` → 코어가 stream-json으로 승격 (`drivers.ts:1066-1073`, claude-code 전용) | 블록 단위 스트리밍 정상 | ✅ 정상 |
-| Codex | `codex exec --json` (codex.ts:25) | JSONL 이벤트 실시간 (데모 완주) | ✅ 정상 |
-| Antigravity | `agy -p --output-format json` (antigravity.ts:57 하드코딩) | 최종 1회 단일 JSON만 출력. 반면 `--output-format stream-json`은 `step_update`/`text_delta` 토큰 델타(~25ms 간격) 완벽 실측 | ❌ 플래그 + 파서 수정 필요 |
-| Cursor | `agent -p --output-format json` (cursor.ts:71 하드코딩) | 최종 1회. 코어의 stream-json 승격이 claude-code 전용이라 cursor는 미적용 | ❌ 플래그 + 파서 수정 필요 |
-| OpenCode | `run --format json` (opencode.ts:38) | **part 완료 단위** — 15문장 전체가 단일 `text` 이벤트로 도착(토큰 델타 없음). MCP 콜드부트 ~28s 후에야 첫 이벤트 | ⚠️ 구조적 한계 → serve+SSE 필요 |
+| Claude Code | Adapter `--output-format json` → promoted to `stream-json` by Core (`drivers.ts:1066-1073`, `claude-code` only) | Block-level streaming works normally | ✅ Working |
+| Codex | `codex exec --json` (`codex.ts:25`) | Real-time JSONL events (demo completed) | ✅ Working |
+| Antigravity | `agy -p --output-format json` (hardcoded in `antigravity.ts:57`) | Emits only a single final JSON object at exit. By contrast, `--output-format stream-json` streams `step_update`/`text_delta` token deltas (~25ms interval) flawlessly | ❌ Needs flag + parser fix |
+| Cursor | `agent -p --output-format json` (hardcoded in `cursor.ts:71`) | Single final output only. Core's `stream-json` promotion was `claude-code`-only and skipped Cursor | ❌ Needs flag + parser fix |
+| OpenCode | `run --format json` (`opencode.ts:38`) | **Per-completed-part granularity** — all 15 sentences arrive as a single `text` event (no token deltas). First event arrives only after ~28s MCP cold boot | ⚠️ Architectural limitation → requires `serve` + SSE |
 
-### 핵심 사실
+### Key Facts
 
-1. **원인은 GUI(asd-gui)가 아니라 코어 어댑터/파서다.** GUI의 스트리밍 파이프라인(`createGuiDriverCommandRunner` → WS `driver_stream_event` → `useWsDriverStreamEvent`)은 정상이며, 이벤트가 도착하면 전파된다. 문제는 "애초에 들어오는 이벤트가 없는 것".
-2. agy 파서(`parseDriverStreamLine` 868-921행)가 기대하는 `PLANNER_RESPONSE`/`TOOL_RESPONSE`는 transcript.jsonl 포맷이고, CLI `--output-format stream-json`의 실측 스키마(`{"event":"init"|"step_update"|"result", "text_delta":"..."}`)와 불일치. 플래그만 바꿔도 파싱이 안 됨.
-3. `EXTERNAL_SDK_REFERENCE.md`의 "Claude/Cursor stream-json 자동 활성화" 주석은 코드와 불일치(실제로는 claude-code만 승격).
-4. OpenCode는 `run --format json`이 part 완료 시점에만 이벤트를 내보내는 CLI 구현 특성 → 토큰 단위 실시간은 `opencode serve` + SSE `/api/event/subscribe`(`session.message.part.updated` 델타)로만 가능.
+1. **The root cause lies in Core adapters/parsers, not in the GUI (`asd-gui`).** The GUI streaming pipeline (`createGuiDriverCommandRunner` → WS `driver_stream_event` → `useWsDriverStreamEvent`) works properly and propagates events whenever they arrive. The issue was that no streaming events were being emitted in the first place.
+2. The `PLANNER_RESPONSE`/`TOOL_RESPONSE` schema expected by the Antigravity parser (`parseDriverStreamLine` lines 868–921) matches the disk `transcript.jsonl` format, not the empirical CLI `--output-format stream-json` schema (`{"event":"init"|"step_update"|"result", "text_delta":"..."}`). Changing the flag alone would not parse.
+3. The comment in `EXTERNAL_SDK_REFERENCE.md` claiming "automatic `stream-json` activation for Claude/Cursor" contradicted the code (only `claude-code` was promoted).
+4. OpenCode's `run --format json` emits events only upon part completion by CLI design → token-level real-time streaming is only possible via `opencode serve` + SSE `/api/event/subscribe` (`session.message.part.updated` deltas).
 
-### 수정 목록 (국소 수정 권고 — 백지화 불필요)
+### Fix List (Localized Fixes Recommended — No Rewrite Needed)
 
-1. `src/adapters/antigravity.ts`: `--output-format json` → `stream-json` (라이브 검증됨)
-2. `src/adapters/cursor.ts`: `--output-format json` → `stream-json` (+ `--stream-partial-output` 옵션 검토)
-3. `src/core/drivers.ts`: claude-code 전용 stream-json 승격 분기 제거, 어댑터가 처음부터 올바른 포맷을 사용하도록 일원화
-4. `src/core/drivers.ts::parseDriverStreamLine`: agy 실측 스키마(`event: init|step_update|result`, `text_delta`) 추가, cursor `tool_call`(started/completed) 추가
-5. OpenCode: v1은 블록 단위 수용 + `--attach` 웜서버로 콜드부트 완화 → v2에서 `opencode serve` SSE 연동으로 토큰 스트리밍
-6. `EXTERNAL_SDK_REFERENCE.md` 주석을 실제 동작과 일치시킴
+1. `src/adapters/antigravity.ts`: `--output-format json` → `stream-json` (verified live)
+2. `src/adapters/cursor.ts`: `--output-format json` → `stream-json` (+ evaluate `--stream-partial-output` option)
+3. `src/core/drivers.ts`: Remove the `claude-code`-only `stream-json` promotion branch so adapters/builders use the proper format uniformly from the start
+4. `src/core/drivers.ts::parseDriverStreamLine`: Add empirical Antigravity schema (`event: init|step_update|result`, `text_delta`) and Cursor `tool_call` (`started`/`completed`)
+5. OpenCode: Accept block-level streaming in v1 + mitigate cold boot with `--attach` warm server → integrate `opencode serve` SSE for token streaming in v2
+6. Align comments in `EXTERNAL_SDK_REFERENCE.md` with actual behavior
 
-### 실행 상태 (2026-11-06)
+### Execution Status (2026-11-06)
 
-- [x] 1-2. agy·Cursor 스트리밍 플래그 — `buildHeadless/ResumeHarnessCommand`(session-tracker)에 `streaming` 옵션 추가, 하네스별 `stream-json` 분기. 비스트리밍 기본값(json)은 서브에이전트·debate 등 배치 경로 보호용으로 유지.
-- [x] 3. drivers.ts claude 전용 splice 제거 — `runDriverTurn`이 `streaming: useStreamJson`을 빌더에 직접 전달(포맷 결정이 빌더로 일원화).
-- [x] 4. 파서 — Cursor 실측 스키마(톱레벨 thinking 델타, `tool_call.<family>ToolCall` started/completed, user 프롬프트 에코 스킵) + agy stream-json(`step_update` 델타/`result`/`init`) 추가. 라이브 캡처 바이트 기반 단위 검증 통과(카테고리 전건 정확).
-- [x] 6. `EXTERNAL_SDK_REFERENCE.md` 주석 갱신.
-- [ ] 5. OpenCode serve+SSE — 미착수(별도 과제, 앱 계획 M2).
-- 검증: Core 355/356(유일 실패 = 기존 유령 테스트 installer-sync), asd-gui 14/14. 미커밋.
+- [x] 1-2. Antigravity & Cursor streaming flags — added `streaming` option to `buildHeadless/ResumeHarnessCommand` (`session-tracker`), branching to `stream-json` per harness. Kept non-streaming default (`json`) to protect batch paths such as subagents and debate.
+- [x] 3. Removed Claude-only splice in `drivers.ts` — `runDriverTurn` now passes `streaming: useStreamJson` directly to the builder (unifying format selection inside the builder).
+- [x] 4. Parser — added empirical Cursor schema (top-level thinking deltas, `tool_call.<family>ToolCall` started/completed, user prompt echo skipping) + Antigravity `stream-json` (`step_update` delta / `result` / `init`). Unit tests based on live-captured bytes passed (100% category accuracy).
+- [x] 6. Updated comments in `EXTERNAL_SDK_REFERENCE.md`.
+- [ ] 5. OpenCode `serve` + SSE — not started (separate task, App Plan M2).
+- Verification: Core 355/356 (sole failure = pre-existing phantom test in `installer-sync`), `asd-gui` 14/14. Uncommitted.
