@@ -1,57 +1,57 @@
-# ASD v2.5.0 외부 SDK 및 단일 DB 전환 통합 레퍼런스 (`EXTERNAL_SDK_REFERENCE.md`)
+# ASD v2.5.0 External SDK & Single-DB Migration Reference (`EXTERNAL_SDK_REFERENCE.md`)
 
-> **버전**: `2.5.0` (v2.4.0 단일 공유 DB 기반 — 전 하네스 네이티브 JSONL 스트리밍, Core–GUI 경계 리팩터링, `ses_` 세션 속성 보정 반영 — `2.3.x` 이하와 DB 비호환)  
-> **대상**: [**ASD-Nexus (`asd-gui`)**](https://github.com/N3wbie123/ASD-Nexus) 등 외부 애플리케이션 및 라이브러리 연동 개발자  
-> **런타임 의존성**: `0개` (`dependencies: {}`, 순수 Node.js `>=22.13.0` 내장 모듈만 사용)  
-> **메인 엔트리포인트**: [`src/index.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/index.ts) (`import { ... } from "agent-swarm-director"`)
+> **Version**: `2.5.0` (built on the v2.4.0 single shared DB — incorporates full-harness native JSONL streaming, Core-GUI boundary refactoring, and `ses_` session attribution fix — DB-incompatible with `<= 2.3.x`)  
+> **Audience**: External application and library integration developers, including [**ASD-Nexus (`asd-gui`)**](https://github.com/N3wbie123/ASD-Nexus)  
+> **Runtime Dependencies**: `0` (`dependencies: {}`, uses only pure Node.js `>=22.13.0` built-in modules)  
+> **Main Entrypoint**: [`src/index.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/index.ts) (`import { ... } from "agent-swarm-director"`)
 
-[📖 README (한국어)](./README_ko.md) | [📖 README (EN)](./README.md) | [🖥️ ASD-Nexus (공식 GUI)](https://github.com/N3wbie123/ASD-Nexus) | [🏛️ 프로젝트 아키텍처 및 파일·함수 상세](./PROJECT_STATUS.md) | [🤖 AI 작업 지침 프롬프트](./AI_WORKFLOW_PROMPT.md) | [📋 패치 노트 (KR)](./PATCH_NOTES_ko.md)
+**English** | [한국어](./EXTERNAL_SDK_REFERENCE_ko.md) | [📖 README](./README.md) | [🖥️ ASD-Nexus (Official GUI)](https://github.com/N3wbie123/ASD-Nexus) | [🏛️ Project Architecture & File/Function Reference](./PROJECT_STATUS.md) | [🤖 AI Workflow Prompt](./AI_WORKFLOW_PROMPT.md) | [📋 Patch Notes](./PATCH_NOTES.md)
 
 ---
 
-## 1. 단일 상태 DB 전환 및 v2.4.0 핵심 변경 사항
+## 1. Single Shared State DB Migration & Core Changes in v2.4.0
 
-### 1.1 단일 공유 SQLite DB 전환 (`~/.asd/state/core.db`)
-기존(v2.3.2 이하)에는 프로젝트마다 `~/.asd/state/<projectHash>/core.db`를 개별 생성했으나, 테스트 임시 프로젝트 누적 등으로 디렉토리가 수천 개로 늘어나는 문제를 해결하기 위해 **단일 공유 DB(`~/.asd/state/core.db`)** 구조로 전환했습니다.
+### 1.1 Migration to Single Shared SQLite DB (`~/.asd/state/core.db`)
+Previously (`<= v2.3.2`), ASD created a separate `~/.asd/state/<projectHash>/core.db` for every project, which could accumulate thousands of hash directories over time (e.g., from temporary test projects). Starting in `v2.4.0`, ASD uses a **single shared DB (`~/.asd/state/core.db`)** architecture.
 
 > [!IMPORTANT]
-> **구버전(`v2.3.2` 이하) DB 자동 복구·마이그레이션 도구 (`asd-db-migrate.mjs`)**:  
-> 구버전(`v2.3.2` 이하)의 해시 디렉토리별 DB(`~/.asd/state/<projectHash>/core.db`) 데이터를 `v2.4.0` 단일 공유 DB(`~/.asd/state/core.db`)로 이관하거나 손상된 컬럼을 복구해야 하는 경우, 아래 공식 마이그레이션 툴을 다운로드해 실행하세요:  
-> 👉 **[Google Drive에서 `asd-db-migrate` 다운로드](https://drive.google.com/drive/u/0/folders/1knUQzIY8HDzIKYkxrhsCxgorQDn_B3nU)** (`node asd-db-migrate.mjs`)
+> **Legacy (`<= v2.3.2`) DB Auto-Recovery & Migration Tool (`asd-db-migrate.mjs`)**:  
+> If you need to migrate legacy (`<= v2.3.2`) per-hash database data (`~/.asd/state/<projectHash>/core.db`) into the `v2.4.0` single shared DB (`~/.asd/state/core.db`) or repair corrupted columns, you can run `asd migrate [--clean-legacy]` or download and run the standalone migration tool below:  
+> 👉 **[Download `asd-db-migrate` from Google Drive](https://drive.google.com/drive/u/0/folders/1knUQzIY8HDzIKYkxrhsCxgorQDn_B3nU)** (`node asd-db-migrate.mjs`)
 
-| 구분 | 이전 (v2.3.2 이하) | 현재 (v2.4.0) |
+| Category | Legacy (`<= v2.3.2`) | Current (`v2.4.0+`) |
 | :--- | :--- | :--- |
-| **DB 파일 위치** | `~/.asd/state/<projectHash>/core.db` × N개 | **`~/.asd/state/core.db` 단 1개** |
-| **프로젝트 구분 방식** | 해시 디렉토리 분리 | `sessions.project_root` 컬럼 스코프 (`SqliteDriver(dbPath, projectRoot?)`) |
-| **프로젝트 목록 탐색** | 수천 개 디렉토리 순회 + DB N회 오픈 | `listKnownProjects()` 단일 쿼리 1회 + 15초 FS 캐시 (`skipDiskCheck` 지원) |
-| **테스트 홈 격리** | 호출부마다 상이 | `ASD_HOME_DIR` 환경변수 단일 결정점 ([`resolveHomeDir`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/config.ts#L102-L108)) |
+| **DB File Location** | `~/.asd/state/<projectHash>/core.db` x N files | **Single `~/.asd/state/core.db` file** |
+| **Project Scoping** | Separate hash directories | `sessions.project_root` column scoping (`SqliteDriver(dbPath, projectRoot?)`) |
+| **Project Discovery** | Traverse thousands of directories + open N DBs | Single query in `listKnownProjects()` + 15s FS cache (`skipDiskCheck` supported) |
+| **Test Home Isolation** | Varied per call site | Single resolution point via `ASD_HOME_DIR` env var ([`resolveHomeDir`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/config.ts#L102-L108)) |
 
-#### 외부 GUI(`asd-gui`) 연동 시 필수 확인 사항
-1. **[`openProjectDb(projectRoot, homeDir?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/db.ts#L1030-L1040) 사용 권장**: 반환된 [`SqliteDriver`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/db.ts#L288-L1025) 인스턴스는 이미 해당 `projectRoot`로 스코프되어 있어 `listSessions()`, `getAllTasks()`, `getAllDebates()`, `getLatestSession()` 호출 시 자동으로 해당 프로젝트 데이터만 반환합니다.
-2. **`new SqliteDriver(dbPath)` 직접 호출 주의**: 두 번째 인자(`projectRoot`)를 생략하면 전체 프로젝트의 세션이 함께 조회됩니다. 특정 프로젝트만 조회할 때는 반드시 `new SqliteDriver(dbPath, projectRoot)` 또는 `openProjectDb(projectRoot)`를 사용하세요.
-3. **`projectHash` 용도**: `resolveAsdPaths()`와 `KnownProjectSummary`의 `projectHash`는 UI 리스트의 고유 키(`key={p.projectHash}`)로 계속 사용할 수 있으나, 실제 DB 경로는 항상 `paths.dbPath`(`~/.asd/state/core.db`)를 참조해야 합니다.
+#### Mandatory Checklist for External GUI (`asd-gui`) Integrations
+1. **Prefer [`openProjectDb(projectRoot, homeDir?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/db.ts#L1030-L1040)**: The returned [`SqliteDriver`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/db.ts#L288-L1025) instance is already scoped to `projectRoot`, so calls to `listSessions()`, `getAllTasks()`, `getAllDebates()`, and `getLatestSession()` automatically return only that project's data.
+2. **Caution When Calling `new SqliteDriver(dbPath)` Directly**: Omitting the second argument (`projectRoot`) queries sessions across all projects. When querying a specific project, always pass `new SqliteDriver(dbPath, projectRoot)` or use `openProjectDb(projectRoot)`.
+3. **Role of `projectHash`**: `projectHash` on `resolveAsdPaths()` and `KnownProjectSummary` remains available as a stable UI list key (`key={p.projectHash}`), but the actual database file path must always reference `paths.dbPath` (`~/.asd/state/core.db`).
 
-### 1.2 v2.4.0 신규 및 고도화 SDK 요약
-1. **프로젝트별 5대 하네스 CLI 세션 통합 탐색 ([`discoverProjectCliSessions`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/session-tracker.ts#L1774-L1895))**:
-   - Claude Code, OpenCode, Codex, Antigravity, Cursor에서 현재 프로젝트 경로로 실행된 모든 CLI 세션을 찾고, ASD 세션 승격 여부(`isPromotedToAsd`, `asdSessionId`, `asdPhase`)까지 결합해 반환합니다.
-2. **대화 기록 4분류 정밀 파싱 ([`readHarnessTranscript`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/transcripts.ts#L995-L1084))**:
-   - 각 하네스의 로컬 DB/파일에서 대화 기록을 읽어 **① Thinking(`thinking`), ② Tool Use(`tool_use`), ③ Tool Result(`tool_result`), ④ 사용자에게 답하는 메시지(`assistant`) 및 사용자 메시지(`user`)**로 정밀 분리합니다.
-3. **실시간 스트리밍 턴 실행 ([`runDriverTurn`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L926-L1196) & [`parseDriverStreamLine`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L583-L920))**:
-   - 유저 메시지를 실제 하네스로 전달해 실행하면서, 실행 도중 발생하는 실시간 Thinking 과정, Tool Use 과정, Tool Result, 응답 텍스트를 `onEvent` 콜백으로 즉시 스트리밍합니다.
-4. **일반 CLI 세션 ↔ ASD 세션 양방향 승격 및 하강**:
-   - **승격(Promote)**: [`promoteCliSessionToAsd`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/session-tracker.ts#L1619-L1740)로 일반 CLI 세션을 ASD 세션으로 즉시 승격(멱등성 보장 + 드라이버 자동 연결)합니다.
-   - **하강(Demote)**: [`demoteAsdSession`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/session-tracker.ts#L1455-L1545)(또는 CLI `asd resume`)로 ASD 세션을 일시정지하고 원래 하네스의 네이티브 CLI 세션으로 즉시 복귀합니다.
-5. **초기 로딩 및 모델 탐색 속도 최적화**:
-   - [`discoverHarnessModels`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/dashboard.ts#L225-L470): 비동기 병렬 실행(`Promise.all`) + `~/.asd/state/models-cache.json`(10분 TTL) 디스크 캐시 적용.
-   - [`listKnownProjects`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/session-tracker.ts#L1901-L1980): 15초 인메모리 FS 캐시, `skipDiskCheck`, `db` 인스턴스 재사용 옵션 추가.
+### 1.2 Summary of New & Enhanced v2.4.0 SDK APIs
+1. **Unified 5-Harness CLI Session Discovery per Project ([`discoverProjectCliSessions`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/session-tracker.ts#L1774-L1895))**:
+   - Discovers all CLI sessions executed in the current project path across Claude Code, OpenCode, Codex, Antigravity, and Cursor, joined with ASD session promotion state (`isPromotedToAsd`, `asdSessionId`, `asdPhase`).
+2. **4-Category Structured Transcript Parsing ([`readHarnessTranscript`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/transcripts.ts#L995-L1084))**:
+   - Reads transcripts from each harness's local DB/files and separates messages into **1. Thinking (`thinking`), 2. Tool Use (`tool_use`), 3. Tool Result (`tool_result`), and 4. Assistant (`assistant`) & User (`user`) messages**.
+3. **Live Streaming Turn Execution ([`runDriverTurn`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L926-L1196) & [`parseDriverStreamLine`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/drivers.ts#L583-L920))**:
+   - Relays user messages to the active harness and streams real-time Thinking steps, Tool Use invocations, Tool Results, and response text via the `onEvent` callback.
+4. **Bidirectional Plain CLI Session <-> ASD Session Promotion & Demotion**:
+   - **Promote**: [`promoteCliSessionToAsd`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/session-tracker.ts#L1619-L1740) immediately promotes a plain CLI session into an ASD session (idempotent + automatic driver attachment).
+   - **Demote**: [`demoteAsdSession`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/session-tracker.ts#L1455-L1545) (or CLI `asd resume`) pauses an ASD session and returns immediately to the original harness's native interactive CLI session.
+5. **Fast Initial Loading & Model Discovery Caching**:
+   - [`discoverHarnessModels`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/dashboard.ts#L225-L470): Asynchronous parallel probing (`Promise.all`) backed by a 10-minute TTL disk cache at `~/.asd/state/models-cache.json`.
+   - [`listKnownProjects`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/session-tracker.ts#L1901-L1980): Added 15-second in-memory FS stat cache, `skipDiskCheck`, and `db` instance reuse options.
 
 ---
 
-## 2. v2.4.0 핵심 신규/개선 SDK 상세 사용법
+## 2. Detailed Usage of Key v2.4.0 SDK APIs
 
-### 2.1 프로젝트 내 5대 하네스 CLI 세션 통합 탐색 (`discoverProjectCliSessions`)
+### 2.1 Unified 5-Harness CLI Session Discovery (`discoverProjectCliSessions`)
 
-특정 프로젝트 경로에서 실행된 5대 하네스의 로컬 CLI 세션을 모두 스캔(`syncLocalHarnessTranscripts` 포함)하고 `core.db`의 ASD 세션과 매칭하여 최신순으로 반환합니다.
+Scans all local CLI sessions across the 5 harnesses executed in a given project path (including `syncLocalHarnessTranscripts`), matches them against ASD sessions in `core.db`, and returns them sorted newest-first.
 
 ```ts
 import {
@@ -62,33 +62,33 @@ import {
 
 const sessions: DiscoveredCliSession[] = discoverProjectCliSessions("/path/to/project", {
   limit: 100,
-  syncLocalTranscripts: true, // 기본값 true: Claude/Codex/OpenCode/Antigravity 로컬 스토리지 스캔 포함
+  syncLocalTranscripts: true, // Default true: includes local storage scan for Claude/Codex/OpenCode/Antigravity
 });
 ```
 
-#### `DiscoveredCliSession` 반환 구조
-| 필드 | 타입 | 설명 |
+#### `DiscoveredCliSession` Return Shape
+| Field | Type | Description |
 | :--- | :--- | :--- |
 | `harness` | `HarnessId` | `"claude-code" \| "opencode" \| "codex" \| "antigravity" \| "cursor"` |
-| `harnessSessionId` | `string` | 하네스 네이티브 세션 ID (UUID 등) |
-| `projectRoot` | `string` | 정규화된 프로젝트 루트 경로 |
-| `updatedAt` | `number` | 마지막 활동 시각 (Unix epoch ms) |
-| `model` | `string \| undefined` | 감지된 모델 ID |
-| `summary` | `string \| undefined` | 세션의 첫 사용자 프롬프트 또는 요약 제목 |
-| `transcriptPath` | `string \| undefined` | 로컬 트랜스크립트 파일(`.jsonl`) 또는 `opencode.db` 경로 |
-| `asdSessionId` | `string \| null` | 승격된 ASD `session_id` (미승격 일반 CLI 세션이면 `null`) |
+| `harnessSessionId` | `string` | Native harness session ID (UUID, etc.) |
+| `projectRoot` | `string` | Normalized project root path |
+| `updatedAt` | `number` | Last activity timestamp (Unix epoch ms) |
+| `model` | `string \| undefined` | Detected model ID |
+| `summary` | `string \| undefined` | First user prompt or summary title of the session |
+| `transcriptPath` | `string \| undefined` | Local transcript file (`.jsonl`) or `opencode.db` path |
+| `asdSessionId` | `string \| null` | Promoted ASD `session_id` (`null` for unpromoted plain CLI sessions) |
 | `asdPhase` | `SessionPhase \| null` | `"planning" \| "running" \| "paused" \| "done" \| null` |
-| `isPromotedToAsd` | `boolean` | ASD 세션으로 승격되어 `core.db`에 등록되어 있으면 `true` |
+| `isPromotedToAsd` | `boolean` | `true` if promoted to an ASD session and registered in `core.db` |
 
 ---
 
-### 2.2 대화 기록 4분류 파서 (`readHarnessTranscript`)
+### 2.2 4-Category Transcript Parser (`readHarnessTranscript`)
 
-각 하네스의 로컬 트랜스크립트에서 대화 기록을 읽어 **Thinking**, **Tool Use**, **Tool Result**, **User / Assistant 메시지**로 분류합니다.
-- **Claude Code**: `~/.claude/projects/<encoded>/*.jsonl`의 `thinking`, `tool_use`, `tool_result`, `text` 블록 분리.
-- **Codex CLI**: `~/.codex/sessions/**/<id>.jsonl`의 `agent_reasoning`, `function_call`, `custom_tool_call`, `function_call_output`, `user_message`, `agent_message` 분리.
-- **OpenCode**: `~/.local/share/opencode/opencode.db`의 `part` 테이블(`reasoning`, `tool`, `text`) 및 JSON 스토리지 분리.
-- **Antigravity**: `transcript.jsonl`의 `USER_INPUT`, `PLANNER_RESPONSE`(`thinking`, `tool_calls`), `TOOL_RESPONSE` 분리 및 `truncated_fields` 발생 시 `transcript_full.jsonl` 해당 라인 자동 복원.
+Reads conversation history from each harness's local transcript storage and classifies entries into **Thinking**, **Tool Use**, **Tool Result**, and **User / Assistant messages**.
+- **Claude Code**: Separates `thinking`, `tool_use`, `tool_result`, and `text` blocks from `~/.claude/projects/<encoded>/*.jsonl`.
+- **Codex CLI**: Separates `agent_reasoning`, `function_call`, `custom_tool_call`, `function_call_output`, `user_message`, and `agent_message` from `~/.codex/sessions/**/<id>.jsonl`.
+- **OpenCode**: Separates the `part` table (`reasoning`, `tool`, `text`) in `~/.local/share/opencode/opencode.db` and JSON storage.
+- **Antigravity**: Separates `USER_INPUT`, `PLANNER_RESPONSE` (`thinking`, `tool_calls`), and `TOOL_RESPONSE` in `transcript.jsonl`, automatically restoring untruncated lines from `transcript_full.jsonl` when `truncated_fields` occurs.
 
 ```ts
 import {
@@ -102,12 +102,12 @@ const transcript: TranscriptReadResult = readHarnessTranscript({
   harness: "claude-code", // "claude-code" | "opencode" | "codex" | "antigravity" | "cursor"
   projectRoot: "/path/to/project",
   harnessSessionId: "eb7de063-fd75-4fa7-8312-9efcf3fd77e5",
-  transcriptPath: undefined, // 선택: 알고 있는 경우 직접 전달하면 디스크 탐색 생략
+  transcriptPath: undefined, // Optional: pass directly if known to skip disk lookup
   maxMessages: 300,
 });
 ```
 
-#### `TranscriptMessage` 인터페이스 (v2.4.0)
+#### `TranscriptMessage` Interface (v2.4.0)
 ```ts
 export type TranscriptMessageCategory =
   | "user"
@@ -121,17 +121,17 @@ export interface TranscriptMessage {
   role: "user" | "assistant" | "system" | "tool";
   category?: TranscriptMessageCategory;
   text: string;
-  thinking?: string; // category === "thinking" 일 때 추론 원문
+  thinking?: string; // Raw reasoning text when category === "thinking"
   toolName?: string;
   toolUse?: {
     name: string;
     id?: string;
-    input?: string;  // 도구 호출 인자 JSON 문자열
+    input?: string;  // Tool call arguments as a JSON string
   };
   toolResult?: {
     name?: string;
     toolUseId?: string;
-    output: string;  // 도구 실행 결과 텍스트
+    output: string;  // Tool execution output text
     isError?: boolean;
   };
   timestamp?: string;
@@ -140,9 +140,9 @@ export interface TranscriptMessage {
 
 ---
 
-### 2.3 실시간 스트리밍 대화 실행 (`runDriverTurn`, `parseDriverStreamLine`)
+### 2.3 Live Streaming Conversation Execution (`runDriverTurn`, `parseDriverStreamLine`)
 
-유저가 대화창을 통해 보낸 메시지를 실제 하네스로 전달해 실행하고, 실행 중 발생하는 **Thinking 과정**, **Tool Use 과정**, **Tool Result**, **응답 텍스트**를 `onEvent` 콜백으로 실시간 수신합니다.
+Forwards a user message from a chat interface to the target harness and receives real-time **Thinking steps**, **Tool Use calls**, **Tool Results**, and **Assistant response text** via the `onEvent` callback.
 
 ```ts
 import {
@@ -162,58 +162,58 @@ const result: DriverRunResult = await runDriverTurn({
   projectRoot: "/path/to/project",
   db,
   sessionId: "asd-20261103-182153-i9ti",
-  prompt: "현재 프로젝트의 세션 트래커 구조를 분석해줘.",
-  model: "claude-sonnet-4-6",   // 선택: driver.model / 기본 모델 오버라이드 (ACP 세션에서는 setSessionModel로 전환)
-  transport: "auto",            // "auto" (기본: ACP 우선, 실패 시 CLI 폴백) | "acp" | "cli"
-  autoApprove: false,           // false 시 onPermissionRequest 콜백으로 대화형 권한 확인 (생략 시 session.auto_approve 따름)
+  prompt: "Analyze the session tracker architecture in the current project.",
+  model: "claude-sonnet-4-6",   // Optional: override driver.model / default model (switches via setSessionModel in ACP sessions)
+  transport: "auto",            // "auto" (default: ACP first, CLI fallback on failure) | "acp" | "cli"
+  autoApprove: false,           // When false, interactive permission confirmation is delegated to onPermissionRequest (defaults to session.auto_approve)
   onPermissionRequest: async (params) => {
     const allowOpt = params.options?.find((o) => o.kind === "allow_once");
     return allowOpt
       ? { outcome: { outcome: "selected", optionId: allowOpt.optionId } }
       : { outcome: { outcome: "cancelled" } };
   },
-  signal: controller.signal,    // AbortSignal로 협조적 취소(ACP session/cancel) 트리거 가능
-  streamJson: true,             // CLI 경로 사용 시 NDJSON 스트리밍 활성화
+  signal: controller.signal,    // Trigger cooperative cancellation (ACP session/cancel) via AbortSignal
+  streamJson: true,             // Enable NDJSON streaming when using the CLI transport path
   onEvent: (event: DriverStreamEvent) => {
     switch (event.type) {
       case "thinking":
-        console.log("[실시간 Thinking]", event.thinking);
+        console.log("[Live Thinking]", event.thinking);
         break;
       case "tool_use":
-        console.log("[실시간 Tool Use]", event.toolName, event.toolInput);
+        console.log("[Live Tool Use]", event.toolName, event.toolInput);
         break;
       case "tool_result":
-        console.log("[실시간 Tool Result]", event.toolOutput);
+        console.log("[Live Tool Result]", event.toolOutput);
         break;
       case "text":
-        console.log("[실시간 Assistant 응답]", event.text);
+        console.log("[Live Assistant Response]", event.text);
         break;
     }
   },
 });
 
-// 상주형 ACP 턴 제어 및 세션 풀 정리 헬퍼
-cancelDriverTurn("asd-20261103-182153-i9ti"); // 실행 중인 ACP 턴에 session/cancel 전송
-await closeDriverSession("asd-20261103-182153-i9ti"); // 해당 세션의 상주 ACP 클라이언트 종료
-await closeAllDriverSessions(); // 전체 상주 ACP 세션 풀 일괄 종료
+// Resident ACP turn control & session pool cleanup helpers
+cancelDriverTurn("asd-20261103-182153-i9ti"); // Send session/cancel to an active ACP turn
+await closeDriverSession("asd-20261103-182153-i9ti"); // Close the resident ACP client for this session
+await closeAllDriverSessions(); // Close all resident ACP sessions in the pool
 ```
 
-#### `RunDriverTurnInput` 주요 ACP·권한·수명주기 옵션
-| 옵션 / 헬퍼 | 타입 / 시그니처 | 설명 |
+#### Key `RunDriverTurnInput` ACP, Permission & Lifecycle Options
+| Option / Helper | Type / Signature | Description |
 | :--- | :--- | :--- |
-| `transport` | `"auto" \| "acp" \| "cli"` | `"auto"`(기본, `commandRunner` 지정 시 `"cli"`): 상주 ACP 세션 우선 실행 및 Phase-A 실패 시 CLI 폴백. `"acp"`는 ACP 미지원/실패 시 오류 발생 |
-| `model` | `string \| null` | 턴 실행 시 사용할 모델 오버라이드 (상주 ACP 풀 재사용 시 `setSessionModel`로 전환) |
-| `autoApprove` | `boolean` | `true`면 ACP 권한 요청을 자동 승인, `false`면 `onPermissionRequest` 위임 (보호 경로는 코어 가드가 선차단) |
-| `onPermissionRequest` | `(params: AcpRequestPermissionParams) => Promise<AcpRequestPermissionResult>` | `autoApprove: false`일 때 `session/request_permission` 응답을 비동기로 반환하는 콜백 |
-| `cancelDriverTurn` | `(sessionId: string) => boolean` | 해당 세션에서 실행 중인 ACP 턴에 `session/cancel` 전송 (`signal?: AbortSignal`과 동일 효과) |
-| `closeDriverSession` | `(sessionId: string) => Promise<void>` | 특정 세션에 연결된 상주 ACP 클라이언트만 풀에서 제거하고 종료 |
-| `closeAllDriverSessions` | `() => Promise<void>` | 앱 종료 시 모든 상주 ACP 클라이언트를 정리 |
+| `transport` | `"auto" \| "acp" \| "cli"` | `"auto"` (default, or `"cli"` when `commandRunner` is specified): prefers resident ACP session execution and falls back to CLI on Phase-A failure. `"acp"` throws an error if ACP is unsupported or fails |
+| `model` | `string \| null` | Model override for turn execution (switches via `setSessionModel` when reusing a resident ACP pool entry) |
+| `autoApprove` | `boolean` | When `true`, auto-approves ACP permission requests; when `false`, delegates to `onPermissionRequest` (protected paths are always blocked first by the core guard) |
+| `onPermissionRequest` | `(params: AcpRequestPermissionParams) => Promise<AcpRequestPermissionResult>` | Async callback returning the `session/request_permission` response when `autoApprove: false` |
+| `cancelDriverTurn` | `(sessionId: string) => boolean` | Sends `session/cancel` to an active ACP turn for the session (same effect as `signal?: AbortSignal`) |
+| `closeDriverSession` | `(sessionId: string) => Promise<void>` | Removes and terminates only the resident ACP client attached to the specified session |
+| `closeAllDriverSessions` | `() => Promise<void>` | Cleans up all resident ACP clients on application shutdown |
 
 ---
 
-### 2.4 ASD 세션 관리: 승격 (`promoteCliSessionToAsd`) 및 하강 (`demoteAsdSession`)
+### 2.4 ASD Session Management: Promote (`promoteCliSessionToAsd`) & Demote (`demoteAsdSession`)
 
-#### ① 일반 CLI 세션을 ASD 세션으로 승격 (Promote)
+#### 1. Promote a Plain CLI Session to an ASD Session (Promote)
 ```ts
 import {
   promoteCliSessionToAsd,
@@ -222,24 +222,24 @@ import {
 
 const promoted: PromoteCliSessionResult = promoteCliSessionToAsd({
   projectRoot: "/path/to/project",
-  homeDir: undefined,        // 선택: 생략 시 resolveHomeDir() 적용
+  homeDir: undefined,        // Optional: uses resolveHomeDir() when omitted
   harness: "claude-code",
   harnessSessionId: "eb7de063-fd75-4fa7-8312-9efcf3fd77e5",
   model: "claude-sonnet-4-6",
-  title: "GUI에서 승격된 세션",
-  memo: "GUI에서 승격된 세션",
-  transcriptPath: undefined, // 선택: 로컬 트랜스크립트 경로
-  makeForeground: true,      // true 시 .asd/PLAN.md 의 전경(Foreground) 세션으로 즉시 설정
-  source: "gui",             // "gui" | "cli" (기본값 "gui")
-  db: undefined,             // 선택: 이미 열린 SqliteDriver 인스턴스 주입 가능
+  title: "Session promoted from GUI",
+  memo: "Session promoted from GUI",
+  transcriptPath: undefined, // Optional: local transcript file path
+  makeForeground: true,      // When true, immediately sets as the foreground session in .asd/PLAN.md
+  source: "gui",             // "gui" | "cli" (default "gui")
+  db: undefined,             // Optional: inject an already-open SqliteDriver instance
 });
-// promoted.sessionId / promoted.asdSessionId -> 승격된 ASD session_id (동일 값)
-// promoted.created                           -> 신규 생성 여부 (이미 승격된 세션이면 false, 기존 세션 재사용)
-// promoted.driver                            -> 부착된 활성 DriverRow
-// promoted.session                           -> 생성 또는 재사용된 SessionRow
+// promoted.sessionId / promoted.asdSessionId -> promoted ASD session_id (identical value)
+// promoted.created                           -> whether newly created (false if already promoted, reusing existing session)
+// promoted.driver                            -> attached active DriverRow
+// promoted.session                           -> created or reused SessionRow
 ```
 
-#### ② ASD 세션을 다시 하네스의 네이티브 CLI 세션으로 하강 및 연결 해제 (`buildSessionDemotion`, `unlinkHarnessSessionFromAsdSession`)
+#### 2. Demote an ASD Session Back to a Native Harness CLI Session & Unlink (`buildSessionDemotion`, `unlinkHarnessSessionFromAsdSession`)
 ```ts
 import {
   buildSessionDemotion,
@@ -247,24 +247,24 @@ import {
   type SessionDemotionResult,
 } from "agent-swarm-director";
 
-// 1. 터미널 대화형 Resume 명령어 생성 (asd resume 과 동일; 활성 드라이버가 없어도 session.harness_session_id 폴백 지원)
+// 1. Build interactive terminal resume command (identical to asd resume; supports session.harness_session_id fallback even without an active driver)
 const demoted: SessionDemotionResult = buildSessionDemotion({
   projectRoot: "/path/to/project",
   sessionId: "asd-20261103-182153-i9ti",
 });
 // demoted.cliString -> 'claude --resume "eb7de063-fd75-4fa7-8312-9efcf3fd77e5"'
 
-// 2. ASD 세션에서 드라이버 연결을 끊고 cli-recent.json 의 asdSessionId 를 null 로 초기화하여 일반 CLI 세션으로 복원
+// 2. Detach driver from the ASD session and reset asdSessionId to null in cli-recent.json to restore plain CLI session state
 const unlinked = unlinkHarnessSessionFromAsdSession({
   projectRoot: "/path/to/project",
   asdSessionId: "asd-20261103-182153-i9ti",
-  deleteAsdSession: false, // true 전달 시 core.db 에서 해당 ASD 세션과 하위 태스크/드라이버를 연쇄 삭제
+  deleteAsdSession: false, // Pass true to cascade-delete the ASD session and its tasks/drivers from core.db
 });
 ```
 
 ---
 
-### 2.5 고속 프로젝트 로딩 및 모델 캐시 API (`listKnownProjects`, `discoverHarnessModels`)
+### 2.5 Fast Project Loading & Model Cache APIs (`listKnownProjects`, `discoverHarnessModels`)
 
 ```ts
 import {
@@ -273,86 +273,86 @@ import {
   getModelsDiskCachePath,
 } from "agent-swarm-director";
 
-// 1. 프로젝트 목록 고속 조회 (15초 FS stat 캐시 적용; skipDiskCheck: true 시 디스크 I/O 없이 DB만 즉시 조회)
+// 1. Fast project list lookup (applies 15s FS stat cache; skipDiskCheck: true queries DB immediately with zero disk stat I/O)
 const projects = listKnownProjects({
   skipDiskCheck: false,
   forceRefresh: false,
 });
 
-// 2. 비동기 병렬 모델 조회 (~/.asd/state/models-cache.json 10분 디스크 캐시 사용)
-const models = await discoverHarnessModels(false); // 강제 새로고침 시 true
+// 2. Asynchronous parallel model discovery (uses 10-minute disk cache at ~/.asd/state/models-cache.json)
+const models = await discoverHarnessModels(false); // Pass true to force refresh
 const cachePath = getModelsDiskCachePath();
 ```
 
 ---
 
-## 3. 전체 외부 호출 가능 인터페이스 카탈로그
+## 3. Full Externally Callable Interface Catalog
 
-### 3.1 Node.js 라이브러리 서브패스 Export (`package.json` `exports`)
+### 3.1 Node.js Library Subpath Exports (`package.json` `exports`)
 
 ```ts
-import * as asd from "agent-swarm-director";               // 전체 코어 통합 엔트리 (src/index.ts)
-import * as db from "agent-swarm-director/core/db";        // 개별 서브모듈 직접 import 가능
+import * as asd from "agent-swarm-director";               // Unified root core entry (src/index.ts)
+import * as db from "agent-swarm-director/core/db";        // Direct submodule imports also supported
 import * as mcp from "agent-swarm-director/mcp/server";
 import * as dashboard from "agent-swarm-director/cli/dashboard";
 ```
 
-| 모듈 경로 | 대표 공개 함수 및 클래스 |
+| Module Path | Key Exported Functions & Classes |
 | :--- | :--- |
-| **`core/types`** | `ASD_VERSION` (`"2.5.0"` — package.json에서 런타임 파생), `HARNESS_IDS`, `AGENT_ROLES`, `TASK_CATEGORIES`, `DIFFICULTY_TIERS`, `TASK_TRACKS`, `TASK_STATUSES`, `SESSION_PHASES`, `DRIVER_SOURCES` 및 전체 타입 |
+| **`core/types`** | `ASD_VERSION` (`"2.5.0"` — derived at runtime from `package.json`), `HARNESS_IDS`, `AGENT_ROLES`, `TASK_CATEGORIES`, `DIFFICULTY_TIERS`, `TASK_TRACKS`, `TASK_STATUSES`, `SESSION_PHASES`, `DRIVER_SOURCES`, and all core TypeScript interfaces |
 | **`core/config`** | `resolveAsdPaths(root, home?)`, `resolveHomeDir(explicit?)`, `ensureProjectInitialized`, `loadRoutingConfig`, `loadMcpCatalog`, `checkForRemoteUpdate`, `computeProjectHash` |
-| **`core/db`** | `openProjectDb(root, home?)`, `SqliteDriver(dbPath, projectRoot?)`, `generateAsdSessionId`, `isValidAsdSessionId` — `findSessionByHarnessSessionId(sid, harness?)` *(v2.4.0)*, `deleteSession(sessionId)` *(v2.4.0)* 및 `sessions` / `tasks` / `debates` / `session_drivers` 전체 CRUD |
-| **`core/session-tracker`** | `discoverProjectCliSessions` *(v2.4.0)*, `promoteCliSessionToAsd` *(v2.4.0)*, `unlinkHarnessSessionFromAsdSession` *(v2.4.0)*, `buildSessionDemotion`, `listKnownProjects` *(v2.4.0 캐시 최적화)*, `syncLocalHarnessTranscripts` *(v2.4.0 4하네스 확장 + `mtimeMs` 캐시, v2.4.3 cli-recent 자가 치유)*, `linkHarnessSessionToAsdSession`, `readCliRecentSessions`, `recordCliRecentSession`, `buildHeadlessHarnessCommand`, `buildResumeHarnessCommand` *(v2.4.3 `streaming` 옵션)*, `buildInteractiveResumeHarnessCommand`, `extractHookSessionInfo` *(v2.4.3 `ses_` 하네스 보정)* |
-| **`core/drivers`** | `runDriverTurn` *(v2.4.3 전 하네스 네이티브 JSONL 스트리밍 — `onEvent` + `streaming`)*, `parseDriverStreamLine` *(v2.4.3 agy `step_update`/cursor `tool_call` 실측 스키마)*, `attachDriver`, `detachDriver` *(driverId 또는 sessionId 지원)*, `getActiveDriver`, `listDrivers`, `buildDriverBriefing`, `syncSessionDriversToMainJson` |
-| **`core/transcripts`** | `readHarnessTranscript` *(v2.4.0 4분류 고도화)*, `locateHarnessTranscript` |
+| **`core/db`** | `openProjectDb(root, home?)`, `SqliteDriver(dbPath, projectRoot?)`, `generateAsdSessionId`, `isValidAsdSessionId` — `findSessionByHarnessSessionId(sid, harness?)` *(v2.4.0)*, `deleteSession(sessionId)` *(v2.4.0)*, and full CRUD across `sessions` / `tasks` / `debates` / `session_drivers` |
+| **`core/session-tracker`** | `discoverProjectCliSessions` *(v2.4.0)*, `promoteCliSessionToAsd` *(v2.4.0)*, `unlinkHarnessSessionFromAsdSession` *(v2.4.0)*, `buildSessionDemotion`, `listKnownProjects` *(v2.4.0 cache optimization)*, `syncLocalHarnessTranscripts` *(v2.4.0 4-harness expansion + `mtimeMs` cache, v2.4.3 `cli-recent` self-healing)*, `linkHarnessSessionToAsdSession`, `readCliRecentSessions`, `recordCliRecentSession`, `buildHeadlessHarnessCommand`, `buildResumeHarnessCommand` *(v2.4.3 `streaming` option)*, `buildInteractiveResumeHarnessCommand`, `extractHookSessionInfo` *(v2.4.3 `ses_` harness attribution fix)* |
+| **`core/drivers`** | `runDriverTurn` *(v2.4.3 full-harness native JSONL streaming — `onEvent` + `streaming`)*, `parseDriverStreamLine` *(v2.4.3 empirical `agy` `step_update` / `cursor` `tool_call` schema)*, `attachDriver`, `detachDriver` *(supports `driverId` or `sessionId`)*, `getActiveDriver`, `listDrivers`, `buildDriverBriefing` *(default locale `'en'`, optional `'ko'`)*, `syncSessionDriversToMainJson` |
+| **`core/transcripts`** | `readHarnessTranscript` *(v2.4.0 4-category parser)*, `locateHarnessTranscript` |
 | **`core/spawner`** | `spawnSubagent`, `executeHarnessProcess`, `killProcessTree`, `resolveSpawnCommand`, `finalizeSubagentArtifacts` |
-| **`core/router`** | `resolveRoute`, `runWithFallbacks`, `escalateTaskRoute`, `resolveFallback`, `detectAvailableCliHarnesses`, `selectDiverseReviewer`, `saveProjectRoutingConfig` *(v2.4.3 cli/dashboard에서 이관)* |
+| **`core/router`** | `resolveRoute`, `runWithFallbacks`, `escalateTaskRoute`, `resolveFallback`, `detectAvailableCliHarnesses`, `selectDiverseReviewer`, `saveProjectRoutingConfig` *(migrated from `cli/dashboard` in v2.4.3)* |
 | **`core/models`** *(v2.4.3)* | `discoverHarnessModels`, `getModelsDiskCachePath` |
 | **`core/session-services`** *(v2.4.3)* | `saveSessionMemo`, `collectDashboardSnapshot` |
 | **`core/subagent-control`** *(v2.4.3)* | `runSubagentControlAction` |
 | **`core/subagent-logs`** *(v2.4.3)* | `scanSubagentLogs`, `SubagentLogRecord` |
 | **`core/workspace`** | `prepareBaseline`, `createTaskWorktree`, `verifyAndCommitLightTask`, `verifyAndMergeHeavyTask`, `approvePendingTask`, `rejectPendingTask`, `rollbackLightChanges`, `recoverOrphanedTasks`, `isPidAlive`, `getChangedFiles`, `checkChangedFilesAndSecrets`, `withMergeLock`, `runGit` |
-| **`core/render`** | `renderPlanMd`, `parsePlanMd`, `syncPlanFromMd`, `setForegroundSession`, `getForegroundSessionId`, `renderProgressBoard`, `renderSessionSummaryMd`, `atomicWriteFileSync` |
+| **`core/render`** | `renderPlanMd`, `parsePlanMd`, `syncPlanFromMd`, `setForegroundSession`, `getForegroundSessionId`, `renderProgressBoard` *(English-default live `progressBoard`)*, `renderSessionSummaryMd`, `atomicWriteFileSync` |
 | **`core/debate`** | `runDebateBroker`, `synthesizeInsightVerdict`, `buildRound1Prompt`, `buildRound2Prompt`, `formatDebateAcceptance` |
 | **`core/policy`** | `evaluatePreToolUse`, `evaluateStopHook`, `isPathAllowed`, `checkProtectedPath`, `verifyChangedFilesBoundary` |
 | **`core/redact` & `jsonc`** | `redactSecrets`, `containsSecrets`, `parseJsonc`, `stripJsoncComments`, `upsertTomlFencedBlock`, `removeTomlFencedBlock` |
 | **`adapters/*`** | `ClaudeCodeAdapter`, `OpenCodeAdapter`, `CodexAdapter`, `AntigravityAdapter`, `CursorAdapter`, `syncGlobalHarnesses`, `uninstallGlobalHarnesses`, `runDoctor` |
 | **`mcp/server`** | `AsdMcpServer`, `ASD_MCP_TOOLS`, `handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate` |
-| **`cli/dashboard`** | `startDashboardServer` *(v2.4.3부터 루트 엔트리 미노출 — `asd ui` 서버+UI 전용, 데이터 서비스는 core/로 이관)* |
-| **`cli/index`** | `getAdapter`, `getLatestSession`, `scanSubagentLogs` *(v2.4.3 core/subagent-logs re-export)*, `runAsdLogs`, `runAsdClean` |
+| **`cli/dashboard`** | `startDashboardServer` *(not exported from root entry since v2.4.3 — dedicated to `asd ui` server+UI with default language `'en'`, data services migrated to `core/`)* |
+| **`cli/index`** | `getAdapter`, `getLatestSession`, `scanSubagentLogs` *(v2.4.3 `core/subagent-logs` re-export)*, `runAsdLogs`, `runAsdClean` |
 
 ---
 
-### 3.2 CLI 서브커맨드 (`asd <command>`)
+### 3.2 CLI Subcommands (`asd <command>`)
 
-공통 플래그: `--json`, `--project-root <dir>`, `--home <dir>`, `--session <id>`, `--harness <id>`.
+Common flags: `--json`, `--project-root <dir>`, `--home <dir>`, `--session <id>`, `--harness <id>`.
 
-| 명령어 | 설명 | 주요 플래그 |
+| Command | Description | Key Flags |
 | :--- | :--- | :--- |
-| `asd plan [create\|get\|update\|sync_from_md]` | `.asd/PLAN.md` 및 SQLite 태스크 생성·조회·역동기화 | `--tasks <json>`, `--payload <json\|->`, `--file <path>` |
-| `asd dispatch` | Turn(Wave) 태스크 병렬 실행 또는 클레임 | `--turn <n>`, `--mode parallel_spawn\|claim_only`, `--task T1.1` |
-| `asd verify --task <id>` | 파일 경계·시크릿·테스트 검증 후 커밋(`LIGHT`) 또는 워크트리 병합(`HEAVY`) | `--summary`, `--files`, `--cmd`, `--payload` |
-| `asd debate --topic <t> --proposal <p>` | 교차 모델 블라인드 적대적 토론 및 `acceptance` 제약 자동 주입 | `--proposal-file`, `--diff`, `--files path:start-end` |
-| `asd resume` | 활성 ASD 세션을 하강(`demote`)하고 원래 하네스의 대화형 CLI로 즉시 복귀 | `--session <id>`, `--print`, `--json` |
-| `asd status` | 현재 프로젝트의 전경 세션 진행 현황 보드 출력 | `--json` |
-| `asd logs [taskId]` | 최근 또는 특정 태스크의 서브에이전트 프롬프트·출력 로그 조회 | `--json` |
-| `asd ui` | 로컬 실시간 웹 대시보드 서버 실행 (기본 포트 `3847`) | `--port <num>`, `--no-open` |
-| `asd sync` | 5대 하네스 글로벌 스킬·에이전트·훅·MCP 동기화 및 전역 `PATH` 등록 | `--force`, `--no-path` |
-| `asd update` | GitHub 최신 버전 pull 및 `asd sync` 자동 실행 | — |
-| `asd doctor` | 100ms 이내 환경·하네스·보안 훅 헬스체크 | `--json` |
-| `asd clean` | 잔여 `.asd/wt/*` 워크트리 정리 및 auto-stash 복원 | `--pop`, `--all` |
-| `asd uninstall` | ASD가 설치한 글로벌 설정만 외과적으로 원복 | `--home <dir>` |
-| `asd hook <type>` | 하네스 훅 평가기 (`session-start`, `pre-invocation`, `pre-tool-use`, `stop`) | stdin JSON → stdout JSON |
+| `asd plan [create\|get\|update\|sync_from_md]` | Create, query, update, or reverse-sync `.asd/PLAN.md` and SQLite tasks | `--tasks <json>`, `--payload <json\|->`, `--file <path>` |
+| `asd dispatch` | Execute or claim Turn (Wave) tasks in parallel | `--turn <n>`, `--mode parallel_spawn\|claim_only`, `--task T1.1` |
+| `asd verify --task <id>` | Verify file boundaries, secrets, and tests, then commit (`LIGHT`) or merge worktree (`HEAVY`) | `--summary`, `--files`, `--cmd`, `--payload` |
+| `asd debate --topic <t> --proposal <p>` | Run cross-model blind adversarial debate and auto-inject `acceptance` constraints | `--proposal-file`, `--diff`, `--files path:start-end` |
+| `asd resume` | Demote active ASD session and return immediately to the original harness's interactive CLI | `--session <id>`, `--print`, `--json` |
+| `asd status` | Print the current project's foreground session live `progressBoard` (English default) | `--json` |
+| `asd logs [taskId]` | Inspect subagent prompt and output logs for the latest or specified task | `--json` |
+| `asd ui` | Launch the local real-time web dashboard server (default port `3847`, default language `'en'`) | `--port <num>`, `--no-open` |
+| `asd sync` | Synchronize global skills, agents, hooks, and MCP across all 5 harnesses and register on global `PATH` | `--force`, `--no-path` |
+| `asd update` | Pull latest version from GitHub and automatically run `asd sync` | — |
+| `asd doctor` | Sub-100ms environment, harness, and security hook health check | `--json` |
+| `asd clean` | Clean leftover `.asd/wt/*` worktrees and restore auto-stashed changes | `--pop`, `--all` |
+| `asd uninstall` | Surgically revert only ASD-installed global configurations | `--home <dir>` |
+| `asd hook <type>` | Harness hook evaluator (`session-start`, `pre-invocation`, `pre-tool-use`, `stop`) | stdin JSON -> stdout JSON |
 
 ---
 
-### 3.3 로컬 웹 대시보드 HTTP API (`asd ui`, 기본 `http://127.0.0.1:3847`)
+### 3.3 Local Web Dashboard HTTP API (`asd ui`, default `http://127.0.0.1:3847`)
 
-| 엔드포인트 | 메서드 | 설명 |
+| Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/api/state` | `GET` | `collectDashboardSnapshot()` 전체 상태 스냅샷 반환 |
-| `/api/models` | `GET` | 5대 하네스별 사용 가능 모델 목록 조회 (`models-cache.json` 활용) |
-| `/api/models/refresh` | `POST` | 모델 목록 강제 재탐색 (`discoverHarnessModels(true)`) |
-| `/api/session-memo` | `POST` | 세션 한 줄 메모 저장 (`{ sessionId, memo }`) |
-| `/api/routing` | `POST` | 프로젝트 로컬 라우팅(`.asd/routing.jsonc`) 저장 또는 초기화 (`{ action: "save" \| "reset", routingConfig }`) |
-| `/api/subagent-action` | `POST` | 서브에이전트 실시간 제어 (`{ sessionId, subSessionId, action: "kill" \| "retry" \| "fallback" \| "custom", harness?, model? }`) |
+| `/api/state` | `GET` | Return full state snapshot from `collectDashboardSnapshot()` |
+| `/api/models` | `GET` | Query available models across all 5 harnesses (backed by `models-cache.json`) |
+| `/api/models/refresh` | `POST` | Force re-discovery of harness models (`discoverHarnessModels(true)`) |
+| `/api/session-memo` | `POST` | Save a short session memo (`{ sessionId, memo }`) |
+| `/api/routing` | `POST` | Save or reset project-local routing (`.asd/routing.jsonc`) (`{ action: "save" \| "reset", routingConfig }`) |
+| `/api/subagent-action` | `POST` | Real-time subagent control (`{ sessionId, subSessionId, action: "kill" \| "retry" \| "fallback" \| "custom", harness?, model? }`) |
