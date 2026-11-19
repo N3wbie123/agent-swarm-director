@@ -11,7 +11,7 @@ import {
   linkHarnessSessionToAsdSession,
   readCliRecentSessions,
 } from "../src/core/session-tracker.ts";
-import { AsdMcpServer } from "../src/mcp/server.ts";
+import { AsdOrchestrator } from "../src/orchestrator/index.ts";
 import { ensureGitUserIdentity, prepareBaseline, runGit } from "../src/core/workspace.ts";
 
 function makeTempProject(prefix = "asd-driver-hooks-"): string {
@@ -134,7 +134,7 @@ test("CR-04: MCP handlePlan create/update switches driver when called from anoth
   try {
     const db = openProjectDb(root);
     const sessionId = "asd-20261101-" + Date.now() + "-hk03";
-    const server = new AsdMcpServer({ db, projectRoot: root, autoSync: false });
+    const server = new AsdOrchestrator({ db, projectRoot: root, autoSync: false });
 
     await server.handlePlan({
       action: "create",

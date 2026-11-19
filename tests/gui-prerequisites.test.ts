@@ -20,7 +20,7 @@ import { describe, test } from "node:test";
 import * as asdPublicApi from "../src/index.ts";
 import {
   approvePendingTask,
-  AsdMcpServer,
+  AsdOrchestrator,
   buildInteractiveResumeHarnessCommand,
   buildResumeHarnessCommand,
   collectDashboardSnapshot,
@@ -78,7 +78,7 @@ describe("GUI Prerequisites & Session Architecture", () => {
     const cliDashboard = await import("agent-swarm-director/cli/dashboard");
     const coreSessionServices = await import("agent-swarm-director/core/session-services");
     const coreSessionServicesTs = await import("agent-swarm-director/core/session-services.ts");
-    const mcpServer = await import("agent-swarm-director/mcp/server");
+    const orchestrator = await import("agent-swarm-director/orchestrator/index");
 
     assert.equal(typeof coreDb.openProjectDb, "function");
     assert.equal(coreDb.openProjectDb, coreDbTs.openProjectDb);
@@ -91,7 +91,7 @@ describe("GUI Prerequisites & Session Architecture", () => {
       coreSessionServices.collectDashboardSnapshot,
       coreSessionServicesTs.collectDashboardSnapshot
     );
-    assert.equal(typeof mcpServer.AsdMcpServer, "function");
+    assert.equal(typeof orchestrator.AsdOrchestrator, "function");
   });
 
   test("2. Session resume command builders work via options-object form", () => {
@@ -191,7 +191,7 @@ describe("GUI Prerequisites & Session Architecture", () => {
       assert.equal(sessionEntriesBefore.length, 0);
 
       // Now run `asd_plan` (simulating `/asd` invocation in that same harness session)
-      const server = new AsdMcpServer({
+      const server = new AsdOrchestrator({
         projectRoot: tmpProj,
         homeDir: tmpHome,
         autoSync: false,

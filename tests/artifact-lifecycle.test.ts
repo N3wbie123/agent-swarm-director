@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { openProjectDb } from "../src/core/db.ts";
 import { finalizeSubagentArtifacts, type CommandRunner } from "../src/core/spawner.ts";
 import { ensureGitUserIdentity, prepareBaseline, rejectPendingTask, runGit } from "../src/core/workspace.ts";
-import { AsdMcpServer } from "../src/mcp/server.ts";
+import { AsdOrchestrator } from "../src/orchestrator/index.ts";
 import { scanSubagentLogs } from "../src/core/subagent-logs.ts";
 import { runSubagentControlAction } from "../src/core/subagent-control.ts";
 
@@ -71,7 +71,7 @@ describe("CR-09: Subagent Artifact Lifecycle (finalizeSubagentArtifacts & Prompt
     };
 
     const db = openProjectDb(root);
-    const server = new AsdMcpServer({ projectRoot: root, db, commandRunner: runner });
+    const server = new AsdOrchestrator({ projectRoot: root, db, commandRunner: runner });
     try {
       const sid = "asd-20261101-133501-a002";
       await server.handlePlan({

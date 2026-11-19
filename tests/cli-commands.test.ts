@@ -514,4 +514,35 @@ describe("CLI Parser, Hook Latency, Clean Safety, Handoff, Migrate & Update Chec
     assert.ok(withNewline.startsWith("\n\x1b[1;33mACP Bridge Setup Guidance (optional):"));
     assert.equal(formatAcpBridgeGuidance([], { useColor: true }), "");
   });
+
+  test("10. CLI supports 'asd plan schema', --track DIRECT, status telemetry, and rejects retired 'asd mcp'", () => {
+    const parsedTrack = parseCliArgs(["plan", "--track", "DIRECT"]);
+    assert.equal(parsedTrack.parseError, undefined);
+    assert.equal(parsedTrack.options.track, "DIRECT");
+
+    const invalidTrack = parseCliArgs(["plan", "--track", "INVALID"]);
+    assert.ok(invalidTrack.parseError?.includes("--track"));
+
+    const schemaRun = child_process.spawnSync(
+      process.execPath,
+      ["--no-warnings", cliPath, "plan", "schema"],
+      { encoding: "utf8", windowsHide: true }
+    );
+    assert.equal(schemaRun.status, 0, schemaRun.stderr);
+    const schemaJson = JSON.parse(schemaRun.stdout) as {
+      properties: { tasks: { items: { properties: { track: { enum: string[] } } } } };
+    };
+    assert.deepEqual(
+      schemaJson.properties.tasks.items.properties.track.enum,
+      ["DIRECT", "LIGHT", "HEAVY"]
+    );
+
+    const retiredMcpRun = child_process.spawnSync(
+      process.execPath,
+      ["--no-warnings", cliPath, "mcp"],
+      { encoding: "utf8", windowsHide: true }
+    );
+    assert.equal(retiredMcpRun.status, 1);
+    assert.ok(retiredMcpRun.stderr.includes("Unknown command: mcp"));
+  });
 });

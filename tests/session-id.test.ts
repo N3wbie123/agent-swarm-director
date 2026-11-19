@@ -17,7 +17,7 @@ import {
 } from "../src/core/session-tracker.ts";
 import { SqliteDriver } from "../src/core/db.ts";
 import { spawnSubagent } from "../src/core/spawner.ts";
-import { AsdMcpServer } from "../src/mcp/server.ts";
+import { AsdOrchestrator } from "../src/orchestrator/index.ts";
 import { getAdapter as getAdapterFromRegistry } from "../src/adapters/registry.ts";
 import { getAdapter as getAdapterFromCli } from "../src/cli/index.ts";
 import {
@@ -29,7 +29,7 @@ import {
 } from "../src/index.ts";
 
 const tmpDirs: string[] = [];
-const openServers: AsdMcpServer[] = [];
+const openServers: AsdOrchestrator[] = [];
 const openDrivers: SqliteDriver[] = [];
 
 after(() => {
@@ -143,7 +143,7 @@ test("createOrGetSession throws INVALID_SESSION_ID on invalid sessionId and stil
 
 test("handlePlan throws INVALID_SESSION_ID on invalid explicit sessionId", async () => {
   const projectRoot = tempDir("asd-sessid-plan-");
-  const server = new AsdMcpServer({ projectRoot, autoSync: false });
+  const server = new AsdOrchestrator({ projectRoot, autoSync: false });
   openServers.push(server);
 
   await assert.rejects(
@@ -164,7 +164,7 @@ test("handlePlan throws INVALID_SESSION_ID on invalid explicit sessionId", async
 
 test("handlePlan accepts a valid explicit sessionId", async () => {
   const projectRoot = tempDir("asd-sessid-plan-ok-");
-  const server = new AsdMcpServer({ projectRoot, autoSync: false });
+  const server = new AsdOrchestrator({ projectRoot, autoSync: false });
   openServers.push(server);
 
   const out = await server.handlePlan({

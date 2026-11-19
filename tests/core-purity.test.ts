@@ -2,11 +2,11 @@
  * ASD Core Purity & HarnessPlugin Registry Tests (tests/core-purity.test.ts)
  *
  * Verifies:
- * 1. HC-1: Strict Core Purity: ZERO files in src/core/ import from ../adapters, ../mcp, or ../cli.
+ * 1. HC-1: Strict Core Purity: ZERO files in src/core/ import from ../adapters, ../orchestrator, ../mcp, or ../cli.
  * 2. Core Harness Plugin Registry: registerHarnessRuntimePlugin and getHarnessRuntimePlugin.
  * 3. Core Harness Provisioner Registry: registerHarnessProvisionerPlugin and getHarnessProvisionerPlugin.
  * 4. Core Installer Hooks Registry: registerCoreInstallerHooks and getCoreInstallerHooks.
- * 5. buildPromptForTask Purity: Works identically from src/core/session-services.ts and re-exported from src/mcp/server.ts.
+ * 5. buildPromptForTask Purity: Works identically from src/core/session-services.ts and re-exported from src/orchestrator/index.ts.
  */
 
 import assert from "node:assert/strict";
@@ -29,10 +29,10 @@ import {
   type HarnessProvisionerPlugin,
   type HarnessRuntimePlugin,
 } from "../src/core/types.ts";
-import { buildPromptForTask as buildPromptFromMcp } from "../src/mcp/server.ts";
+import { buildPromptForTask as buildPromptFromOrchestrator } from "../src/orchestrator/index.ts";
 
 describe("Strict Core Purity (HC-1)", () => {
-  test("assert ZERO imports from ../adapters, ../mcp, or ../cli across all files in src/core", () => {
+  test("assert ZERO imports from ../adapters, ../orchestrator, ../mcp, or ../cli across all files in src/core", () => {
     const coreDir = path.resolve(import.meta.dirname, "../src/core");
     const coreFiles = fs
       .readdirSync(coreDir)
@@ -41,7 +41,7 @@ describe("Strict Core Purity (HC-1)", () => {
     assert.ok(coreFiles.length >= 10, "Expected at least 10 TypeScript files in src/core");
 
     const forbiddenPattern =
-      /(?:import\s+(?:[\w*\s{},]*\s+from\s+)?|export\s+[\w*\s{},]*\s+from\s+|require\s*\(\s*|import\s*\(\s*)["']\.\.\/(adapters|mcp|cli)(?:\/|\.ts|["'])/;
+      /(?:import\s+(?:[\w*\s{},]*\s+from\s+)?|export\s+[\w*\s{},]*\s+from\s+|require\s*\(\s*|import\s*\(\s*)["']\.\.\/(adapters|orchestrator|mcp|cli)(?:\/|\.ts|["'])/;
 
     const violations: Array<{ file: string; line: number; text: string }> = [];
 
@@ -165,7 +165,7 @@ describe("HarnessPlugin & Core Registry Contracts", () => {
 });
 
 describe("buildPromptForTask Purity & Backward Compatibility", () => {
-  test("buildPromptForTask produces identical output when imported from core or re-exported from mcp/server", () => {
+  test("buildPromptForTask produces identical output when imported from core or re-exported from orchestrator", () => {
     const sampleTask: TaskRow = {
       session_id: "test-sess",
       task_id: "T1.1",
@@ -199,9 +199,9 @@ describe("buildPromptForTask Purity & Backward Compatibility", () => {
     const files = ["src/core/types.ts"];
 
     const promptFromCore = buildPromptFromCore(sampleTask, decisions, files);
-    const promptFromMcp = buildPromptFromMcp(sampleTask, decisions, files);
+    const promptFromOrchestrator = buildPromptFromOrchestrator(sampleTask, decisions, files);
 
-    assert.strictEqual(promptFromCore, promptFromMcp, "MCP re-export must match Core output 100%");
+    assert.strictEqual(promptFromCore, promptFromOrchestrator, "Orchestrator re-export must match Core output 100%");
     assert.ok(promptFromCore.includes("# ASD Subagent Task: T1.1"));
     assert.ok(promptFromCore.includes("src/core/types.ts"));
     assert.ok(promptFromCore.includes("Decision 1: purity first"));

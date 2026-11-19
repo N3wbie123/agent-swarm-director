@@ -43,13 +43,18 @@ export {
 } from "./adapters/registry.ts";
 
 export {
-  AsdMcpServer,
-  ASD_MCP_TOOLS,
+  AsdOrchestrator,
+  PLAN_SCHEMA_DEFINITION,
+  buildEscalationHint,
+  detectRoleCategoryWarnings,
+  findOverlappingLightTargetFiles,
+  parseSubagentReport,
   handlePlan,
   handleDispatch,
   handleVerify,
   handleDebate,
-} from "./mcp/server.ts";
+  type AsdOrchestratorOptions,
+} from "./orchestrator/index.ts";
 
 export {
   runAsdLogs,

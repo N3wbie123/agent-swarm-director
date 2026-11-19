@@ -124,6 +124,7 @@ export interface CliArgs {
     task?: string;
     turn?: number;
     mode?: string;
+    track?: "DIRECT" | "LIGHT" | "HEAVY";
     transport?: SubagentTransportMode;
     timeout?: number;
     openCodeSession?: string;
@@ -158,6 +159,7 @@ const VALUE_OPTIONS = new Set([
   "--task-id",
   "--turn",
   "--mode",
+  "--track",
   "--transport",
   "--timeout",
   "--open-code-session",
@@ -309,6 +311,15 @@ export function parseCliArgs(args: string[]): CliArgs {
       }
     } else if (arg === "--mode" || arg.startsWith("--mode=")) {
       options.mode = readOptVal(arg, "--mode", next);
+    } else if (arg === "--track" || arg.startsWith("--track=")) {
+      const rawTrack = readOptVal(arg, "--track", next)?.trim().toUpperCase();
+      if (rawTrack === "DIRECT" || rawTrack === "LIGHT" || rawTrack === "HEAVY") {
+        options.track = rawTrack;
+      } else {
+        setError(
+          `Invalid --track value '${rawTrack ?? ""}': expected DIRECT, LIGHT, or HEAVY.`
+        );
+      }
     } else if (arg === "--transport" || arg.startsWith("--transport=")) {
       const rawTransport = readOptVal(arg, "--transport", next)?.trim().toLowerCase();
       if (rawTransport === "auto" || rawTransport === "acp" || rawTransport === "cli") {
@@ -978,14 +989,14 @@ Usage:
   asd <command> [options]
 
 Commands:
-  plan [create|get|update|sync_from_md]  Create, query, or sync .asd/PLAN.md & SQLite tasks
+  plan [create|get|update|sync_from_md|schema] Create, query, sync, or inspect .asd/PLAN.md schema
   dispatch [--turn <n>] [--mode <m>] [--async] Dispatch wave tasks (ACP-first + CLI fallback)
   wait [--session <id>] [--timeout <ms>] Wait for a detached 'asd dispatch --async' wave
   verify --task <id> [--summary <s>]     Verify task boundaries, run tests, and commit/merge
   debate --topic <t> --proposal <p>      Run zero-timeout cross-model blind debate via CLI
   sync [--force] [--refresh-models]      Sync ASD harnesses globally and install 'asd' CLI to PATH
   update                                 Pull latest ASD release from GitHub and sync configs
-  status [--json]                        Display current session progress board and warnings
+  status [--json]                        Display current session progress board, telemetry, and warnings
   resume [--session <id>] [--print|-p]   Demote/resume active ASD session in interactive CLI
   handoff [--output <path>] [--print|-p] Generate cross-harness session handoff markdown (handoff.md)
   migrate [--clean-legacy] [--json]      Migrate legacy local/per-hash core.db into ~/.asd/state/core.db
@@ -995,7 +1006,6 @@ Commands:
   clean [--pop] [--all] [--purge-orphans] Clean temporary worktrees and restore auto-stash
   uninstall [--home <dir>]               Surgically restore user harness configurations
   hook <pre-tool-use|stop>               Internal hook evaluator for harnesses
-  mcp                                    Start ASD MCP server over stdio
 
 Options:
   -h, --help                         Show this help message
@@ -1008,10 +1018,11 @@ Options:
       --task <id>                    Target task ID (or comma-separated IDs for dispatch)
       --turn <num>                   Target wave/turn number for dispatch
       --mode <mode>                  Dispatch mode (parallel_spawn|claim_only)
+      --track <track>                Default task track (DIRECT|LIGHT|HEAVY)
       --async                        Detach parallel_spawn wave into a non-blocking background worker
       --transport <auto|acp|cli>     Subagent transport selection (default: auto = ACP primary + CLI fallback)
       --timeout <ms>                 Timeout in milliseconds for 'asd wait'
-      --action <act>                 Plan action (create|get|update|sync_from_md)
+      --action <act>                 Plan action (create|get|update|sync_from_md|schema)
       --topic <text>                 Debate topic for 'asd debate'
       --proposal <text>              Debate proposal text for 'asd debate'
       --proposal-file <path>         Path to proposal markdown/text file for 'asd debate'
@@ -1300,12 +1311,37 @@ export async function main(
             ? readAsyncDispatchJob(projectRoot, session.session_id, homeDir)
             : null;
 
+          const totalAttempts = tasks.reduce((sum, t) => sum + (t.attempts ?? 0), 0);
+          const totalDurationMs = tasks.reduce((sum, t) => sum + (t.duration_ms ?? 0), 0);
+          const sumOpt = (getter: (t: TaskRow) => number | null | undefined): number | null => {
+            let found = false;
+            let total = 0;
+            for (const t of tasks) {
+              const v = getter(t);
+              if (typeof v === "number" && Number.isFinite(v)) {
+                found = true;
+                total += v;
+              }
+            }
+            return found ? total : null;
+          };
+          const telemetrySummary = {
+            totalRetries: totalAttempts,
+            totalDurationMs,
+            inputTokens: sumOpt((t) => t.input_tokens),
+            outputTokens: sumOpt((t) => t.output_tokens),
+            cacheTokens: sumOpt((t) => t.cache_tokens),
+            reasoningTokens: sumOpt((t) => t.reasoning_tokens),
+            costUsd: sumOpt((t) => t.cost_usd),
+          };
+
           if (flags.json) {
             console.log(
               JSON.stringify(
                 {
                   session: session ?? null,
                   tasks,
+                  telemetry: telemetrySummary,
                   hasStashedWork: !!session?.stashed_work_sha,
                   ...(asyncJob ? { asyncJob } : {}),
                 },
@@ -1326,6 +1362,30 @@ export async function main(
 
           const board = renderProgressBoard(session, tasks);
           console.log(board);
+          const metricParts: string[] = [];
+          if (telemetrySummary.totalDurationMs > 0) {
+            metricParts.push(`duration: ${(telemetrySummary.totalDurationMs / 1000).toFixed(1)}s`);
+          }
+          if (telemetrySummary.totalRetries > 0) {
+            metricParts.push(`retries: ${telemetrySummary.totalRetries}`);
+          }
+          if (
+            telemetrySummary.inputTokens !== null ||
+            telemetrySummary.outputTokens !== null
+          ) {
+            const tokenBits: string[] = [];
+            if (telemetrySummary.inputTokens !== null) tokenBits.push(`in=${telemetrySummary.inputTokens}`);
+            if (telemetrySummary.outputTokens !== null) tokenBits.push(`out=${telemetrySummary.outputTokens}`);
+            if (telemetrySummary.cacheTokens !== null) tokenBits.push(`cache=${telemetrySummary.cacheTokens}`);
+            if (telemetrySummary.reasoningTokens !== null) tokenBits.push(`reasoning=${telemetrySummary.reasoningTokens}`);
+            metricParts.push(`tokens(${tokenBits.join(", ")})`);
+          }
+          if (telemetrySummary.costUsd !== null) {
+            metricParts.push(`cost: $${telemetrySummary.costUsd.toFixed(4)}`);
+          }
+          if (metricParts.length > 0) {
+            console.log(`\nMetrics: ${metricParts.join(" | ")}`);
+          }
           if (asyncJob && asyncJob.status === "running") {
             console.log(
               `\nAsync Dispatch Running: ${asyncJob.jobId} (Turn ${asyncJob.turn}, Worker PID ${asyncJob.workerPid})`
@@ -1904,8 +1964,17 @@ export async function main(
       case "dispatch":
       case "verify":
       case "debate": {
-        const { AsdMcpServer } = await import("../mcp/server.ts");
-        const server = new AsdMcpServer({
+        if (
+          command === "plan" &&
+          (options.action === "schema" || subcommand === "schema")
+        ) {
+          const { PLAN_SCHEMA_DEFINITION } = await import("../orchestrator/index.ts");
+          console.log(JSON.stringify(PLAN_SCHEMA_DEFINITION, null, 2));
+          return 0;
+        }
+
+        const { AsdOrchestrator } = await import("../orchestrator/index.ts");
+        const orchestrator = new AsdOrchestrator({
           projectRoot,
           homeDir,
           autoSync: false,
@@ -1967,15 +2036,24 @@ export async function main(
               action,
               ...(flags.force ? { force: true } : {}),
               ...(options.title ? { title: options.title } : {}),
+              ...(options.track ? { track: options.track } : {}),
               ...(parsedTasks ? { tasks: parsedTasks } : {}),
               ...(options.session ? { sessionId: options.session } : {}),
               ...(options.harness ? { mainHarness: options.harness } : {}),
             };
-            const res = await server.handlePlan(input as Parameters<typeof server.handlePlan>[0]);
+            const res = await orchestrator.handlePlan(
+              input as Parameters<typeof orchestrator.handlePlan>[0]
+            );
             if (flags.json) {
               console.log(JSON.stringify(res, null, 2));
             } else {
               console.log(res.progressBoard);
+              if (res.warnings && res.warnings.length > 0) {
+                console.log("\nPlan Warnings:");
+                for (const w of res.warnings) {
+                  console.log(`  - ${w}`);
+                }
+              }
               console.log(`\nSession ID: ${res.sessionId} | Phase: ${res.phase} | Plan: ${res.planMdPath}`);
             }
             return 0;
@@ -1999,10 +2077,10 @@ export async function main(
               ...(flags.async ? { async: true } : {}),
               ...(taskIdsFromOpt ? { taskIds: taskIdsFromOpt } : {}),
             };
-            let res: Awaited<ReturnType<typeof server.handleDispatch>>;
+            let res: Awaited<ReturnType<typeof orchestrator.handleDispatch>>;
             try {
-              res = await server.handleDispatch(
-                input as Parameters<typeof server.handleDispatch>[0],
+              res = await orchestrator.handleDispatch(
+                input as Parameters<typeof orchestrator.handleDispatch>[0],
                 undefined,
                 { detachAsyncWorker: Boolean(flags.async) }
               );
@@ -2043,13 +2121,21 @@ export async function main(
               );
             } else {
               console.log(res.progressBoard);
+              if (res.concurrencyWarnings && res.concurrencyWarnings.length > 0) {
+                console.log("\nConcurrency Warnings:");
+                for (const w of res.concurrencyWarnings) {
+                  console.log(`  - ${w}`);
+                }
+              }
               for (const r of res.results) {
                 const tag =
                   options.mode === "claim_only" || !r.harness
                     ? "LIGHT"
                     : `@${r.harness}/${r.model}`;
                 console.log(
-                  `- ${r.taskId}: ${r.status} (${tag})${r.error ? ` [Error: ${r.error}]` : ""}`
+                  `- ${r.taskId}: ${r.status} (${tag})${r.error ? ` [Error: ${r.error}]` : ""}${
+                    r.logPath ? ` | log: ${r.logPath}` : ""
+                  }`
                 );
               }
               printAcpBridgeGuidance(res.acpBridgeHints, { leadingNewline: true });
@@ -2079,15 +2165,21 @@ export async function main(
               ...(options.cmd ? { verifyCmd: options.cmd } : {}),
               ...jsonPayload,
             };
-            const res = await server.handleVerify(input as Parameters<typeof server.handleVerify>[0]);
+            const res = await orchestrator.handleVerify(
+              input as Parameters<typeof orchestrator.handleVerify>[0]
+            );
             if (flags.json) {
               console.log(JSON.stringify(res, null, 2));
             } else {
               console.log(res.progressBoard);
               console.log(
-                `\nVerify [${res.taskId}]: ${res.verified ? "PASS" : "FAIL"} (status: ${res.status})${
-                  res.commitSha ? ` | commit: ${res.commitSha}` : ""
-                }${res.error ? `\nReason: ${res.error}` : ""}`
+                `\nVerify [${res.taskId}]: ${res.verified ? "PASS" : "FAIL"} (status: ${res.status}${
+                  typeof res.attempts === "number" ? `, attempts: ${res.attempts}` : ""
+                })${res.commitSha ? ` | commit: ${res.commitSha}` : ""}${
+                  res.logPath ? ` | log: ${res.logPath}` : ""
+                }${res.error ? `\nReason: ${res.error}` : ""}${
+                  res.escalationHint ? `\nEscalation: ${res.escalationHint}` : ""
+                }`
               );
               printAcpBridgeGuidance(res.acpBridgeHints, { leadingNewline: true });
             }
@@ -2147,7 +2239,7 @@ export async function main(
                 ? (options.harness as HarnessId)
                 : undefined;
             const includeDiff = Boolean(flags.diff || jsonPayload.includeDiff);
-            const res = await server.handleDebate(
+            const res = await orchestrator.handleDebate(
               {
                 sessionId: options.session || (jsonPayload.sessionId as string) || "",
                 taskId: options.task || (jsonPayload.taskId as string) || undefined,
@@ -2189,18 +2281,8 @@ export async function main(
           }
           return 0;
         } finally {
-          server.close();
+          orchestrator.close();
         }
-      }
-
-      case "mcp": {
-        const { AsdMcpServer } = await import("../mcp/server.ts");
-        const server = new AsdMcpServer({
-          projectRoot,
-          homeDir,
-        });
-        server.start();
-        return 0;
       }
 
       default: {

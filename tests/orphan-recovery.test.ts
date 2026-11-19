@@ -11,7 +11,7 @@ import {
   ensureGitUserIdentity,
   prepareBaseline,
 } from "../src/core/workspace.ts";
-import { AsdMcpServer } from "../src/mcp/server.ts";
+import { AsdOrchestrator } from "../src/orchestrator/index.ts";
 
 function makeTempGitRepo(prefix = "asd-orphan-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -229,7 +229,7 @@ test("CR-12: concurrent handleDispatch calls claim and execute each task at most
     const sessionId = "asd-20261101-120002-atom";
     let spawnCount = 0;
 
-    const server = new AsdMcpServer({
+    const server = new AsdOrchestrator({
       db,
       projectRoot: root,
       autoSync: false,
@@ -298,7 +298,7 @@ test("F07: handleDispatch automatically recovers dead parallel_spawn tasks and r
     const sessionId = "asd-20261105-095000-f07a";
     let spawnCount = 0;
 
-    const server = new AsdMcpServer({
+    const server = new AsdOrchestrator({
       db,
       projectRoot: root,
       autoSync: false,

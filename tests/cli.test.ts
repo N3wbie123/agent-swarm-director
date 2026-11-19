@@ -96,17 +96,21 @@ describe("ASD CLI (src/cli/index.ts)", () => {
   // 1. CLI Help and Unknown Command Handling
   // ==========================================================================
   describe("1. Help & Unknown Command Handling", () => {
-    test("asd --help prints usage and all 5 user commands + hook & mcp", () => {
+    test("asd --help prints usage and core commands without retired mcp command", () => {
       const res = runCli(["--help"]);
       assert.equal(res.exitCode, 0);
       assert.ok(res.stdout.includes("Usage:"));
+      assert.ok(res.stdout.includes("plan"));
+      assert.ok(res.stdout.includes("dispatch"));
+      assert.ok(res.stdout.includes("verify"));
+      assert.ok(res.stdout.includes("debate"));
       assert.ok(res.stdout.includes("sync"));
       assert.ok(res.stdout.includes("status"));
       assert.ok(res.stdout.includes("doctor"));
       assert.ok(res.stdout.includes("clean"));
       assert.ok(res.stdout.includes("uninstall"));
       assert.ok(res.stdout.includes("hook"));
-      assert.ok(res.stdout.includes("mcp"));
+      assert.equal(/^\s+mcp\s+/m.test(res.stdout), false, "Retired 'mcp' command must not appear in help");
     });
 
     test("asd -h flag displays help menu", () => {

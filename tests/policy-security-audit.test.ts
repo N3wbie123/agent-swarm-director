@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { evaluatePreToolUse } from "../src/core/policy.ts";
-import { AsdMcpServer } from "../src/mcp/server.ts";
+import { AsdOrchestrator } from "../src/orchestrator/index.ts";
 import { main as cliMain } from "../src/cli/index.ts";
 import { openProjectDb, type SqliteDriver } from "../src/core/db.ts";
 import {
@@ -51,7 +51,7 @@ describe("Security Policy, Subagent Guard, Orphan Recovery & Secret Fixture Audi
       process.env.ASD_SESSION_ROLE = "subagent";
 
       // MCP server blocks asd_plan, asd_dispatch, asd_debate
-      const server = new AsdMcpServer({
+      const server = new AsdOrchestrator({
         projectRoot: root,
         homeDir: home,
         sessionRole: "subagent",
@@ -95,7 +95,7 @@ describe("Security Policy, Subagent Guard, Orphan Recovery & Secret Fixture Audi
   test("2. handlePlan(action='get') does not overwrite PLAN.md and recovers dead parallel_spawn orphans", async () => {
     const root = makeTempDir();
     const home = makeTempDir();
-    const server = new AsdMcpServer({
+    const server = new AsdOrchestrator({
       projectRoot: root,
       homeDir: home,
       autoSync: false,

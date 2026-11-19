@@ -1952,7 +1952,7 @@ export async function approvePendingTask(options: {
     projectRoot,
     taskId: task.task_id,
     title: task.title,
-    track: task.track,
+    track: task.track as TaskTrack,
     allowedFiles,
     verifyCmd: task.verify_cmd,
     sessionId,

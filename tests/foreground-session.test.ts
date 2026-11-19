@@ -10,7 +10,7 @@ import {
   setForegroundSession,
   syncPlanFromMd,
 } from "../src/core/render.ts";
-import { AsdMcpServer } from "../src/mcp/server.ts";
+import { AsdOrchestrator } from "../src/orchestrator/index.ts";
 import { ensureGitUserIdentity, prepareBaseline, runGit } from "../src/core/workspace.ts";
 
 function makeTempProject(): string {
@@ -37,7 +37,7 @@ describe("CR-14: PLAN.md Foreground Session & Overwrite/Sync Guards", () => {
   test("2. when Session A is foreground, rendering or creating Session B preserves Session A in PLAN.md unless Session A is done", async () => {
     const root = makeTempProject();
     const db = new SqliteDriver(path.join(root, ".asd", "core.db"));
-    const server = new AsdMcpServer({ projectRoot: root, db });
+    const server = new AsdOrchestrator({ projectRoot: root, db });
     try {
       const sidA = "asd-20261101-100000-s00a";
       const sidB = "asd-20261101-100001-s00b";
@@ -190,7 +190,7 @@ describe("CR-14: PLAN.md Foreground Session & Overwrite/Sync Guards", () => {
     prepareBaseline(root);
 
     const db = new SqliteDriver(path.join(root, ".asd", "core.db"));
-    const server = new AsdMcpServer({ projectRoot: root, db });
+    const server = new AsdOrchestrator({ projectRoot: root, db });
     const planPath = path.join(root, ".asd", "PLAN.md");
     try {
       const sidA = "asd-20261101-110000-s00a";
@@ -283,7 +283,7 @@ describe("CR-14: PLAN.md Foreground Session & Overwrite/Sync Guards", () => {
   test("6. F04: handlePlan({ action: 'get' }) is strictly read-only (does not overwrite PLAN.md, main.json, or DB state)", async () => {
     const root = makeTempProject();
     const db = new SqliteDriver(path.join(root, ".asd", "core.db"));
-    const server = new AsdMcpServer({ projectRoot: root, db });
+    const server = new AsdOrchestrator({ projectRoot: root, db });
     const planPath = path.join(root, ".asd", "PLAN.md");
     try {
       // 1) Calling 'get' on an empty project creates zero DB sessions and zero files on disk

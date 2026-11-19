@@ -15,8 +15,8 @@
     "./adapters/*": "./src/adapters/*.ts",
     "./cli/*.ts": "./src/cli/*.ts",
     "./cli/*": "./src/cli/*.ts",
-    "./mcp/*.ts": "./src/mcp/*.ts",
-    "./mcp/*": "./src/mcp/*.ts",
+    "./orchestrator/*.ts": "./src/orchestrator/*.ts",
+    "./orchestrator/*": "./src/orchestrator/*.ts",
     "./package.json": "./package.json"
   },
   "engines": {

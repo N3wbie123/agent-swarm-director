@@ -6,7 +6,7 @@
  * 2. Subagent Shield Guard:
  *    - Rejects asd_plan, asd_dispatch, asd_verify, and asd_debate when ASD_SESSION_ROLE=subagent.
  *    - Allows tools/list for subagents.
- *    - Bypasses autoSync when role is subagent; runs onMainServerStart when role is main.
+ *    - Bypasses autoSync when role is subagent; runs onMainStart when role is main.
  * 3. asd_plan:
  *    - 'create': initializes session, writes main.json, writes PLAN.md, returns progressBoard.
  *    - 'update': updates task metadata and re-renders.
@@ -31,7 +31,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AsdMcpServer, ASD_MCP_TOOLS, handlePlan, handleDispatch, handleDebate, handleVerify, parseSubagentReport } from "../src/mcp/server.ts";
+import { AsdOrchestrator, PLAN_SCHEMA_DEFINITION, handlePlan, handleDispatch, handleDebate, handleVerify, parseSubagentReport } from "../src/orchestrator/index.ts";
 import { waitForAsyncDispatch } from "../src/core/subagent-control.ts";
 import { main as cliMain } from "../src/cli/index.ts";
 import { openProjectDb, type SqliteDriver } from "../src/core/db.ts";
@@ -40,7 +40,7 @@ import type { CommandRunner } from "../src/core/spawner.ts";
 import { ASD_VERSION, type AsdPlanOutput, type AsdDispatchOutput, type AsdVerifyOutput, type AsdDebateOutput, type DoneClaim } from "../src/core/types.ts";
 
 const tmpDirs: string[] = [];
-const openServers: AsdMcpServer[] = [];
+const openServers: AsdOrchestrator[] = [];
 
 function makeProjectRoot(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "asd-mcp-test-"));
@@ -85,77 +85,11 @@ afterEach(() => {
   }
 });
 
-describe("ASD MCP Server (src/mcp/server.ts)", () => {
-  describe("1. Protocol Handshake & Tool Schemas", () => {
-    test("initialize returns protocol version and serverInfo", async () => {
-      const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
-      openServers.push(server);
-
-      const resp = (await server.handleRequest("initialize", {})) as {
-        protocolVersion: string;
-        serverInfo: { name: string; version: string };
-      };
-
-      assert.equal(resp.protocolVersion, "2024-11-05");
-      assert.equal(resp.serverInfo.name, "asd-core");
-      assert.equal(resp.serverInfo.version, ASD_VERSION);
-    });
-
-    test("tools/list returns exactly the 4 ASD tools with complete schemas", async () => {
-      const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
-      openServers.push(server);
-
-      const resp = (await server.handleRequest("tools/list", {})) as {
-        tools: Array<{ name: string; description: string; inputSchema: { properties: Record<string, unknown>; required?: string[] } }>;
-      };
-
-      assert.ok(Array.isArray(resp.tools));
-      assert.equal(resp.tools.length, 4);
-
-      const toolNames = resp.tools.map((t) => t.name).sort();
-      assert.deepEqual(toolNames, ["asd_debate", "asd_dispatch", "asd_plan", "asd_verify"]);
-
-      // Verify asd_plan schema
-      const planTool = resp.tools.find((t) => t.name === "asd_plan")!;
-      assert.ok(planTool.description.includes("plan"));
-      assert.deepEqual(planTool.inputSchema.required, ["action"]);
-      assert.ok(planTool.inputSchema.properties["tasks"]);
-
-      // Verify asd_dispatch schema
-      const dispatchTool = resp.tools.find((t) => t.name === "asd_dispatch")!;
-      assert.ok(dispatchTool.description.includes("Dispatch"));
-      assert.deepEqual(dispatchTool.inputSchema.required, ["sessionId"]);
-
-      // Verify asd_verify schema
-      const verifyTool = resp.tools.find((t) => t.name === "asd_verify")!;
-      assert.ok(verifyTool.description.includes("verification"));
-      assert.deepEqual(verifyTool.inputSchema.required, ["sessionId", "taskId", "doneClaim"]);
-
-      // Verify asd_debate schema
-      const debateTool = resp.tools.find((t) => t.name === "asd_debate")!;
-      assert.ok(debateTool.description.includes("debate"));
-      assert.deepEqual(debateTool.inputSchema.required, ["sessionId", "topic", "proposal"]);
-    });
-
-    test("ping and notifications/initialized return empty object", async () => {
-      const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
-      openServers.push(server);
-
-      const pingResp = await server.handleRequest("ping", {});
-      assert.deepEqual(pingResp, {});
-
-      const notifResp = await server.handleRequest("notifications/initialized", {});
-      assert.deepEqual(notifResp, {});
-    });
-  });
-
+describe("ASD Orchestrator (src/orchestrator/)", () => {
   describe("2. Subagent Isolation Guard", () => {
     test("rejects orchestration tools when sessionRole is 'subagent'", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({
+      const server = new AsdOrchestrator({
         projectRoot,
         sessionRole: "subagent",
         autoSync: false,
@@ -165,7 +99,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       // asd_plan must be rejected
       await assert.rejects(
         async () => {
-          await server.handleRequest("asd_plan", { action: "create" });
+          await server.handlePlan({ action: "create" });
         },
         {
           name: "Error",
@@ -176,7 +110,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       // asd_dispatch must be rejected
       await assert.rejects(
         async () => {
-          await server.handleRequest("asd_dispatch", { sessionId: "s1" });
+          await server.handleDispatch({ sessionId: "s1" });
         },
         {
           name: "Error",
@@ -187,7 +121,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       // asd_debate must be rejected
       await assert.rejects(
         async () => {
-          await server.handleRequest("asd_debate", { sessionId: "s1", topic: "t", proposal: "p" });
+          await server.handleDebate({ sessionId: "s1", topic: "t", proposal: "p" });
         },
         {
           name: "Error",
@@ -195,30 +129,17 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         }
       );
 
-      // Rejection also works when called via tools/call wrapper
-      await assert.rejects(
-        async () => {
-          await server.handleRequest("tools/call", {
-            name: "asd_plan",
-            arguments: { action: "create" },
-          });
-        },
-        {
-          name: "Error",
-          message: "Subagents cannot invoke orchestration tools",
-        }
-      );
     });
 
     test("detects subagent via process.env.ASD_SESSION_ROLE = 'subagent'", async () => {
       process.env.ASD_SESSION_ROLE = "subagent";
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
       await assert.rejects(
         async () => {
-          await server.handleRequest("asd_dispatch", { sessionId: "test" });
+          await server.handleDispatch({ sessionId: "test" });
         },
         {
           name: "Error",
@@ -227,46 +148,18 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       );
     });
 
-    test("subagents are blocked from asd_verify; tools/list still allowed", async () => {
+    test("subagents can reach handleVerify without triggering the orchestration guard", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({
+      const server = new AsdOrchestrator({
         projectRoot,
         sessionRole: "subagent",
         autoSync: false,
       });
       openServers.push(server);
 
-      // tools/list is allowed
-      const listResp = (await server.handleRequest("tools/list", {})) as { tools: unknown[] };
-      assert.equal(listResp.tools.length, 4);
-
-      // asd_verify is blocked by the subagent guard
       await assert.rejects(
         async () => {
-          await server.handleRequest("asd_verify", {
-            sessionId: "missing",
-            taskId: "T1.1",
-            doneClaim: { summary: "ok", changed_files: [], key_decisions: [], risks: [] },
-          });
-        },
-        { name: "Error", message: "Subagents cannot invoke orchestration tools" }
-      );
-    });
-
-    test("main session asd_verify is not blocked by the subagent guard", async () => {
-      const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({
-        projectRoot,
-        sessionRole: "main",
-        autoSync: false,
-      });
-      openServers.push(server);
-
-      // main sessions reach verify logic; a missing session throws "Session not found",
-      // NOT the subagent guard rejection
-      await assert.rejects(
-        async () => {
-          await server.handleRequest("asd_verify", {
+          await server.handleVerify({
             sessionId: "missing",
             taskId: "T1.1",
             doneClaim: { summary: "ok", changed_files: [], key_decisions: [], risks: [] },
@@ -280,36 +173,63 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       );
     });
 
-    test("subagent role skips autoSync; main role invokes onMainServerStart", async () => {
+    test("main session asd_verify is not blocked by the subagent guard", async () => {
+      const projectRoot = makeProjectRoot();
+      const server = new AsdOrchestrator({
+        projectRoot,
+        sessionRole: "main",
+        autoSync: false,
+      });
+      openServers.push(server);
+
+      // main sessions reach verify logic; a missing session throws "Session not found",
+      // NOT the subagent guard rejection
+      await assert.rejects(
+        async () => {
+          await server.handleVerify({
+            sessionId: "missing",
+            taskId: "T1.1",
+            doneClaim: { summary: "ok", changed_files: [], key_decisions: [], risks: [] },
+          });
+        },
+        (err: Error) => {
+          assert.notEqual(err.message, "Subagents cannot invoke orchestration tools");
+          assert.ok(err.message.includes("Session not found"));
+          return true;
+        }
+      );
+    });
+
+    test("subagent role skips autoSync; main role invokes onMainStart", async () => {
       const projectRoot = makeProjectRoot();
       let mainStarted = false;
 
-      // When subagent: onMainServerStart must NOT be called
-      const subServer = new AsdMcpServer({
+      // When subagent: onMainStart must NOT be called
+      const subServer = new AsdOrchestrator({
         projectRoot,
         sessionRole: "subagent",
-        onMainServerStart: () => {
+        onMainStart: () => {
           mainStarted = true;
         },
       });
       openServers.push(subServer);
       assert.equal(mainStarted, false, "Subagent must not run startup hook");
 
-      // When main: onMainServerStart MUST be called
-      const mainServer = new AsdMcpServer({
+      // When main: onMainStart MUST be called
+      const mainServer = new AsdOrchestrator({
         projectRoot,
         sessionRole: "main",
-        onMainServerStart: () => {
+        onMainStart: () => {
           mainStarted = true;
         },
       });
       openServers.push(mainServer);
-      assert.equal(mainStarted, true, "Main session must trigger onMainServerStart");
+      assert.equal(mainStarted, true, "Main session must trigger onMainStart");
     });
 
     test("rejects direct handler calls, SDK exports, and CLI orchestration commands for subagents before any DB/disk mutation", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({
+      const server = new AsdOrchestrator({
         projectRoot,
         sessionRole: "subagent",
         autoSync: false,
@@ -470,10 +390,10 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
   describe("3. asd_plan Tool", () => {
     test("action: 'create' creates session, writes main.json & PLAN.md, returns progressBoard", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
-      const resp = (await server.handleRequest("asd_plan", {
+      const resp = (await server.handlePlan({
         action: "create",
         sessionId: "session-create-1",
         mainHarness: "claude-code",
@@ -495,7 +415,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
             turn: 1,
             title: "Heavy database migration",
             track: "HEAVY",
-            role: "builder",
+            role: "worker",
             category: "general",
             difficulty: "high",
             targetFiles: ["src/db/migrate.ts"],
@@ -537,11 +457,11 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
 
     test("action: 'update' modifies task definitions in SQLite and updates PLAN.md", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
       // Create initial plan
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "session-update-1",
         tasks: [
@@ -555,7 +475,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       });
 
       // Update task
-      const updated = (await server.handleRequest("asd_plan", {
+      const updated = (await server.handlePlan({
         action: "update",
         sessionId: "session-update-1",
         tasks: [
@@ -579,16 +499,16 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
 
     test("action: 'get' retrieves current session state", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "session-get-1",
         tasks: [{ taskId: "T1.1", turn: 1, title: "Task 1", targetFiles: ["a.ts"] }],
       });
 
-      const getResp = (await server.handleRequest("asd_plan", {
+      const getResp = (await server.handlePlan({
         action: "get",
         sessionId: "session-get-1",
       })) as AsdPlanOutput;
@@ -601,10 +521,10 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
 
     test("action: 'sync_from_md' syncs manual checkbox and title edits from PLAN.md to SQLite", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "session-sync-1",
         tasks: [
@@ -619,7 +539,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       fs.writeFileSync(planMdPath, planContent, "utf8");
 
       // sync_from_md
-      const syncResp = (await server.handleRequest("asd_plan", {
+      const syncResp = (await server.handlePlan({
         action: "sync_from_md",
         sessionId: "session-sync-1",
       })) as AsdPlanOutput;
@@ -629,32 +549,12 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.ok(syncResp.progressBoard.includes("done"));
     });
 
-    test("calling asd_plan through tools/call returns both content and structured fields", async () => {
-      const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
-      openServers.push(server);
-
-      const resp = (await server.handleRequest("tools/call", {
-        name: "asd_plan",
-        arguments: {
-          action: "create",
-          sessionId: "session-tools-call",
-          tasks: [{ taskId: "T1.1", turn: 1, title: "Tools Call Task", targetFiles: ["a.ts"] }],
-        },
-      })) as { content: Array<{ type: string; text: string }>; sessionId: string; progressBoard: string };
-
-      assert.ok(Array.isArray(resp.content));
-      assert.equal(resp.content[0]?.type, "text");
-      assert.equal(resp.sessionId, "session-tools-call");
-      assert.ok(resp.progressBoard.includes("### 📊 ASD TODO Progress"));
-    });
-
     test("implicit 'create' never mutates a completed latest session", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "sess-guard-done",
         tasks: [
@@ -665,7 +565,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       db.updateSessionPhase("sess-guard-done", "done");
       db.close();
 
-      const resp = (await server.handleRequest("asd_plan", {
+      const resp = (await server.handlePlan({
         action: "create",
         tasks: [
           { taskId: "T1.1", turn: 1, title: "Fresh probe work", track: "HEAVY", targetFiles: ["b.ts"] },
@@ -684,10 +584,10 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
 
     test("action: 'get' does not overwrite manual edits in .asd/PLAN.md or mutate DB/main.json (F04)", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "sess-readonly-get",
         tasks: [
@@ -705,7 +605,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         .replace("Original Task Title", "Manually Edited Title In Markdown");
       fs.writeFileSync(planMdPath, manualEditContent, "utf8");
 
-      const getResp = (await server.handleRequest("asd_plan", {
+      const getResp = (await server.handlePlan({
         action: "get",
       })) as AsdPlanOutput;
 
@@ -719,7 +619,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       fs.writeFileSync(mainJsonPath, originalMainJson, "utf8");
 
       // Now sync_from_md picks up the preserved manual edit
-      const syncResp = (await server.handleRequest("asd_plan", {
+      const syncResp = (await server.handlePlan({
         action: "sync_from_md",
       })) as AsdPlanOutput;
       assert.equal(syncResp.tasks[0]?.title, "Manually Edited Title In Markdown");
@@ -730,10 +630,10 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
   describe("4. asd_dispatch Tool", () => {
     test("mode: 'claim_only' claims pending tasks, creates worktree for HEAVY, updates PLAN.md", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "dispatch-claim-1",
         tasks: [
@@ -742,7 +642,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         ],
       });
 
-      const dispatchResp = (await server.handleRequest("asd_dispatch", {
+      const dispatchResp = (await server.handleDispatch({
         sessionId: "dispatch-claim-1",
         turn: 1,
         mode: "claim_only",
@@ -770,10 +670,10 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
 
     test("verifies upstream depends_on and blocks dispatch when dependencies are unfinished", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "dispatch-dep-test",
         tasks: [
@@ -790,7 +690,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       });
 
       // Try to dispatch Turn 2 while Turn 1 is still pending
-      const resp = (await server.handleRequest("asd_dispatch", {
+      const resp = (await server.handleDispatch({
         sessionId: "dispatch-dep-test",
         turn: 2,
         mode: "claim_only",
@@ -820,14 +720,14 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         },
       };
 
-      const server = new AsdMcpServer({
+      const server = new AsdOrchestrator({
         projectRoot,
         commandRunner: mockRunner,
         autoSync: false,
       });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "dispatch-spawn-1",
         tasks: [
@@ -844,7 +744,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         ],
       });
 
-      const dispatchResp = (await server.handleRequest("asd_dispatch", {
+      const dispatchResp = (await server.handleDispatch({
         sessionId: "dispatch-spawn-1",
         turn: 1,
         mode: "parallel_spawn",
@@ -882,14 +782,14 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         },
       };
 
-      const server = new AsdMcpServer({
+      const server = new AsdOrchestrator({
         projectRoot,
         commandRunner: mockRunner,
         autoSync: false,
       });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "dispatch-light-default",
         mainHarness: "opencode",
@@ -907,7 +807,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         ],
       });
 
-      const dispatchResp = (await server.handleRequest("asd_dispatch", {
+      const dispatchResp = (await server.handleDispatch({
         sessionId: "dispatch-light-default",
         turn: 1,
       })) as AsdDispatchOutput;
@@ -988,14 +888,14 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         },
       };
 
-      const server = new AsdMcpServer({
+      const server = new AsdOrchestrator({
         projectRoot,
         commandRunner: mockRunner,
         autoSync: false,
       });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "dispatch-fb-chain",
         mainHarness: "opencode",
@@ -1013,7 +913,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         ],
       });
 
-      const dispatchResp = (await server.handleRequest("asd_dispatch", {
+      const dispatchResp = (await server.handleDispatch({
         sessionId: "dispatch-fb-chain",
         turn: 1,
         mode: "parallel_spawn",
@@ -1064,14 +964,14 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         },
       };
 
-      const server = new AsdMcpServer({
+      const server = new AsdOrchestrator({
         projectRoot,
         commandRunner: mockRunner,
         autoSync: false,
       });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "dispatch-fail-f01",
         mainHarness: "opencode",
@@ -1089,7 +989,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         ],
       });
 
-      const dispatchResp = (await server.handleRequest("asd_dispatch", {
+      const dispatchResp = (await server.handleDispatch({
         sessionId: "dispatch-fail-f01",
         turn: 1,
         mode: "parallel_spawn",
@@ -1151,14 +1051,14 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         },
       };
 
-      const abortServer = new AsdMcpServer({
+      const abortServer = new AsdOrchestrator({
         projectRoot,
         commandRunner: abortRunner,
         autoSync: false,
       });
       openServers.push(abortServer);
 
-      await abortServer.handleRequest("asd_plan", {
+      await abortServer.handlePlan({
         action: "create",
         sessionId: "dispatch-abort-f01",
         mainHarness: "opencode",
@@ -1215,14 +1115,14 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
           },
         };
 
-        const timeoutServer = new AsdMcpServer({
+        const timeoutServer = new AsdOrchestrator({
           projectRoot,
           commandRunner: timeoutRunner,
           autoSync: false,
         });
         openServers.push(timeoutServer);
 
-        await timeoutServer.handleRequest("asd_plan", {
+        await timeoutServer.handlePlan({
           action: "create",
           sessionId: "dispatch-timeout-f01",
           mainHarness: "opencode",
@@ -1240,7 +1140,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
           ],
         });
 
-        const timeoutResp = (await timeoutServer.handleRequest("asd_dispatch", {
+        const timeoutResp = (await timeoutServer.handleDispatch({
           sessionId: "dispatch-timeout-f01",
           turn: 1,
           mode: "parallel_spawn",
@@ -1265,11 +1165,11 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
   describe("5. asd_verify Tool", () => {
     test("verifies LIGHT task, commits changes, resets no_progress_count", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
       // Create session & task
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "verify-light-1",
         tasks: [
@@ -1295,7 +1195,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         risks: [],
       };
 
-      const verifyResp = (await server.handleRequest("asd_verify", {
+      const verifyResp = (await server.handleVerify({
         sessionId: "verify-light-1",
         taskId: "T1.1",
         doneClaim: claim,
@@ -1315,11 +1215,11 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
 
     test("verifies HEAVY task worktree, merges into main, cleans up worktree", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
       // Create session & task
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "verify-heavy-1",
         tasks: [
@@ -1328,7 +1228,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       });
 
       // Claim task to create worktree
-      await server.handleRequest("asd_dispatch", {
+      await server.handleDispatch({
         sessionId: "verify-heavy-1",
         turn: 1,
         mode: "claim_only",
@@ -1347,7 +1247,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         risks: [],
       };
 
-      const verifyResp = (await server.handleRequest("asd_verify", {
+      const verifyResp = (await server.handleVerify({
         sessionId: "verify-heavy-1",
         taskId: "T1.1",
         doneClaim: claim,
@@ -1366,10 +1266,10 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
 
     test("when all tasks complete, sets session phase = 'done' and generates summary.md", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "complete-session-1",
         tasks: [
@@ -1379,7 +1279,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
 
       fs.writeFileSync(path.join(projectRoot, "sole.ts"), "export const sole = 42;\n", "utf8");
 
-      const verifyResp = (await server.handleRequest("asd_verify", {
+      const verifyResp = (await server.handleVerify({
         sessionId: "complete-session-1",
         taskId: "T1.1",
         doneClaim: {
@@ -1410,10 +1310,10 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
     });
     test("F02: handleVerify respects session.auto_approve = 0 by pausing LIGHT/HEAVY tasks at verifying until approvePendingTask", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "verify-manual-gate-f02",
         tasks: [
@@ -1427,7 +1327,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.equal(db.getSession("verify-manual-gate-f02")?.auto_approve, 0);
 
       // Claim T1.2 to create worktree
-      await server.handleRequest("asd_dispatch", {
+      await server.handleDispatch({
         sessionId: "verify-manual-gate-f02",
         turn: 1,
         mode: "claim_only",
@@ -1435,7 +1335,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
 
       // 1. LIGHT task edit & verify
       fs.writeFileSync(path.join(projectRoot, "gated-light.ts"), "export const lightGated = 1;\n", "utf8");
-      const lightVerify = (await server.handleRequest("asd_verify", {
+      const lightVerify = (await server.handleVerify({
         sessionId: "verify-manual-gate-f02",
         taskId: "T1.1",
         doneClaim: {
@@ -1455,7 +1355,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       // 2. HEAVY task edit & verify
       const wtPath = path.join(projectRoot, ".asd", "wt", "1-T1.2");
       fs.writeFileSync(path.join(wtPath, "gated-heavy.ts"), "export const heavyGated = 2;\n", "utf8");
-      const heavyVerify = (await server.handleRequest("asd_verify", {
+      const heavyVerify = (await server.handleVerify({
         sessionId: "verify-manual-gate-f02",
         taskId: "T1.2",
         doneClaim: {
@@ -1525,7 +1425,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         },
       };
 
-      const server = new AsdMcpServer({
+      const server = new AsdOrchestrator({
         projectRoot,
         commandRunner: mockRunner,
         autoSync: false,
@@ -1533,13 +1433,13 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       openServers.push(server);
 
       // Create a session first
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "debate-session-1",
         tasks: [{ taskId: "T1.1", turn: 1, title: "Debate Target", targetFiles: ["a.ts"] }],
       });
 
-      const debateResp = (await server.handleRequest("asd_debate", {
+      const debateResp = (await server.handleDebate({
         sessionId: "debate-session-1",
         taskId: "T1.1",
         topic: "Architecture strategy",
@@ -1613,14 +1513,14 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         },
       };
 
-      const server = new AsdMcpServer({
+      const server = new AsdOrchestrator({
         projectRoot,
         commandRunner: mockRunner,
         autoSync: false,
       });
       openServers.push(server);
 
-      await server.handleRequest("asd_plan", {
+      await server.handlePlan({
         action: "create",
         sessionId: "cross-scope-session",
         tasks: [
@@ -1647,7 +1547,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
         ],
       });
 
-      const dispatchResp = (await server.handleRequest("asd_dispatch", {
+      const dispatchResp = (await server.handleDispatch({
         sessionId: "cross-scope-session",
         turn: 1,
         mode: "parallel_spawn",
@@ -1686,7 +1586,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
 
     test("T2.3: handleVerify rejects tests/** modifications on docs-only and scout/critic tasks", async () => {
       const projectRoot = makeProjectRoot();
-      const server = new AsdMcpServer({ projectRoot, autoSync: false });
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
       openServers.push(server);
 
       const sid = "asd-20261111-180000-notests";
@@ -1855,7 +1755,7 @@ rl.on("line", (line) => {
 
     const prevIdle = process.env.ASD_SPAWN_IDLE_TIMEOUT_MS;
     process.env.ASD_SPAWN_IDLE_TIMEOUT_MS = "250";
-    const server = new AsdMcpServer({
+    const server = new AsdOrchestrator({
       projectRoot,
       autoSync: false,
       acpCommandOverride: { command: process.execPath, args: [mockAcpServer] },
@@ -1909,5 +1809,145 @@ rl.on("line", (line) => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
       fs.rmSync(mockDir, { recursive: true, force: true });
     }
+  });
+
+  describe("9. v2.8 DIRECT Track, Guardrails, 3-Strike Escalation & Telemetry", () => {
+    test("supports DIRECT track end-to-end (plan -> claim_only -> in-place verify)", async () => {
+      const projectRoot = makeProjectRoot();
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
+      openServers.push(server);
+
+      const planRes = await server.handlePlan({
+        action: "create",
+        sessionId: "asd-20261120-080001-dir1",
+        tasks: [
+          {
+            taskId: "T1.1",
+            turn: 1,
+            title: "Direct single-file edit",
+            track: "DIRECT",
+            role: "worker",
+            category: "general",
+            difficulty: "low",
+            targetFiles: ["hello.txt"],
+            verifyCmd: 'node -e "process.exit(0)"',
+          },
+        ],
+      });
+      assert.equal(planRes.tasks[0]?.track, "DIRECT");
+
+      // Default mode omitted -> DIRECT defaults to claim_only (no external CLI spawn)
+      const dispRes = await server.handleDispatch({
+        sessionId: "asd-20261120-080001-dir1",
+        turn: 1,
+      });
+      assert.equal(dispRes.results[0]?.status, "running");
+
+      fs.writeFileSync(path.join(projectRoot, "hello.txt"), "direct edit\n", "utf8");
+      const verRes = await server.handleVerify({
+        sessionId: "asd-20261120-080001-dir1",
+        taskId: "T1.1",
+        doneClaim: {
+          summary: "Applied direct edit",
+          changed_files: ["hello.txt"],
+          key_decisions: [],
+          risks: [],
+        },
+      });
+      assert.equal(verRes.verified, true);
+      assert.equal(verRes.status, "done");
+      assert.ok(verRes.commitSha);
+    });
+
+    test("emits warnings for specialist role + domain category mismatch and overlapping same-turn LIGHT targetFiles", async () => {
+      const projectRoot = makeProjectRoot();
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
+      openServers.push(server);
+
+      const planRes = await server.handlePlan({
+        action: "create",
+        sessionId: "asd-20261120-080002-wrn1",
+        tasks: [
+          {
+            taskId: "T1.1",
+            turn: 1,
+            title: "Specialist with category",
+            track: "LIGHT",
+            role: "architect",
+            category: "visual-ui",
+            difficulty: "medium",
+            targetFiles: ["src/shared.ts"],
+          },
+          {
+            taskId: "T1.2",
+            turn: 1,
+            title: "Overlapping LIGHT worker",
+            track: "LIGHT",
+            role: "worker",
+            category: "general",
+            difficulty: "low",
+            targetFiles: ["src/shared.ts"],
+          },
+        ],
+      });
+
+      assert.ok(Array.isArray(planRes.warnings) && planRes.warnings.length >= 2);
+      assert.ok(planRes.warnings!.some((w) => w.includes("Tier 2 precedence") && w.includes("architect")));
+      assert.ok(planRes.warnings!.some((w) => w.includes("overlapping targetFiles") && w.includes("src/shared.ts")));
+
+      const dispRes = await server.handleDispatch({
+        sessionId: "asd-20261120-080002-wrn1",
+        turn: 1,
+        mode: "claim_only",
+      });
+      assert.ok(Array.isArray(dispRes.concurrencyWarnings) && dispRes.concurrencyWarnings.length >= 1);
+      assert.ok(dispRes.concurrencyWarnings![0]!.includes("overlapping targetFiles"));
+    });
+
+    test("returns progressive 3-Strike escalationHint and logPath on verification failure", async () => {
+      const projectRoot = makeProjectRoot();
+      const server = new AsdOrchestrator({ projectRoot, autoSync: false });
+      openServers.push(server);
+
+      await server.handlePlan({
+        action: "create",
+        sessionId: "asd-20261120-080003-strk",
+        tasks: [
+          {
+            taskId: "T1.1",
+            turn: 1,
+            title: "Failing verification task",
+            track: "LIGHT",
+            targetFiles: ["a.txt"],
+            verifyCmd: 'node -e "console.error(\'boom\'); process.exit(1)"',
+          },
+        ],
+      });
+      fs.writeFileSync(path.join(projectRoot, "a.txt"), "x\n", "utf8");
+
+      const claim = { summary: "try", changed_files: ["a.txt"], key_decisions: [], risks: [] };
+      const r1 = await server.handleVerify({ sessionId: "asd-20261120-080003-strk", taskId: "T1.1", doneClaim: claim });
+      assert.equal(r1.verified, false);
+      assert.equal(r1.attempts, 1);
+      assert.ok(r1.escalationHint?.includes("Strike 1/3"));
+      assert.ok(r1.logPath);
+
+      const r2 = await server.handleVerify({ sessionId: "asd-20261120-080003-strk", taskId: "T1.1", doneClaim: claim });
+      assert.equal(r2.attempts, 2);
+      assert.ok(r2.escalationHint?.includes("Strike 2/3"));
+      assert.ok(r2.escalationHint?.includes("asd-critic"));
+
+      const r3 = await server.handleVerify({ sessionId: "asd-20261120-080003-strk", taskId: "T1.1", doneClaim: claim });
+      assert.equal(r3.attempts, 3);
+      assert.ok(r3.escalationHint?.includes("Strike 3/3"));
+      assert.ok(r3.escalationHint?.includes("asd debate"));
+    });
+
+    test("PLAN_SCHEMA_DEFINITION documents DIRECT/LIGHT/HEAVY tracks", () => {
+      assert.deepEqual(
+        PLAN_SCHEMA_DEFINITION.properties.tasks.items.properties.track.enum,
+        ["DIRECT", "LIGHT", "HEAVY"]
+      );
+    });
   });
 });

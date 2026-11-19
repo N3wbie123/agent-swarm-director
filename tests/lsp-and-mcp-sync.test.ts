@@ -13,7 +13,7 @@ import {
   syncHarnessConfigs,
   uninstallHarnessConfigs,
 } from "../src/adapters/installer.ts";
-import { ASD_MCP_TOOLS } from "../src/mcp/server.ts";
+import { PLAN_SCHEMA_DEFINITION } from "../src/orchestrator/index.ts";
 
 function createTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -27,16 +27,14 @@ function removeTempDir(dirPath: string): void {
   }
 }
 
-describe("1. Core MCP Tools Surface (`src/mcp/server.ts`)", () => {
-  test("asd-core exposes only the 4 orchestration tools without fake regex LSP bloat", () => {
-    const coreToolNames = ASD_MCP_TOOLS.map((t) => t.name);
-    assert.deepEqual(coreToolNames, [
-      "asd_plan",
-      "asd_dispatch",
-      "asd_verify",
-      "asd_debate",
-    ]);
-    assert.ok(!coreToolNames.some((n) => n.startsWith("lsp_")));
+describe("1. Retired ASD MCP Server & Canonical Plan Schema (`src/orchestrator/`)", () => {
+  test("deprecated src/mcp/ directory is removed and canonical plan schema supports DIRECT/LIGHT/HEAVY", () => {
+    const mcpDir = path.resolve(import.meta.dirname, "../src/mcp");
+    assert.equal(fs.existsSync(mcpDir), false, "src/mcp/ must be completely retired");
+    assert.deepEqual(
+      PLAN_SCHEMA_DEFINITION.properties.tasks.items.properties.track.enum,
+      ["DIRECT", "LIGHT", "HEAVY"]
+    );
   });
 });
 
