@@ -22,9 +22,10 @@
 - **Zero Runtime Dependencies (`dependencies: {}`)** — Runs directly on Node.js `>=22.13.0` native TypeScript strip-types and `node:sqlite`. Zero `npm install` friction on `asd update`, zero supply-chain bloat, and sub-10ms hook startup.
 - **Hybrid ACP-First Subagent Engine (v2.7.0)** — Spawns subagents over pure stdio JSON-RPC 2.0 **ACP v1** (with v2 draft compatibility), enforcing `allowedFiles` and protected-path rules live via bidirectional `session/request_permission` callbacks, auto-mapping `routing.jsonc` model names onto each harness's `session/new` catalog, resuming stalled turns in-place via `session/load`, and falling back seamlessly to hardened streaming CLIs when external bridges are absent.
 - **Non-Blocking OpenCode Async Dispatch (`--async`)** — Detaches wave workers in `<100ms` so OpenCode's main chat never freezes, while the global `asd-guard.js` plugin automatically pushes completion reports back into the idle OpenCode session via `client.session.prompt`.
-- **Dual-Track Execution (`LIGHT` vs `HEAVY`)** — Delegate lightweight work to internal subagents on a clean in-place baseline (`LIGHT`), or fan out across multiple external harnesses in isolated Git worktrees with mutex-serialized `--no-ff` merges (`HEAVY`).
+- **3-Track Execution (`DIRECT` / `LIGHT` / `HEAVY`)** — Execute small 1–3 file sequential edits directly in the main session (`DIRECT`), delegate focused work to internal subagents with overlap checks (`LIGHT`), or fan out across multiple external harnesses in isolated Git worktrees with mutex-serialized `--no-ff` merges (`HEAVY`).
 - **Blind Cross-Model Adversarial Debate (`asd debate`)** — Run parallel Round 1 critiques across distinct model families (`claude`, `gpt`, `gemini`, `glm`, `deepseek`) with code-slice/diff injection, followed by Round 2 binding arbitration.
-- **Global-Only Gap-Filling Sync (`asd sync`)** — Installs skills, 5 specialist personas (`planner`, `architect`, `worker`, `scout`, `critic`), hooks, and missing MCP servers strictly into user home configs without polluting project repositories.
+- **Harness-Targeted Global Sync (`asd sync`)** — Installs harness-conditioned skills (injecting only target harness commands and dynamic `routing.jsonc` model tiers), 5 specialist personas (`planner`, `architect`, `worker`, `scout`, `critic`), actionable `PreToolUse` safety hooks, and missing external catalog MCP servers strictly into user home configs without polluting project repositories.
+- **Modular CLI Orchestrator & Telemetry (`src/orchestrator/`)** — In-process CLI orchestration (`asd plan|dispatch|verify|debate`) with `asd plan schema`, 3-Strike verification escalation hints, capped test-output log pointers, best-effort token/cost/retry telemetry in SQLite/`asd status`/`.asd/summary.md`, and a lightweight 3-track trajectory eval suite (`npm run eval:trajectory`).
 - **Full External GUI / TUI SDK** — Exposes session discovery (`discoverProjectCliSessions`), 4-way transcript parsing (`readHarnessTranscript`), live streaming turns (`runDriverTurn`), and CLI ↔ ASD session promotion/demotion (`promoteCliSessionToAsd` / `demoteAsdSession`).
 
 ---
@@ -99,11 +100,12 @@ After running `asd sync`, use these commands directly inside **Claude Code**, **
 | **`/asd-debug <issue>`** | **Hypothesis-Driven Debugging** | Reproduces the bug with a deterministic test first, diagnoses root cause, applies minimal fix, and verifies via `asd verify`. |
 | **`/handoff`** (`/asd-handoff`) | **Cross-Harness Session Handoff** | Combines SQLite progress, git state, routing summary, and conversation context into `handoff.md` for seamless continuation on any harness. |
 
-### `LIGHT` vs `HEAVY` Execution Modes
+### `DIRECT` vs `LIGHT` vs `HEAVY` Execution Modes
 
 | Mode | Subagent Delegation | Workspace & Verification Behavior | Best For |
 | :--- | :--- | :--- | :--- |
-| **`LIGHT`** *(Single-Harness)* | Native internal `asd-<role>` subagents inside your current harness (`claim_only`). Zero external CLI spawning. | In-place edits; preserves working-tree files on test failure for quick fixes, rolls back scoped files on boundary/secret violations, and writes clean task-ID-free commits. | Focused 1–3 file tasks, bug fixes, preserving multi-harness quotas. |
+| **`DIRECT`** *(Main Session)* | Main session executes edits directly (`claim_only`), optionally calling `asd-scout` for broad read-only search. Zero subagent spawn overhead. | In-place edits gated by `asd verify` with 3-Strike escalation hints and clean task-ID-free commits. | 1–3 file sequential changes, quick fixes, tight context continuity. |
+| **`LIGHT`** *(Single-Harness)* | Native internal `asd-<role>` subagents inside your current harness (`claim_only`). Same-turn multiple workers run sequentially or require disjoint `targetFiles`. Zero external CLI spawning. | In-place edits; preserves working-tree files on test failure for quick fixes, rolls back scoped files on boundary/secret violations, and writes clean commits. | Role-specialized single-harness tasks, bug fixes, preserving multi-harness quotas. |
 | **`HEAVY`** *(Multi-Harness)* | Spawns external harnesses concurrently via ACP / streaming CLI per `routing.jsonc` (`parallel_spawn`, `--async` in OpenCode). | Dedicated Git worktree per task (`.asd/wt/<turn>-<taskId>`) with `node_modules` junction + cross-process mutex `--no-ff` merge. | Disjoint parallel modules, high-risk refactors, cross-model blind review. |
 
 ---
@@ -117,7 +119,7 @@ After running `asd sync`, use these commands directly inside **Claude Code**, **
 | `asd sync [--force] [--refresh-models] [--no-model-probe] [--no-path]` | Sync global skills, 5 core agents, hooks, MCP catalog, and `PATH` shims across all 5 harnesses. |
 | `asd update` | Pull latest ASD release via Git and run a fresh global `asd sync`. |
 | `asd doctor [--json]` | ~10ms zero-token diagnostic: Node `>=22.13.0`, SQLite WAL, Git repo, harness binaries, ACP readiness, and `PreToolUse` probe. |
-| `asd plan [create\|get\|update\|sync_from_md] [--file <path>]` | Create, query, update, or reverse-sync `.asd/PLAN.md` with `~/.asd/state/core.db`. |
+| `asd plan [create\|get\|update\|sync_from_md\|schema] [--file <path>] [--track <DIRECT\|LIGHT\|HEAVY>]` | Create, query, update, reverse-sync `.asd/PLAN.md` with `~/.asd/state/core.db`, or inspect the canonical plan JSON schema. |
 | `asd dispatch [--turn <n>] [--mode <m>] [--async] [--transport <auto\|acp\|cli>]` | Dispatch wave tasks (`parallel_spawn` or `claim_only`); `--async` runs non-blocking in a detached worker. |
 | `asd wait [--session <id>] [--timeout <ms>] [--json]` | Block until an active `asd dispatch --async` wave completes and print results. |
 | `asd verify --task <id> [--summary <text>] [--cmd <cmd>] [--file <path>]` | Enforce `allowedFiles` boundaries, secret scan, and test command (`300s` default timeout), then commit or merge cleanly. |
@@ -145,11 +147,12 @@ After running `asd sync`, use these commands directly inside **Claude Code**, **
 
 ---
 
-## Testing
+## Testing & Trajectory Eval
 
 ```bash
 npm run typecheck
 npm test
+npm run eval:trajectory      # Deterministic offline 3-track benchmark (DIRECT vs LIGHT vs HEAVY)
 ```
 
 ## License

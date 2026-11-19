@@ -27,7 +27,8 @@
   },
   "scripts": {
     "test": "node --no-warnings scripts/run-tests.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "eval:trajectory": "node --no-warnings scripts/eval-trajectory.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

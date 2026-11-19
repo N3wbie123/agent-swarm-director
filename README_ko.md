@@ -22,9 +22,10 @@
 - **외부 런타임 의존성 0개 (`dependencies: {}`)** — Node.js `>=22.13.0` 네이티브 TypeScript 실행과 `node:sqlite`만으로 구동되어 `asd update` 시 별도 패키지 설치가 필요 없고 훅 콜드스타트가 수 ms 이내입니다.
 - **하이브리드 ACP 우선 서브에이전트 엔진 (v2.7.0)** — 순수 stdio JSON-RPC 2.0 기반 **ACP v1**(v2 초안 호환 포함)으로 서브에이전트를 자동 실행·종료하며, `session/request_permission` ↔ `policy.ts` 양방향 실시간 보안 판정, `session/new` 카탈로그 기반 모델 ID 자동 매핑(`resolveBestAcpModelId`), 일시적 멈춤 시 동일 워크트리 `session/load` 제자리 재개, 브리지 미설치 시 강화된 스트리밍 CLI 자동 폴백을 지원합니다.
 - **OpenCode 메인 세션 멈춤 없는 비동기 Dispatch (`--async`)** — 백그라운드 워커를 100ms 내 분리 실행해 OpenCode 메인 채팅이 멈추지 않으며, Wave 완료 시 `asd-guard.js` 플러그인이 유휴 상태의 메인 세션에 `client.session.prompt`로 완료 보고를 자동 주입합니다.
-- **이중 트랙 실행 (`LIGHT` vs `HEAVY`)** — 소규모 작업은 현재 하네스 내부 서브에이전트(`LIGHT`)로 빠르게 처리하고, 대규모 병렬 작업은 격리된 Git 워크트리와 뮤텍스 직렬화 병합(`HEAVY`)으로 안전하게 동시 실행합니다.
+- **3트랙 실행 체계 (`DIRECT` / `LIGHT` / `HEAVY`)** — 1~3개 파일의 순차 작업은 메인 세션에서 직접 처리(`DIRECT`)하고, 단일 하네스 내부 전문 위임은 파일 겹침 검증과 함께 수행(`LIGHT`), 대규모 병렬 작업은 격리된 Git 워크트리와 뮤텍스 직렬화 병합(`HEAVY`)으로 안전하게 동시 실행합니다.
 - **블라인드 교차 모델 적대적 토론 (`asd debate`)** — 서로 다른 모델 패밀리(`claude`, `gpt`, `gemini`, `glm`, `deepseek`)가 코드 슬라이스·Diff를 바탕으로 1라운드 블라인드 비평 후 2라운드 심판 판결을 통해 필수 제약 조건을 도출합니다.
-- **프로젝트 무오염 글로벌 동기화 (`asd sync`)** — 프로젝트 폴더를 더럽히지 않고 사용자 홈 설정에만 스킬, 5대 전문 에이전트(`planner`, `architect`, `worker`, `scout`, `critic`), 보안 훅, 부족한 MCP 도구를 중복 없이 채워 넣습니다.
+- **하네스 맞춤형 글로벌 동기화 (`asd sync`)** — 대상 하네스에 필요한 호출 구문과 `routing.jsonc` 모델 티어만 조건부 렌더링한 스킬, 5대 전문 에이전트(`planner`, `architect`, `worker`, `scout`, `critic`), 공식 CLI 안내를 포함한 `PreToolUse` 보안 훅, 부족한 외부 카탈로그 MCP 도구만 사용자 홈 설정에 깔끔하게 동기화합니다.
+- **모듈형 CLI 오케스트레이터 및 계측 (`src/orchestrator/`)** — `asd plan|dispatch|verify|debate` 인프로세스 오케스트레이션, `asd plan schema`, 3-Strike 검증 에스컬레이션 힌트, 로그 포인터 기반 테스트 출력 요약, SQLite·`asd status`·`.asd/summary.md` 토큰/비용/재시도 계측, 경량 3트랙 궤적 평가(`npm run eval:trajectory`)를 제공합니다.
 - **외부 GUI / TUI 연동 SDK** — 로컬 세션 통합 탐색(`discoverProjectCliSessions`), 대화 기록 4분류 파싱(`readHarnessTranscript`), 실시간 스트리밍 실행(`runDriverTurn`), 세션 승격·하강(`promoteCliSessionToAsd` / `demoteAsdSession`) API를 제공합니다.
 
 ---
@@ -99,11 +100,12 @@ asd migrate --clean-legacy   # 선택: 이관 완료 후 구버전 core.db 정�
 | **`/asd-debug <증상>`** | **재현 우선 디버깅** | 실패 재현 테스트 선작성 → 원인 진단 → 최소 수정 → `asd verify` 회귀 검증 및 커밋 |
 | **`/handoff`** (`/asd-handoff`) | **세션 인수인계** | SQLite 진행 현황, Git 상태, 라우팅 정보, 대화 맥락을 묶어 다른 하네스에서 즉시 이어받을 수 있는 `handoff.md` 생성 |
 
-### 실행 모드 비교 (`LIGHT` vs `HEAVY`)
+### 실행 모드 비교 (`DIRECT` vs `LIGHT` vs `HEAVY`)
 
 | 모드 | 서브에이전트 실행 방식 | 작업 공간 및 검증 동작 | 권장 상황 |
 | :--- | :--- | :--- | :--- |
-| **`LIGHT`** *(단일 하네스)* | 현재 하네스 내부의 네이티브 `asd-<role>` 서브에이전트 위임(`claim_only`). 외부 CLI 스폰 없음. | 인플레이스 수정. 테스트 실패 시 수정 파일을 그대로 보존해 즉시 디버깅 가능하며(경계·시크릿 위반 시에만 스코프 롤백), 완료 시 Task 번호 없는 깔끔한 커밋 생성. | 1~3개 파일 기능 수정, 버그 패치, 단일 하네스 쿼터 활용 |
+| **`DIRECT`** *(메인 세션)* | 메인 세션이 직접 수정 수행(`claim_only`), 대량 탐색 시에만 `asd-scout` 선택 호출. 서브에이전트 스폰 오버헤드 없음. | 인플레이스 수정 + `asd verify` 게이트(3-Strike 에스컬레이션 힌트) 및 깔끔한 커밋 생성. | 1~3개 파일 순차 수정, 빠른 패치, 컨텍스트 연속성이 중요한 작업 |
+| **`LIGHT`** *(단일 하네스)* | 현재 하네스 내부의 네이티브 `asd-<role>` 서브에이전트 위임(`claim_only`). 동일 턴 다중 워커는 순차 실행 또는 `targetFiles` 완전 분리 검증. 외부 CLI 스폰 없음. | 인플레이스 수정. 테스트 실패 시 수정 파일을 보존해 즉시 디버깅 가능(경계·시크릿 위반 시 스코프 롤백). | 역할 분리 위임, 단일 하네스 쿼터 활용 |
 | **`HEAVY`** *(다중 하네스)* | `routing.jsonc`에 따라 외부 하네스를 ACP / 스트리밍 CLI로 병렬 스폰(`parallel_spawn`, OpenCode는 `--async`). | 태스크별 독립 Git 워크트리(`.asd/wt/<turn>-<taskId>`) + `node_modules` 정션 연결 후 프로세스 뮤텍스 기반 `--no-ff` 병합. | 모듈 간 대규모 병렬 개발, 고위험 리팩터링, 교차 모델 검증 |
 
 ---
@@ -117,7 +119,7 @@ asd migrate --clean-legacy   # 선택: 이관 완료 후 구버전 core.db 정�
 | `asd sync [--force] [--refresh-models] [--no-model-probe] [--no-path]` | 5대 하네스 글로벌 스킬, 5개 핵심 에이전트, 보안 훅, MCP 카탈로그 및 `PATH` 실행 심 동기화 |
 | `asd update` | Git 최신 릴리스 풀(`git pull --ff-only`) 후 새 프로세스로 글로벌 `asd sync` 자동 실행 |
 | `asd doctor [--json]` | ~10ms 무토큰 환경 점검 (Node `>=22.13.0`, SQLite WAL, Git, 하네스 경로, ACP 준비 상태, 보안 훅 검증) |
-| `asd plan [create\|get\|update\|sync_from_md] [--file <path>]` | `.asd/PLAN.md`와 `~/.asd/state/core.db` 간 계획 생성·조회·수정·역동기화 |
+| `asd plan [create\|get\|update\|sync_from_md\|schema] [--file <path>] [--track <DIRECT\|LIGHT\|HEAVY>]` | `.asd/PLAN.md`와 `~/.asd/state/core.db` 간 계획 생성·조회·수정·역동기화 및 공식 JSON 스키마 출력 |
 | `asd dispatch [--turn <n>] [--mode <m>] [--async] [--transport <auto\|acp\|cli>]` | Wave 태스크 디스패치 (`--async` 지정 시 분리된 백그라운드 워커에서 논블로킹 실행) |
 | `asd wait [--session <id>] [--timeout <ms>] [--json]` | 실행 중인 `asd dispatch --async` 백그라운드 Wave가 끝날 때까지 대기 후 결과 출력 |
 | `asd verify --task <id> [--summary <text>] [--cmd <cmd>] [--file <path>]` | `allowedFiles` 경계·시크릿 검사 및 테스트(`300s` 기본 타임아웃) 통과 시 커밋 또는 워크트리 병합 |
@@ -145,11 +147,12 @@ asd migrate --clean-legacy   # 선택: 이관 완료 후 구버전 core.db 정�
 
 ---
 
-## 테스트 실행
+## 테스트 및 궤적 평가 실행
 
 ```bash
 npm run typecheck
 npm test
+npm run eval:trajectory      # 결정론적 오프라인 3트랙 벤치마크 (DIRECT vs LIGHT vs HEAVY)
 ```
 
 ## 라이선스
