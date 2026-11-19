@@ -630,7 +630,7 @@ test("Dashboard Debates UI: renders debate details collapsed by default and togg
   }
 });
 
-test("Dashboard i18n: defaults to English even on ko-KR locale, toggles to Korean explicitly, and leaks no Korean in EN mode", async () => {
+test("Dashboard i18n: defaults SSR to English, auto-detects Korean browser locale, honors saved toggle, and leaks no Korean in EN mode", async () => {
   const homeDir = makeTempDir("asd-ui-i18n-home-");
   const projDir = makeTempDir("asd-ui-i18n-proj-");
   const handle = await startDashboardServer({
@@ -663,10 +663,10 @@ test("Dashboard i18n: defaults to English even on ko-KR locale, toggles to Korea
       return elements.get(id)!;
     };
     const storage = new Map<string, string>();
-    const documentElement = { lang: "ko" };
+    const documentElement = { lang: "en" };
     const sandbox: Record<string, unknown> = {
       window: { getSelection: () => "" },
-      navigator: { language: "ko-KR" },
+      navigator: { language: "en-US" },
       localStorage: {
         getItem: (k: string) => storage.get(k) ?? null,
         setItem: (k: string, v: string) => { storage.set(k, v); },
@@ -685,7 +685,7 @@ test("Dashboard i18n: defaults to English even on ko-KR locale, toggles to Korea
     };
     vm.runInNewContext(scriptMatch[1]!, sandbox);
 
-    // 1. Initial default is English despite navigator.language = ko-KR
+    // 1. Non-Korean browser defaults to English
     assert.equal(documentElement.lang, "en");
     assert.equal(getEl("btnCloseModelsModal").textContent, "Close");
     assert.equal(getEl("btnCloseRouting").textContent, "Close");
@@ -710,19 +710,22 @@ test("Dashboard i18n: defaults to English even on ko-KR locale, toggles to Korea
     renderModelsModal();
     assert.match(getEl("modelsGrid2x2").innerHTML, /\(조회된 모델 없음\)/);
 
-    // 4. Persisted 'ko' is honored on reload; 'en' and unknown values fall back to English
-    const reloadLang = (saved: string | null) => {
+    // 4. Reload detection: localStorage takes priority; otherwise Korean browser -> 'ko', all others -> 'en'
+    const reloadLang = (saved: string | null, browserLang: string) => {
       const docEl = { lang: "" };
       vm.runInNewContext(scriptMatch[1]!, {
         ...sandbox,
+        navigator: { language: browserLang },
         localStorage: { getItem: () => saved, setItem: () => {} },
         document: { ...(sandbox.document as object), documentElement: docEl },
       });
       return docEl.lang;
     };
-    assert.equal(reloadLang("ko"), "ko");
-    assert.equal(reloadLang("en"), "en");
-    assert.equal(reloadLang(null), "en");
+    assert.equal(reloadLang(null, "ko-KR"), "ko");
+    assert.equal(reloadLang(null, "en-US"), "en");
+    assert.equal(reloadLang(null, "ja-JP"), "en");
+    assert.equal(reloadLang("en", "ko-KR"), "en");
+    assert.equal(reloadLang("ko", "en-US"), "ko");
   } finally {
     await handle.close();
     fs.rmSync(homeDir, { recursive: true, force: true });

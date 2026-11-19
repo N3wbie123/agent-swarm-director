@@ -722,9 +722,10 @@ function renderDashboardHtml(
     function detectInitialLang() {
       try {
         const saved = localStorage.getItem("asd_lang");
-        if (saved === "ko") return "ko";
+        if (saved === "ko" || saved === "en") return saved;
       } catch {}
-      return "en";
+      const navLang = (navigator.language || SERVER_DEFAULT_LANG || "en").toLowerCase();
+      return navLang.startsWith("ko") ? "ko" : "en";
     }
 
     let currentLang = detectInitialLang();
