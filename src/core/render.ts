@@ -35,7 +35,7 @@ import type {
 // ============================================================================
 
 export const TASK_LINE_REGEX =
-  /^- \[([ x~])\] \*\*(T(?:-)?(\d+)(?:\.\d+|-\d+)?)\*\* \[(?:Turn:\s*(\d+)\s*\|\s*)?Track:\s*(LIGHT|HEAVY)\s*\|\s*Role:\s*([a-z]+)\s*\|\s*Cat:\s*([a-z-]+)\s*\|\s*Diff:\s*([a-z]+)(?:\s*\|\s*Files:\s*([^\]]*))?\]:\s*(.+?)(?:\s*\(Files:\s*([^|)]*?)(?:\s*\|\s*Hint:\s*([^)]*))?\))?$/;
+  /^- \[([ x~])\] \*\*(T(?:-)?(\d+)(?:\.\d+|-\d+)?)\*\* \[(?:Turn:\s*(\d+)\s*\|\s*)?Track:\s*(DIRECT|LIGHT|HEAVY)\s*\|\s*Role:\s*([a-z]+)\s*\|\s*Cat:\s*([a-z-]+)\s*\|\s*Diff:\s*([a-z]+)(?:\s*\|\s*Files:\s*([^\]]*))?\]:\s*(.+?)(?:\s*\(Files:\s*([^|)]*?)(?:\s*\|\s*Hint:\s*([^)]*))?\))?$/;
 
 // ============================================================================
 // Parsed Task Interface
@@ -464,7 +464,13 @@ export function parsePlanMd(markdownText: string): ParsedPlanTask[] {
           const parsedTurn = parseInt(val, 10);
           if (!isNaN(parsedTurn)) turnFromBracket = parsedTurn;
         } else if (key === "track") {
-          track = val.toUpperCase() === "HEAVY" ? "HEAVY" : "LIGHT";
+          const upper = val.toUpperCase();
+          track =
+            upper === "HEAVY"
+              ? "HEAVY"
+              : upper === "DIRECT"
+                ? "DIRECT"
+                : "LIGHT";
         } else if (key === "role") {
           role = val.toLowerCase() as AgentRole;
         } else if (key === "cat" || key === "category") {
@@ -684,6 +690,9 @@ function formatHarnessModel(
   model: string | null,
   track?: string | null
 ): string {
+  if (track === "DIRECT") {
+    return "`DIRECT`";
+  }
   if (track === "LIGHT") {
     return "`LIGHT`";
   }
@@ -906,13 +915,92 @@ export function renderSessionSummaryMd(
     (t) => ("status" in t ? t.status : "pending") === "failed"
   ).length;
 
+  const readNum = (
+    t: TaskRow | TaskInput,
+    snakeKey: string,
+    camelKey: string
+  ): number | null => {
+    const rec = t as unknown as Record<string, unknown>;
+    const v = rec[snakeKey] !== undefined ? rec[snakeKey] : rec[camelKey];
+    return typeof v === "number" && Number.isFinite(v) ? v : null;
+  };
+
+  let totalRetries = 0;
+  let totalDurationMs = 0;
+  let hasDuration = false;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCacheTokens = 0;
+  let totalReasoningTokens = 0;
+  let hasInputTokens = false;
+  let hasOutputTokens = false;
+  let hasCacheTokens = false;
+  let hasReasoningTokens = false;
+  let totalCostUsd = 0;
+  let hasCostUsd = false;
+
+  for (const t of tasks) {
+    const attempts = readNum(t, "attempts", "attempts");
+    if (attempts != null && attempts > 1) {
+      totalRetries += attempts - 1;
+    }
+    const dur = readNum(t, "duration_ms", "durationMs");
+    if (dur != null) {
+      totalDurationMs += dur;
+      hasDuration = true;
+    }
+    const inTok = readNum(t, "input_tokens", "inputTokens");
+    if (inTok != null) {
+      totalInputTokens += inTok;
+      hasInputTokens = true;
+    }
+    const outTok = readNum(t, "output_tokens", "outputTokens");
+    if (outTok != null) {
+      totalOutputTokens += outTok;
+      hasOutputTokens = true;
+    }
+    const cacheTok = readNum(t, "cache_tokens", "cacheTokens");
+    if (cacheTok != null) {
+      totalCacheTokens += cacheTok;
+      hasCacheTokens = true;
+    }
+    const reasonTok = readNum(t, "reasoning_tokens", "reasoningTokens");
+    if (reasonTok != null) {
+      totalReasoningTokens += reasonTok;
+      hasReasoningTokens = true;
+    }
+    const cost = readNum(t, "cost_usd", "costUsd");
+    if (cost != null) {
+      totalCostUsd += cost;
+      hasCostUsd = true;
+    }
+  }
+
   lines.push("## Execution Statistics");
   lines.push(`- **Total Tasks**: ${totalTasks}`);
   lines.push(`- **Completed Tasks**: ${doneCount}`);
   lines.push(`- **Failed Tasks**: ${failedCount}`);
   const pct =
     totalTasks === 0 ? 0 : Math.round((doneCount / totalTasks) * 100);
-  lines.push(`- **Success Rate**: ${pct}%`, "");
+  lines.push(`- **Success Rate**: ${pct}%`);
+  if (totalRetries > 0) {
+    lines.push(`- **Total Retries**: ${totalRetries}`);
+  }
+  if (hasDuration) {
+    lines.push(`- **Total Duration**: ${(totalDurationMs / 1000).toFixed(1)}s`);
+  }
+  const totalTokenParts: string[] = [];
+  if (hasInputTokens) totalTokenParts.push(`input=${totalInputTokens}`);
+  if (hasOutputTokens) totalTokenParts.push(`output=${totalOutputTokens}`);
+  if (hasCacheTokens) totalTokenParts.push(`cache=${totalCacheTokens}`);
+  if (hasReasoningTokens) totalTokenParts.push(`reasoning=${totalReasoningTokens}`);
+  if (totalTokenParts.length > 0) {
+    lines.push(`- **Total Tokens**: ${totalTokenParts.join(", ")}`);
+  }
+  if (hasCostUsd) {
+    lines.push(`- **Total Cost (USD)**: $${totalCostUsd.toFixed(4)}`);
+  }
+  lines.push("");
 
   lines.push("## Tasks Detail");
   for (const t of tasks) {
@@ -930,8 +1018,32 @@ export function renderSessionSummaryMd(
     );
     lines.push(`- **Status**: ${status}`);
 
-    if ("duration_ms" in t && t.duration_ms != null) {
-      lines.push(`- **Duration**: ${(t.duration_ms / 1000).toFixed(1)}s`);
+    const attempts = readNum(t, "attempts", "attempts");
+    if (attempts != null) {
+      const retries = Math.max(0, attempts - 1);
+      lines.push(
+        `- **Attempts**: ${attempts}${retries > 0 ? ` (${retries} ${retries === 1 ? "retry" : "retries"})` : ""}`
+      );
+    }
+    const durationMs = readNum(t, "duration_ms", "durationMs");
+    if (durationMs != null) {
+      lines.push(`- **Duration**: ${(durationMs / 1000).toFixed(1)}s`);
+    }
+    const tokenParts: string[] = [];
+    const inTok = readNum(t, "input_tokens", "inputTokens");
+    if (inTok != null) tokenParts.push(`input=${inTok}`);
+    const outTok = readNum(t, "output_tokens", "outputTokens");
+    if (outTok != null) tokenParts.push(`output=${outTok}`);
+    const cacheTok = readNum(t, "cache_tokens", "cacheTokens");
+    if (cacheTok != null) tokenParts.push(`cache=${cacheTok}`);
+    const reasonTok = readNum(t, "reasoning_tokens", "reasoningTokens");
+    if (reasonTok != null) tokenParts.push(`reasoning=${reasonTok}`);
+    if (tokenParts.length > 0) {
+      lines.push(`- **Tokens**: ${tokenParts.join(", ")}`);
+    }
+    const costUsd = readNum(t, "cost_usd", "costUsd");
+    if (costUsd != null) {
+      lines.push(`- **Cost (USD)**: $${costUsd.toFixed(4)}`);
     }
     if ("commit_sha" in t && t.commit_sha) {
       lines.push(`- **Commit SHA**: ${t.commit_sha}`);

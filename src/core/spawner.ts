@@ -26,7 +26,304 @@ import {
   isValidAsdSessionId,
 } from "./session-tracker.ts";
 import { appendCursorStreamFallback } from "./transcripts.ts";
-import type { AgentRole, HarnessId, SubagentDispatchMode, SubagentSessionMeta } from "./types.ts";
+import type {
+  AgentRole,
+  HarnessId,
+  SubagentDispatchMode,
+  SubagentSessionMeta,
+  TaskTelemetry,
+} from "./types.ts";
+
+// ============================================================================
+// Best-effort Token & Cost Telemetry Extraction (CLI JSON stream & ACP)
+// ============================================================================
+
+function toNonNegativeNumber(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
+}
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v !== null && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+}
+
+function pickFirstNumber(
+  obj: Record<string, unknown> | null,
+  keys: readonly string[]
+): number | undefined {
+  if (!obj) return undefined;
+  for (const k of keys) {
+    const n = toNonNegativeNumber(obj[k]);
+    if (n !== undefined) return n;
+  }
+  return undefined;
+}
+
+function extractUsageFromContainer(
+  container: Record<string, unknown>
+): TaskTelemetry | null {
+  const inputTokens = pickFirstNumber(container, [
+    "input_tokens",
+    "inputTokens",
+    "input",
+    "prompt_tokens",
+    "promptTokens",
+    "promptTokenCount",
+  ]);
+  const outputTokens = pickFirstNumber(container, [
+    "output_tokens",
+    "outputTokens",
+    "output",
+    "completion_tokens",
+    "completionTokens",
+    "candidatesTokenCount",
+  ]);
+
+  let cacheTokens = pickFirstNumber(container, [
+    "cache_tokens",
+    "cacheTokens",
+    "cached_input_tokens",
+    "cachedInputTokens",
+    "cached_tokens",
+    "cachedTokens",
+    "cachedContentTokenCount",
+  ]);
+  if (cacheTokens === undefined) {
+    const cacheRead =
+      pickFirstNumber(container, [
+        "cache_read_input_tokens",
+        "cacheReadInputTokens",
+        "cache_read_tokens",
+        "cacheReadTokens",
+      ]) ?? pickFirstNumber(asRecord(container.cache), ["read"]);
+    const cacheWrite =
+      pickFirstNumber(container, [
+        "cache_creation_input_tokens",
+        "cacheCreationInputTokens",
+        "cache_write_tokens",
+        "cacheWriteTokens",
+      ]) ?? pickFirstNumber(asRecord(container.cache), ["write"]);
+    if (cacheRead !== undefined || cacheWrite !== undefined) {
+      cacheTokens = (cacheRead ?? 0) + (cacheWrite ?? 0);
+    } else {
+      const inputDetails = asRecord(container.input_tokens_details) ?? asRecord(container.prompt_tokens_details);
+      cacheTokens = pickFirstNumber(inputDetails, ["cached_tokens", "cachedTokens"]);
+    }
+  }
+
+  let reasoningTokens = pickFirstNumber(container, [
+    "reasoning_tokens",
+    "reasoningTokens",
+    "reasoning",
+    "thoughtsTokenCount",
+    "thinking_tokens",
+    "thinkingTokens",
+  ]);
+  if (reasoningTokens === undefined) {
+    const outDetails =
+      asRecord(container.output_tokens_details) ??
+      asRecord(container.completion_tokens_details);
+    reasoningTokens = pickFirstNumber(outDetails, [
+      "reasoning_tokens",
+      "reasoningTokens",
+      "thinking_tokens",
+      "thinkingTokens",
+    ]);
+  }
+
+  const costUsd = pickFirstNumber(container, [
+    "costUsd",
+    "cost_usd",
+    "total_cost_usd",
+    "totalCostUsd",
+    "costUSD",
+    "cost",
+  ]);
+
+  if (
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    cacheTokens === undefined &&
+    reasoningTokens === undefined &&
+    costUsd === undefined
+  ) {
+    return null;
+  }
+
+  return {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(cacheTokens !== undefined ? { cacheTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(costUsd !== undefined ? { costUsd } : {}),
+  };
+}
+
+/**
+ * Best-effort extraction of TaskTelemetry from a single parsed JSON event
+ * (Claude Code, Codex, OpenCode, Cursor, Antigravity, or ACP metadata).
+ * Never throws; returns null when no telemetry fields are present.
+ */
+export function extractTelemetryFromJsonEvent(
+  event: unknown,
+  _harness?: HarnessId
+): TaskTelemetry | null {
+  try {
+    const root = asRecord(event);
+    if (!root) return null;
+
+    const merged: TaskTelemetry = {};
+    const apply = (t: TaskTelemetry | null): void => {
+      if (!t) return;
+      if (t.inputTokens !== undefined) merged.inputTokens = t.inputTokens;
+      if (t.outputTokens !== undefined) merged.outputTokens = t.outputTokens;
+      if (t.cacheTokens !== undefined) merged.cacheTokens = t.cacheTokens;
+      if (t.reasoningTokens !== undefined) merged.reasoningTokens = t.reasoningTokens;
+      if (t.costUsd !== undefined) merged.costUsd = t.costUsd;
+    };
+
+    const msg = asRecord(root.message);
+    const part = asRecord(root.part);
+    const resultObj = asRecord(root.result);
+    const responseObj = asRecord(root.response);
+    const metaObj = asRecord(root._meta) ?? asRecord(root.metadata);
+    const statsObj = asRecord(root.stats);
+
+    const candidates: Array<Record<string, unknown> | null> = [
+      root,
+      asRecord(root.usage),
+      asRecord(root.usageMetadata),
+      asRecord(root.tokens),
+      asRecord(msg?.usage),
+      part,
+      asRecord(part?.tokens),
+      asRecord(part?.usage),
+      resultObj,
+      asRecord(resultObj?.usage),
+      responseObj,
+      asRecord(responseObj?.usage),
+      metaObj,
+      asRecord(metaObj?.usage),
+      asRecord(metaObj?.tokens),
+      statsObj,
+    ];
+
+    for (const c of candidates) {
+      if (c) apply(extractUsageFromContainer(c));
+    }
+
+    // Claude Code modelUsage map: sum across models when top-level usage is absent
+    const modelUsage = asRecord(root.modelUsage);
+    if (modelUsage) {
+      let mIn = 0;
+      let mOut = 0;
+      let mCache = 0;
+      let mReason = 0;
+      let mCost = 0;
+      let hasIn = false;
+      let hasOut = false;
+      let hasCache = false;
+      let hasReason = false;
+      let hasCost = false;
+      for (const val of Object.values(modelUsage)) {
+        const rec = asRecord(val);
+        if (!rec) continue;
+        const t = extractUsageFromContainer(rec);
+        if (!t) continue;
+        if (t.inputTokens !== undefined) { mIn += t.inputTokens; hasIn = true; }
+        if (t.outputTokens !== undefined) { mOut += t.outputTokens; hasOut = true; }
+        if (t.cacheTokens !== undefined) { mCache += t.cacheTokens; hasCache = true; }
+        if (t.reasoningTokens !== undefined) { mReason += t.reasoningTokens; hasReason = true; }
+        if (t.costUsd !== undefined) { mCost += t.costUsd; hasCost = true; }
+      }
+      if (merged.inputTokens === undefined && hasIn) merged.inputTokens = mIn;
+      if (merged.outputTokens === undefined && hasOut) merged.outputTokens = mOut;
+      if (merged.cacheTokens === undefined && hasCache) merged.cacheTokens = mCache;
+      if (merged.reasoningTokens === undefined && hasReason) merged.reasoningTokens = mReason;
+      if (merged.costUsd === undefined && hasCost) merged.costUsd = mCost;
+    }
+
+    if (
+      merged.inputTokens === undefined &&
+      merged.outputTokens === undefined &&
+      merged.cacheTokens === undefined &&
+      merged.reasoningTokens === undefined &&
+      merged.costUsd === undefined
+    ) {
+      return null;
+    }
+    return merged;
+  } catch {
+    return null;
+  }
+}
+
+export function mergeTaskTelemetry(
+  current: TaskTelemetry | undefined,
+  incoming: TaskTelemetry | null | undefined,
+  mode: "replace" | "accumulate" = "replace"
+): TaskTelemetry | undefined {
+  if (!incoming) return current;
+  if (!current) return { ...incoming };
+
+  const out: TaskTelemetry = { ...current };
+  const keys: Array<keyof TaskTelemetry> = [
+    "inputTokens",
+    "outputTokens",
+    "cacheTokens",
+    "reasoningTokens",
+    "costUsd",
+  ];
+  for (const k of keys) {
+    const val = incoming[k];
+    if (val === undefined) continue;
+    if (mode === "accumulate") {
+      out[k] = (out[k] ?? 0) + val;
+    } else {
+      out[k] = val;
+    }
+  }
+  return out;
+}
+
+function isAccumulativeStepEvent(event: unknown): boolean {
+  const root = asRecord(event);
+  if (!root) return false;
+  if (root.type === "step_finish" || root.type === "step-finish") return true;
+  const part = asRecord(root.part);
+  if (part && (part.type === "step_finish" || part.type === "step-finish")) return true;
+  return false;
+}
+
+/**
+ * Parses a newline-delimited CLI output string and extracts best-effort TaskTelemetry.
+ * Never throws; returns undefined when no telemetry is found.
+ */
+export function extractTelemetryFromOutput(
+  output: string,
+  harness?: HarnessId
+): TaskTelemetry | undefined {
+  let telemetry: TaskTelemetry | undefined;
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line.startsWith("{")) continue;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      const extracted = extractTelemetryFromJsonEvent(parsed, harness);
+      if (extracted) {
+        telemetry = mergeTaskTelemetry(
+          telemetry,
+          extracted,
+          isAccumulativeStepEvent(parsed) ? "accumulate" : "replace"
+        );
+      }
+    } catch {
+      // Ignore non-JSON lines
+    }
+  }
+  return telemetry;
+}
 
 // ============================================================================
 // Spawn command builder with per-harness stdin offloading
@@ -242,6 +539,7 @@ export interface SpawnSubagentResult {
   harnessSessionId?: string | null;
   timedOut?: boolean;
   timeoutReason?: "idle" | "wall_clock";
+  telemetry?: TaskTelemetry;
 }
 
 // ============================================================================
@@ -612,6 +910,7 @@ export interface ExecuteHarnessProcessOptions {
     timeoutReason?: "idle" | "wall_clock";
     status: "done" | "failed";
     errorSummary?: string;
+    telemetry?: TaskTelemetry;
   }) => void;
 }
 
@@ -626,6 +925,7 @@ export interface ExecuteHarnessProcessResult {
   timeoutReason?: "idle" | "wall_clock";
   status: "done" | "failed";
   errorSummary?: string;
+  telemetry?: TaskTelemetry;
 }
 
 /**
@@ -660,7 +960,27 @@ export function executeHarnessProcess(
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
     let sessionDetectBuffer = "";
+    let telemetryBuffer = "";
+    let telemetry: TaskTelemetry | undefined;
     const runnerAbortController = new AbortController();
+
+    const consumeTelemetryLine = (rawLine: string): void => {
+      const trimmed = rawLine.trim();
+      if (!trimmed.startsWith("{")) return;
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        const extracted = extractTelemetryFromJsonEvent(parsed, options.harness);
+        if (extracted) {
+          telemetry = mergeTaskTelemetry(
+            telemetry,
+            extracted,
+            isAccumulativeStepEvent(parsed) ? "accumulate" : "replace"
+          );
+        }
+      } catch {
+        // Best-effort: ignore non-JSON lines
+      }
+    };
 
     const finish = (
       exitCode: number,
@@ -684,6 +1004,10 @@ export function executeHarnessProcess(
         }
         sessionDetectBuffer = "";
       }
+      if (telemetryBuffer.length > 0) {
+        consumeTelemetryLine(telemetryBuffer.replace(/\r$/, ""));
+        telemetryBuffer = "";
+      }
       if (errorSummary) {
         const redacted = redactSecrets(errorSummary);
         logStream.write(redacted);
@@ -702,6 +1026,7 @@ export function executeHarnessProcess(
         ...(timeoutReason ? { timeoutReason } : {}),
         status,
         errorSummary,
+        ...(telemetry ? { telemetry } : {}),
       };
       options.onBeforeStreamEnd?.(result);
       if (options.promptFilePath) {
@@ -830,6 +1155,14 @@ export function executeHarnessProcess(
             }
             nlIdx = sessionDetectBuffer.indexOf("\n");
           }
+        }
+        telemetryBuffer += chunk;
+        let tNlIdx = telemetryBuffer.indexOf("\n");
+        while (tNlIdx !== -1) {
+          const tLine = telemetryBuffer.slice(0, tNlIdx).replace(/\r$/, "");
+          telemetryBuffer = telemetryBuffer.slice(tNlIdx + 1);
+          consumeTelemetryLine(tLine);
+          tNlIdx = telemetryBuffer.indexOf("\n");
         }
       }
       const redacted = redactSecrets(chunk);
@@ -976,6 +1309,7 @@ export function spawnSubagent(
     harnessSessionId: res.harnessSessionId,
     timedOut: res.timedOut,
     ...(res.timeoutReason ? { timeoutReason: res.timeoutReason } : {}),
+    ...(res.telemetry ? { telemetry: res.telemetry } : {}),
   }));
 }
 

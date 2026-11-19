@@ -782,3 +782,130 @@ test("renderPlanMd & parsePlanMd: preserves pipes (|), nested parentheses (), an
     "(1) add '--transport <auto|acp|cli>' (default: auto)"
   );
 });
+
+test("DIRECT track: TASK_LINE_REGEX, renderPlanMd, parsePlanMd, and renderProgressBoard support DIRECT", () => {
+  const line =
+    "- [ ] **T1.1** [Track: DIRECT | Role: worker | Cat: general | Diff: low]: Fix typo in README (Files: README.md)";
+  const match = line.match(TASK_LINE_REGEX);
+  assert.ok(match, "DIRECT track line must match TASK_LINE_REGEX");
+  assert.equal(match![5], "DIRECT");
+
+  const rootDir = tempDir("asd-render-direct-");
+  const planPath = path.join(rootDir, "PLAN.md");
+  const tasks: TaskInput[] = [
+    {
+      taskId: "T1.1",
+      turn: 1,
+      title: "Fix typo in README",
+      track: "DIRECT",
+      role: "worker",
+      category: "general",
+      difficulty: "low",
+      targetFiles: ["README.md"],
+    },
+  ];
+  const rendered = renderPlanMd(
+    { project_root: rootDir, session_id: "s-direct-1" },
+    tasks,
+    planPath
+  );
+  assert.ok(rendered.includes("[Track: DIRECT | Role: worker | Cat: general | Diff: low]"));
+
+  const parsed = parsePlanMd(rendered);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0]!.track, "DIRECT");
+
+  const board = renderProgressBoard({ session_id: "s-direct-1", phase: "running" }, tasks);
+  assert.ok(board.includes("`DIRECT`"), "Progress board must display `DIRECT` for DIRECT track tasks");
+});
+
+test("renderSessionSummaryMd: reports per-task attempts/retries, duration, non-null tokens/cost, and session totals", () => {
+  const rootDir = tempDir("asd-summary-telemetry-");
+  const outPath = path.join(rootDir, "summary.md");
+  const tasks: TaskRow[] = [
+    {
+      task_id: "T1.1",
+      session_id: "s-tel-1",
+      turn: 1,
+      title: "Implement parser",
+      track: "HEAVY",
+      role: "worker",
+      category: "general",
+      difficulty: "medium",
+      status: "done",
+      attempts: 3,
+      assigned_harness: "claude-code",
+      assigned_model: "claude-sonnet-4-5",
+      depends_on_json: "[]",
+      target_files_json: '["src/core/spawner.ts"]',
+      context_hint: null,
+      acceptance: null,
+      verify_cmd: null,
+      done_claim_json: null,
+      worktree_path: null,
+      sub_session_id: null,
+      commit_sha: "abc1234",
+      duration_ms: 12500,
+      input_tokens: 1000,
+      output_tokens: 400,
+      cache_tokens: 200,
+      reasoning_tokens: null,
+      cost_usd: 0.025,
+    },
+    {
+      task_id: "T1.2",
+      session_id: "s-tel-1",
+      turn: 1,
+      title: "Quick doc fix",
+      track: "DIRECT",
+      role: "worker",
+      category: "writing",
+      difficulty: "low",
+      status: "done",
+      attempts: 1,
+      assigned_harness: null,
+      assigned_model: null,
+      depends_on_json: "[]",
+      target_files_json: '["README.md"]',
+      context_hint: null,
+      acceptance: null,
+      verify_cmd: null,
+      done_claim_json: null,
+      worktree_path: null,
+      sub_session_id: null,
+      commit_sha: "def5678",
+      duration_ms: 2500,
+      input_tokens: 500,
+      output_tokens: 100,
+      cache_tokens: null,
+      reasoning_tokens: 50,
+      cost_usd: 0.005,
+    },
+  ];
+
+  const md = renderSessionSummaryMd(
+    { session_id: "s-tel-1", project_root: rootDir, phase: "done" },
+    tasks,
+    [],
+    outPath
+  );
+
+  // Session totals
+  assert.ok(md.includes("- **Total Retries**: 2"));
+  assert.ok(md.includes("- **Total Duration**: 15.0s"));
+  assert.ok(
+    md.includes("- **Total Tokens**: input=1500, output=500, cache=200, reasoning=50")
+  );
+  assert.ok(md.includes("- **Total Cost (USD)**: $0.0300"));
+
+  // Per-task T1.1 (3 attempts = 2 retries, no reasoning_tokens)
+  assert.ok(md.includes("- **Attempts**: 3 (2 retries)"));
+  assert.ok(md.includes("- **Duration**: 12.5s"));
+  assert.ok(md.includes("- **Tokens**: input=1000, output=400, cache=200"));
+  assert.ok(md.includes("- **Cost (USD)**: $0.0250"));
+
+  // Per-task T1.2 (1 attempt = no retry suffix, no cache_tokens)
+  assert.ok(md.includes("- **Attempts**: 1\n"));
+  assert.ok(md.includes("- **Tokens**: input=500, output=100, reasoning=50"));
+  assert.ok(md.includes("- **Cost (USD)**: $0.0050"));
+});

@@ -12,6 +12,7 @@ import * as path from "node:path";
 import {
   spawnSubagent,
   killProcessTree,
+  extractTelemetryFromOutput,
 } from "../src/core/spawner.ts";
 import type { CommandRunner } from "../src/core/spawner.ts";
 import type { SubagentSessionMeta } from "../src/core/types.ts";
@@ -310,5 +311,125 @@ describe("spawner.ts", () => {
     assert.equal(promptMd.includes(fakeSecret), false, "Raw API key must not be persisted in prompt.md");
     assert.equal(promptMd.includes("topsecret999"), false, "Raw api_key must not be persisted in prompt.md");
     assert.ok(promptMd.includes("[REDACTED]"), "prompt.md must contain [REDACTED]");
+  });
+
+  test("extracts best-effort TaskTelemetry across Claude, Codex, OpenCode, Antigravity, and ignores malformed output", async () => {
+    // 1. Claude Code stream-json result
+    const claudeOut = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "cc-1" }),
+      JSON.stringify({
+        type: "result",
+        total_cost_usd: 0.0425,
+        usage: {
+          input_tokens: 1200,
+          output_tokens: 450,
+          cache_read_input_tokens: 300,
+          cache_creation_input_tokens: 100,
+        },
+      }),
+    ].join("\n");
+    assert.deepEqual(extractTelemetryFromOutput(claudeOut, "claude-code"), {
+      inputTokens: 1200,
+      outputTokens: 450,
+      cacheTokens: 400,
+      costUsd: 0.0425,
+    });
+
+    // 2. Codex turn.completed with cached & reasoning tokens
+    const codexOut = JSON.stringify({
+      type: "turn.completed",
+      usage: {
+        input_tokens: 800,
+        cached_input_tokens: 200,
+        output_tokens: 300,
+        output_tokens_details: { reasoning_tokens: 120 },
+      },
+    });
+    assert.deepEqual(extractTelemetryFromOutput(codexOut, "codex"), {
+      inputTokens: 800,
+      outputTokens: 300,
+      cacheTokens: 200,
+      reasoningTokens: 120,
+    });
+
+    // 3. OpenCode step_finish accumulates across multiple steps
+    const opencodeOut = [
+      JSON.stringify({
+        type: "step_finish",
+        part: {
+          type: "step-finish",
+          cost: 0.01,
+          tokens: { input: 500, output: 100, reasoning: 50, cache: { read: 20, write: 10 } },
+        },
+      }),
+      JSON.stringify({
+        type: "step_finish",
+        part: {
+          type: "step-finish",
+          cost: 0.02,
+          tokens: { input: 600, output: 150, reasoning: 25, cache: { read: 40, write: 0 } },
+        },
+      }),
+    ].join("\n");
+    const ocTel = extractTelemetryFromOutput(opencodeOut, "opencode");
+    assert.equal(ocTel?.inputTokens, 1100);
+    assert.equal(ocTel?.outputTokens, 250);
+    assert.equal(ocTel?.reasoningTokens, 75);
+    assert.equal(ocTel?.cacheTokens, 70);
+    assert.ok(Math.abs((ocTel?.costUsd ?? 0) - 0.03) < 1e-9);
+
+    // 4. Antigravity usageMetadata
+    const agyOut = JSON.stringify({
+      usageMetadata: {
+        promptTokenCount: 900,
+        candidatesTokenCount: 250,
+        cachedContentTokenCount: 150,
+        thoughtsTokenCount: 80,
+      },
+    });
+    assert.deepEqual(extractTelemetryFromOutput(agyOut, "antigravity"), {
+      inputTokens: 900,
+      outputTokens: 250,
+      cacheTokens: 150,
+      reasoningTokens: 80,
+    });
+
+    // 5. Malformed / non-telemetry output returns undefined without throwing
+    assert.equal(extractTelemetryFromOutput("not json\n{bad json\n{}\n"), undefined);
+
+    // 6. spawnSubagent surfaces parsed telemetry on SpawnSubagentResult
+    const projectRoot = makeProjectRoot();
+    const mockRunner: CommandRunner = {
+      async run(_cmd, _args, opts) {
+        opts.onSpawn?.(6262);
+        opts.onStdout(
+          JSON.stringify({
+            type: "result",
+            cost_usd: 0.015,
+            usage: { input_tokens: 400, output_tokens: 120 },
+          }) + "\n"
+        );
+        return { exitCode: 0, pid: 6262 };
+      },
+    };
+    const res = await spawnSubagent({
+      projectRoot,
+      mainSessionId: "main-telemetry",
+      subSessionId: "sub-telemetry",
+      role: "worker",
+      harness: "claude-code",
+      model: "claude-sonnet-4-5",
+      taskId: "T3.2",
+      prompt: "test telemetry",
+      allowedFiles: [],
+      command: "fake-cmd",
+      args: [],
+      commandRunner: mockRunner,
+    });
+    assert.deepEqual(res.telemetry, {
+      inputTokens: 400,
+      outputTokens: 120,
+      costUsd: 0.015,
+    });
   });
 });
