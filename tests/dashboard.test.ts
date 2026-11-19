@@ -548,7 +548,22 @@ test("Dashboard Debates UI: renders debate details collapsed by default and togg
       projectRoot: projDir,
       timestamp: Date.now(),
       sessions: [{ session_id: "sess-1", created_at: Date.now(), phase: "done", memo: "" }],
-      allTasks: [],
+      allTasks: [
+        {
+          task_id: "T1.1",
+          session_id: "sess-1",
+          turn: 1,
+          title: "Refine dashboard layout",
+          track: "HEAVY",
+          role: "worker",
+          category: "visual-ui",
+          difficulty: "high",
+          status: "done",
+          assigned_harness: "antigravity",
+          assigned_model: "claude-opus-5-5-medium",
+          target_files_json: "[]",
+        },
+      ],
       allDebates: [
         {
           debate_id: "DEB-1",
@@ -602,6 +617,12 @@ test("Dashboard Debates UI: renders debate details collapsed by default and togg
     clickFn(rowStub);
     assert.match(getEl("debateList").innerHTML, /aria-expanded="false"/);
     assert.doesNotMatch(getEl("debateList").innerHTML, /Use SQLite WAL mode/);
+
+    // 5. Task row & inspector meta card surface category and difficulty
+    assert.match(getEl("taskList").innerHTML, /visual-ui · high/);
+    const selectTaskFn = sandbox.selectTask as (id: string) => void;
+    selectTaskFn("T1.1");
+    assert.match(getEl("inspector").innerHTML, /Cat: <strong>visual-ui<\/strong> \| Diff: <strong>high<\/strong>/);
   } finally {
     await handle.close();
     fs.rmSync(homeDir, { recursive: true, force: true });

@@ -43,7 +43,16 @@ ASD v2.7.0 defines exactly five specialist subagent roles (`AGENT_ROLES`), synce
    - Decompose the goal into tasks with:
      - `taskId` (e.g., `T1.1`; `id: "T-1"` also accepted), `title`, `turn` (wave >= 1)
      - `role` — one of the 5 core roles (`planner`, `architect`, `worker`, `scout`, `critic`)
-     - optional `category` (`visual-ui` | `design` | `research` | `writing` | `general`), `difficulty` (`low` | `medium` | `high`), `dependsOn`, `contextHint`, `acceptance`
+     - **Required routing classification** (`category` and `difficulty` — never omit them; `HEAVY` mode resolves `routing.jsonc` models directly from these fields):
+       - `category` (`visual-ui` | `design` | `research` | `writing` | `general`):
+         - `visual-ui`: Web/Desktop GUI, TUI, HTML/CSS/layout, UI components, styling, or interactive views
+         - `design`: architecture/interface/API contracts, state/UX structure design
+         - `research`: external/codebase investigation, comparative evaluation, trade-off analysis
+         - `writing`: documentation, guides, patch notes, skill/prompt authoring
+         - `general`: pure backend logic, CLI/runtime plumbing, refactoring, tests, infra (routed by `difficulty`)
+       - `difficulty` (`low` | `medium` | `high`) — selects the Tier 4 model for `general` tasks
+       - **Routing Tier & UI Separation Rule**: Domain categories (`visual-ui`, `design`, `research`, `writing`) trigger Tier 3 routing **only when `role: "worker"`** (specialist roles `architect`/`planner`/`scout`/`critic` always override `category` via Tier 2). Never lump UI/TUI/frontend work into a `general` backend task — split UI work into its own `role: "worker", category: "visual-ui"` task so `routing.jsonc` selects the dedicated UI model.
+     - optional `dependsOn`, `contextHint`, `acceptance`
      - `track` (`"LIGHT"` or `"HEAVY"`), `targetFiles` (strict boundaries; `allowedFiles` accepted), `verifyCmd` (automated test command; `verificationCmd` accepted)
      - **Test File Permission & Scoped Verification Rule**: When a task modifies constants, types, or behavior covered by existing tests, always include the relevant test files (`tests/*.test.ts`) in `targetFiles` (or allow test file updates) so the subagent can update test assertions in the same turn, and scope `verifyCmd` to the relevant test file (or non-code verification command for docs/skills tasks) so unrelated tests do not cause false-negative rollbacks.
    - Persist to the SQLite SSOT and `.asd/PLAN.md`:
@@ -53,7 +62,7 @@ ASD v2.7.0 defines exactly five specialist subagent roles (`AGENT_ROLES`), synce
 
      # Or via stdin payload (POSIX bash / PowerShell):
      asd plan create --payload - <<'EOF'
-     {"tasks":[{"taskId":"T1.1","turn":1,"title":"<Task>","track":"LIGHT","role":"worker","targetFiles":["src/...","tests/..."],"verifyCmd":"npm test"}]}
+     {"tasks":[{"taskId":"T1.1","turn":1,"title":"<Task>","track":"HEAVY","role":"worker","category":"visual-ui","difficulty":"medium","targetFiles":["src/...","tests/..."],"verifyCmd":"npm test"}]}
      EOF
      # PowerShell: Get-Content plan.json -Raw | asd plan create --payload -
      ```

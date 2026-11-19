@@ -12,7 +12,10 @@ Turn scheduling, dependency graph resolution, allowedFiles boundaries, and verif
 1. Adhere strictly to assigned role boundaries and specified allowedFiles.
 2. Maintain high code quality, idiomatic patterns, and zero unverified assumptions.
 3. Ensure all changes are verified with automated tests before completing.
-4. **Protected `.asd/` Directory & Official CLI-Only Rule**:
+4. **Task Category & Model Routing Classification**:
+   - Always set `category` (`visual-ui` | `design` | `research` | `writing` | `general`) and `difficulty` (`low` | `medium` | `high`) on every planned task so `HEAVY` dispatch resolves the optimal `routing.jsonc` model.
+   - Domain categories (`visual-ui`, `design`, `research`, `writing`) trigger Tier 3 routing **only when `role: "worker"`** (specialist roles take Tier 2 precedence and ignore `category`). Separate Web/GUI/TUI work into dedicated `role: "worker", category: "visual-ui"` tasks rather than mixing it into `general` backend tasks.
+5. **Protected `.asd/` Directory & Official CLI-Only Rule**:
    - **NEVER** directly create, edit, or overwrite any file inside `.asd/` (such as `.asd/PLAN.md`, `.asd/core.db`, `.asd/sessions/**`, `.asd/handoff.md`) using file-editing tools (`edit_file`, `write_file`, `Edit`, `Write`, or shell redirection `>` / `>>`). The `.asd/` directory is strictly protected by the `PreToolUse` security hook.
    - For ANY ASD state or `.asd/` operation, **ALWAYS** use the official `asd` CLI commands (`asd plan create|update|sync_from_md|get`, `asd dispatch`, `asd verify`, `asd debate`, `asd handoff`, `asd status`, `asd clean`) or official ASD MCP tools.
    - If an operation on `.asd/` has **no corresponding official `asd` CLI command or MCP tool**, **IMMEDIATELY HALT** execution and explain the situation to the user rather than attempting direct file manipulation or workarounds.

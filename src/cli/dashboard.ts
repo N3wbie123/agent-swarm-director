@@ -1374,7 +1374,7 @@ function renderDashboardHtml(
               <span class="badge st-\${esc(task.status)}">\${esc(statusText)}</span>
             </div>
             <div class="meta-bar" style="margin-top:4px;">
-              Turn \${task.turn} | Track: <strong>\${esc(task.track)}</strong> | Role: <strong>\${esc(task.role)}</strong>\${task.track === 'LIGHT' ? '' : ' | Harness: <strong>' + esc((task.assigned_harness || '-') + '/' + (task.assigned_model || 'pending')) + '</strong>'}
+              Turn \${task.turn} | Track: <strong>\${esc(task.track)}</strong> | Role: <strong>\${esc(task.role)}</strong> | Cat: <strong>\${esc(task.category || 'general')}</strong> | Diff: <strong>\${esc(task.difficulty || 'medium')}</strong>\${task.track === 'LIGHT' ? '' : ' | Harness: <strong>' + esc((task.assigned_harness || '-') + '/' + (task.assigned_model || 'pending')) + '</strong>'}
               \${task.commit_sha ? ' | Commit: <code>' + esc(task.commit_sha.slice(0, 8)) + '</code>' : ''}
             </div>
             <div class="meta-bar" style="margin-top:4px;"><strong>Target Files:</strong> \${targetBadges}</div>
@@ -1571,7 +1571,7 @@ function renderDashboardHtml(
                 <div>
                   <span class="badge st-\${esc(item.status)}">\${esc(statusText)}</span>
                   <strong>\${esc(item.task_id)}</strong>
-                  <span class="meta-bar">[Turn \${item.turn} | \${esc(item.track)} | \${esc(item.role)}]</span>
+                  <span class="meta-bar">[Turn \${item.turn} | \${esc(item.track)} | \${esc(item.role)} | \${esc(item.category || 'general')} · \${esc(item.difficulty || 'medium')}]</span>
                   <div>\${esc(item.title)}</div>
                 </div>
                 <div style="text-align:right" class="meta-bar">

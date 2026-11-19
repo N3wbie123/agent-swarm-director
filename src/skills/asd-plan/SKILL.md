@@ -29,7 +29,11 @@ Use the standard ASD criteria (canonical definition in `/asd`, Section 2):
    - If critical requirements are underspecified, ask concise questions before generating the plan.
 
 3. **Step 3: Author `.asd/PLAN.md` via `asd plan`**
-   - Define tasks with `taskId` (e.g., `T1.1`), `title`, `turn`, and exactly one of the 5 core `role` values (`planner`, `architect`, `worker`, `scout`, `critic`). Optionally add `category` (`visual-ui` | `design` | `research` | `writing` | `general`), `difficulty` (`low` | `medium` | `high`), `dependsOn`, `contextHint`, and `acceptance` criteria for each task.
+   - Define tasks with `taskId` (e.g., `T1.1`), `title`, `turn`, and exactly one of the 5 core `role` values (`planner`, `architect`, `worker`, `scout`, `critic`).
+   - **Always classify `category` and `difficulty` explicitly** (do not omit them; `HEAVY` mode uses them to pick `routing.jsonc` models):
+     - `category`: `visual-ui` (Web/Desktop GUI, TUI, HTML/CSS/layout, UI components/interactions) | `design` (architecture/API/state/UX design) | `research` (investigation/analysis) | `writing` (docs/guides/skills) | `general` (pure backend/logic/infra/tests, routed by `difficulty`: `low` | `medium` | `high`).
+     - **Routing Tier & UI Separation Rule**: Domain categories (`visual-ui`, `design`, `research`, `writing`) activate Tier 3 routing **only when `role: "worker"`** (`architect`/`planner`/`scout`/`critic` take Tier 2 precedence and ignore `category`). Split UI/TUI work into dedicated `role: "worker", category: "visual-ui"` tasks instead of bundling it into `general` backend tasks.
+   - Optionally add `dependsOn`, `contextHint`, and `acceptance` criteria for each task.
    - Set `track` (`"LIGHT"` or `"HEAVY"`) to match your recommendation, plus `targetFiles` and `verifyCmd`.
    - **Test File Permission & Verification Rule**: Always allow or include corresponding test files (`tests/*.test.ts`) in `targetFiles` when a task changes version constants, types, or runtime behavior so the verification gate (`npm test`) passes within the same turn. For documentation or skill-only tasks, set a targeted `verifyCmd` rather than running unrelated failing tests.
    - Persist and render:
@@ -39,7 +43,7 @@ Use the standard ASD criteria (canonical definition in `/asd`, Section 2):
 
      # Or via stdin payload (POSIX bash / PowerShell):
      asd plan create --payload - <<'EOF'
-     {"tasks":[{"taskId":"T1.1","turn":1,"title":"<Task>","track":"LIGHT","role":"worker","targetFiles":["src/...","tests/..."],"verifyCmd":"npm test"}]}
+     {"tasks":[{"taskId":"T1.1","turn":1,"title":"<Task>","track":"HEAVY","role":"worker","category":"visual-ui","difficulty":"medium","targetFiles":["src/...","tests/..."],"verifyCmd":"npm test"}]}
      EOF
      # PowerShell: Get-Content plan.json -Raw | asd plan create --payload -
      ```
