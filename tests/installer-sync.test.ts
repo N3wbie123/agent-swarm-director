@@ -24,17 +24,26 @@ import {
   doctorProbe,
   generateAgentContent,
   generateAllAgentsMarkdown,
+  getAgentTemplate,
   getSkillTemplate,
+  loadCatalogMcpServers,
+  loadHarnessNativeCapabilities,
+  mergeJsonMcpServersForHarness,
+  renderSkillTemplate,
+  resolveHarnessConditionalBlocks,
+  resolveHarnessRoleModel,
   runAsdDoctor,
   runAsdSync,
   runAsdUninstall,
   syncAgentModelsIfNeeded,
   syncHarnessConfigs,
-  uninstallHarnessConfigs,
   syncJsonMcpConfigFile,
-  mergeJsonMcpServersForHarness,
+  uninstallHarnessConfigs,
 } from "../src/adapters/installer.ts";
-import { AGENT_ROLES, ASD_VERSION, type HarnessId } from "../src/core/types.ts";
+import * as skillRendererMod from "../src/adapters/installer/skill-renderer.ts";
+import * as agentRendererMod from "../src/adapters/installer/agent-renderer.ts";
+import * as mcpSyncMod from "../src/adapters/installer/mcp-sync.ts";
+import { AGENT_ROLES, ASD_VERSION, type HarnessId, type RoutingConfig } from "../src/core/types.ts";
 import { ASD_SKILLS } from "../src/adapters/claude-code.ts";
 
 function createTempDir(prefix: string): string {
@@ -1508,5 +1517,218 @@ describe("ACP Readiness & Bridge Setup Guidance (`runAsdDoctor` & `runAsdSync`)"
       removeTempDir(fakeBinDir);
       removeTempDir(acpHome);
     }
+  });
+});
+
+describe("T3.1: Facade Split, Harness-Conditional Skills, Dynamic routing.jsonc Injection & CLI-Only Agents", () => {
+  const ALL_HARNESSES: readonly HarnessId[] = [
+    "claude-code",
+    "opencode",
+    "codex",
+    "antigravity",
+    "cursor",
+  ];
+
+  test("Facade re-exports in src/adapters/installer.ts preserve exact identity with extracted submodules", () => {
+    assert.equal(getSkillTemplate, skillRendererMod.getSkillTemplate);
+    assert.equal(renderSkillTemplate, skillRendererMod.renderSkillTemplate);
+    assert.equal(resolveHarnessConditionalBlocks, skillRendererMod.resolveHarnessConditionalBlocks);
+
+    assert.equal(resolveHarnessRoleModel, agentRendererMod.resolveHarnessRoleModel);
+    assert.equal(getAgentTemplate, agentRendererMod.getAgentTemplate);
+    assert.equal(generateAgentContent, agentRendererMod.generateAgentContent);
+    assert.equal(generateAllAgentsMarkdown, agentRendererMod.generateAllAgentsMarkdown);
+
+    assert.equal(loadHarnessNativeCapabilities, mcpSyncMod.loadHarnessNativeCapabilities);
+    assert.equal(loadCatalogMcpServers, mcpSyncMod.loadCatalogMcpServers);
+    assert.equal(mergeJsonMcpServersForHarness, mcpSyncMod.mergeJsonMcpServersForHarness);
+    assert.equal(syncJsonMcpConfigFile, mcpSyncMod.syncJsonMcpConfigFile);
+    assert.equal(buildCodexManagedTomlBlock, mcpSyncMod.buildCodexManagedTomlBlock);
+  });
+
+  test("getSkillTemplate resolves @harness blocks cleanly per harness with zero stray tags, placeholders, or ASD MCP references", () => {
+    for (const harnessId of ALL_HARNESSES) {
+      for (const skill of ASD_SKILLS) {
+        const rendered = getSkillTemplate(skill, { harnessId });
+        assert.equal(
+          rendered.includes("<!-- @harness:"),
+          false,
+          `${harnessId}/${skill} must not contain raw @harness tags`
+        );
+        assert.equal(
+          rendered.includes("<!-- @end -->"),
+          false,
+          `${harnessId}/${skill} must not contain raw @end tags`
+        );
+        assert.equal(
+          /\{\{LIGHT_[A-Z]+_MODEL\}\}/.test(rendered),
+          false,
+          `${harnessId}/${skill} must not contain unresolved {{LIGHT_*_MODEL}} placeholders`
+        );
+        assert.equal(
+          /official ASD MCP|or MCP tool/i.test(rendered),
+          false,
+          `${harnessId}/${skill} must not reference retired ASD MCP tools`
+        );
+      }
+    }
+
+    // Harness-specific isolation checks on `asd`
+    const ccAsd = getSkillTemplate("asd", { harnessId: "claude-code" });
+    assert.ok(ccAsd.includes('Invoke `Agent` / `Task` with `subagent_type: "asd-scout"`'));
+    assert.equal(ccAsd.includes("invoke_subagent"), false);
+    assert.equal(ccAsd.includes("asd-guard.js"), false);
+
+    const ocAsd = getSkillTemplate("asd", { harnessId: "opencode" });
+    assert.ok(ocAsd.includes('Invoke `task` with `subagent_type: "asd-scout"`'));
+    assert.ok(ocAsd.includes("--mode parallel_spawn --async"));
+    assert.equal(ocAsd.includes("invoke_subagent"), false);
+    assert.equal(ocAsd.includes("Agent` / `Task"), false);
+
+    const agAsd = getSkillTemplate("asd", { harnessId: "antigravity" });
+    assert.ok(agAsd.includes('invoke_subagent(TypeName="asd-scout", Model="flash_lite")'));
+    assert.equal(agAsd.includes("subagent_type:"), false);
+    assert.equal(agAsd.includes("asd-guard.js"), false);
+
+    const cxAsd = getSkillTemplate("asd", { harnessId: "codex" });
+    assert.ok(cxAsd.includes("Spawn internal `asd-<role>` subagent"));
+    assert.equal(cxAsd.includes("invoke_subagent"), false);
+    assert.equal(cxAsd.includes("asd-guard.js"), false);
+
+    const curAsd = getSkillTemplate("asd", { harnessId: "cursor" });
+    assert.ok(curAsd.includes("Spawn internal `asd-<role>` subagent"));
+    assert.equal(curAsd.includes("invoke_subagent"), false);
+    assert.equal(curAsd.includes("asd-guard.js"), false);
+
+    // Calling without harnessId strips tags cleanly while preserving all blocks and resolving placeholders
+    const unharnessed = getSkillTemplate("asd");
+    assert.equal(unharnessed.includes("<!-- @harness:"), false);
+    assert.equal(unharnessed.includes("<!-- @end -->"), false);
+    assert.equal(/\{\{LIGHT_[A-Z]+_MODEL\}\}/.test(unharnessed), false);
+    assert.ok(unharnessed.includes('subagent_type: "asd-scout"'));
+    assert.ok(unharnessed.includes('invoke_subagent(TypeName="asd-scout"'));
+
+    // Canonical asd-handoff alias rewrites frontmatter name cleanly
+    const asdHandoff = getSkillTemplate("asd-handoff", { harnessId: "claude-code" });
+    assert.ok(/^name:\s*asd-handoff$/m.test(asdHandoff));
+    assert.ok(asdHandoff.includes("DIRECT"));
+    assert.ok(asdHandoff.includes("LIGHT"));
+    assert.ok(asdHandoff.includes("HEAVY"));
+  });
+
+  test("getSkillTemplate & syncHarnessConfigs dynamically inject {{LIGHT_<ROLE>_MODEL}} from routing.jsonc", async () => {
+    const customRouting = {
+      _asdVersion: ASD_VERSION,
+      lightSubagents: {
+        antigravity: {
+          scout: { model: "flash" },
+          worker: { model: "pro" },
+          planner: { model: "pro" },
+          architect: { model: "flash" },
+          critic: { model: "flash_lite" },
+          defaultModel: "flash",
+        },
+      },
+      agents: {},
+      categories: {},
+    } as unknown as RoutingConfig;
+
+    const agAsd = getSkillTemplate("asd", {
+      harnessId: "antigravity",
+      routingConfig: customRouting,
+    });
+    assert.ok(agAsd.includes('Model="flash"'));
+    assert.ok(agAsd.includes("`flash`, `pro`, `pro`, `flash`, `flash_lite`"));
+
+    const agDebate = getSkillTemplate("asd-debate", {
+      harnessId: "antigravity",
+      routingConfig: customRouting,
+    });
+    assert.ok(agDebate.includes('TypeName="asd-critic", Model="flash_lite"'));
+    assert.ok(agDebate.includes('TypeName="asd-architect", Model="flash"'));
+
+    // End-to-end syncHarnessConfigs propagates routing.jsonc models into synced skill files
+    const dynHome = createTempDir("asd-t31-dyn-home-");
+    try {
+      const asdDir = path.join(dynHome, ".asd");
+      fs.mkdirSync(asdDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(asdDir, "routing.jsonc"),
+        JSON.stringify(customRouting, null, 2),
+        "utf8"
+      );
+
+      const syncRes = await syncHarnessConfigs({
+        homeDir: dynHome,
+        noPath: true,
+        skipModelDiscovery: true,
+      });
+      assert.equal(syncRes.status, "updated");
+
+      const syncedAgSkill = fs.readFileSync(
+        path.join(dynHome, ".gemini", "skills", "asd", "SKILL.md"),
+        "utf8"
+      );
+      assert.ok(syncedAgSkill.includes('invoke_subagent(TypeName="asd-scout", Model="flash")'));
+      assert.equal(syncedAgSkill.includes("<!-- @harness:"), false);
+      assert.equal(syncedAgSkill.includes("subagent_type:"), false);
+
+      const syncedOcCmd = fs.readFileSync(
+        path.join(dynHome, ".config", "opencode", "command", "asd-run.md"),
+        "utf8"
+      );
+      assert.ok(syncedOcCmd.includes("OpenCode Non-Blocking Rule"));
+      assert.equal(syncedOcCmd.includes("invoke_subagent"), false);
+
+      const syncedCcSkill = fs.readFileSync(
+        path.join(dynHome, ".claude", "skills", "asd-run", "SKILL.md"),
+        "utf8"
+      );
+      assert.equal(syncedCcSkill.includes("OpenCode Non-Blocking Rule"), false);
+      assert.ok(syncedCcSkill.includes('`Agent` / `Task` with `subagent_type: "asd-<role>"`'));
+    } finally {
+      removeTempDir(dynHome);
+    }
+  });
+
+  test("agent-renderer & generateAllAgentsMarkdown are CLI-only, reflect DIRECT/LIGHT/HEAVY, and omit automated-test bullet from read-only/planner fallbacks", () => {
+    for (const role of AGENT_ROLES) {
+      const presetMd = generateAgentContent(role);
+      assert.equal(
+        /official ASD MCP|or MCP tool/i.test(presetMd),
+        false,
+        `Agent '${role}' must not mention ASD MCP tools`
+      );
+
+      const fallbackMd = generateAgentContent(role, { skipPreset: true });
+      assert.equal(
+        /official ASD MCP|or MCP tool/i.test(fallbackMd),
+        false,
+        `Fallback agent '${role}' must not mention ASD MCP tools`
+      );
+      if (role === "scout" || role === "critic" || role === "planner") {
+        assert.equal(
+          fallbackMd.includes("verified with automated tests"),
+          false,
+          `Fallback '${role}' must not include hardcoded automated-test bullet`
+        );
+      } else if (role === "worker") {
+        assert.ok(
+          fallbackMd.includes("verified with automated tests"),
+          "Fallback 'worker' should retain automated-test verification bullet"
+        );
+      } else if (role === "architect") {
+        assert.ok(
+          fallbackMd.includes("only when modifying code"),
+          "Fallback 'architect' should make automated tests conditional on code modifications"
+        );
+      }
+    }
+
+    const rosterMd = generateAllAgentsMarkdown();
+    assert.equal(/official ASD MCP|or MCP tool/i.test(rosterMd), false);
+    assert.ok(rosterMd.includes("`DIRECT`"));
+    assert.ok(rosterMd.includes("`LIGHT`"));
+    assert.ok(rosterMd.includes("`HEAVY`"));
   });
 });
