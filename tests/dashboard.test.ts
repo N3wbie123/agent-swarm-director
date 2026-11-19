@@ -629,3 +629,103 @@ test("Dashboard Debates UI: renders debate details collapsed by default and togg
     fs.rmSync(projDir, { recursive: true, force: true });
   }
 });
+
+test("Dashboard i18n: defaults to English even on ko-KR locale, toggles to Korean explicitly, and leaks no Korean in EN mode", async () => {
+  const homeDir = makeTempDir("asd-ui-i18n-home-");
+  const projDir = makeTempDir("asd-ui-i18n-proj-");
+  const handle = await startDashboardServer({
+    port: 0,
+    projectRoot: projDir,
+    homeDir,
+  });
+  try {
+    const html = await (await fetch(handle.url)).text();
+    assert.match(html, /<html lang="en">/);
+    const staticMarkup = html.replace(/<script>[\s\S]*?<\/script>/, "");
+    assert.doesNotMatch(staticMarkup, /닫기|\(없음\)|라우팅 편집|모델 확인/);
+    assert.match(staticMarkup, /id="btnCloseRouting"/);
+
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch?.[1], "Inline <script> block must exist");
+
+    const elements = new Map<string, { id: string; innerHTML: string; textContent: string; style: Record<string, string>; disabled: boolean; classList: { toggle: () => void; add: () => void; remove: () => void; contains: () => boolean } }>();
+    const getEl = (id: string) => {
+      if (!elements.has(id)) {
+        elements.set(id, {
+          id,
+          innerHTML: "",
+          textContent: "",
+          style: {},
+          disabled: false,
+          classList: { toggle: () => {}, add: () => {}, remove: () => {}, contains: () => false },
+        });
+      }
+      return elements.get(id)!;
+    };
+    const storage = new Map<string, string>();
+    const documentElement = { lang: "ko" };
+    const sandbox: Record<string, unknown> = {
+      window: { getSelection: () => "" },
+      navigator: { language: "ko-KR" },
+      localStorage: {
+        getItem: (k: string) => storage.get(k) ?? null,
+        setItem: (k: string, v: string) => { storage.set(k, v); },
+      },
+      document: {
+        documentElement,
+        activeElement: null,
+        getElementById: (id: string) => (id === "outputLogPre" || id === "promptPre" ? null : getEl(id)),
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        addEventListener: () => {},
+      },
+      fetch: async () => ({ ok: true, json: async () => null }),
+      setInterval: () => 0,
+      setTimeout: () => 0,
+    };
+    vm.runInNewContext(scriptMatch[1]!, sandbox);
+
+    // 1. Initial default is English despite navigator.language = ko-KR
+    assert.equal(documentElement.lang, "en");
+    assert.equal(getEl("btnCloseModelsModal").textContent, "Close");
+    assert.equal(getEl("btnCloseRouting").textContent, "Close");
+
+    // 2. EN mode: models modal renders no leaked Korean
+    const renderModelsModal = sandbox.renderModelsModal as () => void;
+    renderModelsModal();
+    const enModal = getEl("modelsGrid2x2").innerHTML;
+    assert.match(enModal, /\(No models found\)/);
+    assert.doesNotMatch(enModal, /\(없음\)|닫기/);
+    for (const el of elements.values()) {
+      assert.doesNotMatch(el.textContent, /닫기|\(없음\)/, `EN leak in #${el.id}`);
+    }
+
+    // 3. Explicit toggle switches to Korean and persists
+    const setLang = sandbox.setLang as (l: string) => void;
+    setLang("ko");
+    assert.equal(documentElement.lang, "ko");
+    assert.equal(storage.get("asd_lang"), "ko");
+    assert.equal(getEl("btnCloseRouting").textContent, "닫기");
+    assert.equal(getEl("btnCloseModelsModal").textContent, "닫기");
+    renderModelsModal();
+    assert.match(getEl("modelsGrid2x2").innerHTML, /\(조회된 모델 없음\)/);
+
+    // 4. Persisted 'ko' is honored on reload; 'en' and unknown values fall back to English
+    const reloadLang = (saved: string | null) => {
+      const docEl = { lang: "" };
+      vm.runInNewContext(scriptMatch[1]!, {
+        ...sandbox,
+        localStorage: { getItem: () => saved, setItem: () => {} },
+        document: { ...(sandbox.document as object), documentElement: docEl },
+      });
+      return docEl.lang;
+    };
+    assert.equal(reloadLang("ko"), "ko");
+    assert.equal(reloadLang("en"), "en");
+    assert.equal(reloadLang(null), "en");
+  } finally {
+    await handle.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+    fs.rmSync(projDir, { recursive: true, force: true });
+  }
+});
