@@ -278,3 +278,47 @@ test("SqliteDriver scopeProjectRoot: Windows drive-letter case and slash variati
   assert.equal(readerLower.getAllTasks().length, 1);
   assert.equal(readerLower.getAllDebates().length, 1);
 });
+
+// 12. DIRECT track + idempotent telemetry migrations + recordTaskTelemetry.
+test("DIRECT track and nullable task telemetry: idempotent migration + recordTaskTelemetry", () => {
+  const dir = tempDir("asd-db-telemetry-");
+  const dbFile = path.join(dir, "core.db");
+
+  const drv1 = new SqliteDriver(dbFile);
+  cleanups.push(() => drv1.close());
+  makeSession(drv1, "s-tel");
+
+  drv1.upsertTasks("s-tel", [
+    { taskId: "T1.1", turn: 1, title: "direct task", track: "DIRECT" },
+  ]);
+
+  const initial = drv1.getTask("s-tel", "T1.1")!;
+  assert.equal(initial.track, "DIRECT");
+  assert.equal(initial.input_tokens, null);
+  assert.equal(initial.output_tokens, null);
+  assert.equal(initial.cache_tokens, null);
+  assert.equal(initial.reasoning_tokens, null);
+  assert.equal(initial.cost_usd, null);
+
+  drv1.recordTaskTelemetry("s-tel", "T1.1", {
+    inputTokens: 1200,
+    outputTokens: 350,
+    cacheTokens: 400,
+    reasoningTokens: 150,
+    costUsd: 0.0125,
+  });
+
+  const updated = drv1.getTask("s-tel", "T1.1")!;
+  assert.equal(updated.input_tokens, 1200);
+  assert.equal(updated.output_tokens, 350);
+  assert.equal(updated.cache_tokens, 400);
+  assert.equal(updated.reasoning_tokens, 150);
+  assert.equal(updated.cost_usd, 0.0125);
+
+  // Re-opening the same DB verifies idempotent ALTER TABLE migrations.
+  const drv2 = new SqliteDriver(dbFile);
+  cleanups.push(() => drv2.close());
+  const reread = drv2.getTask("s-tel", "T1.1")!;
+  assert.equal(reread.input_tokens, 1200);
+  assert.equal(reread.cost_usd, 0.0125);
+});

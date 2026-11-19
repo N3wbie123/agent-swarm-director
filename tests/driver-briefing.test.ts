@@ -32,7 +32,9 @@ describe("CR-02: 0-Token Driver Briefing (buildDriverBriefing)", () => {
       assert.ok(briefing.startsWith("# ASD Session Briefing"));
       assert.ok(briefing.includes(`Session ID: ${sid}`));
       assert.ok(briefing.includes("Zero task briefing"));
-      assert.ok(briefing.includes("asd_plan, asd_dispatch, asd_verify, asd_debate"));
+      assert.ok(briefing.includes("`asd plan`, `asd dispatch`, `asd verify`, `asd debate`"));
+      assert.ok(!briefing.includes("ASD MCP"));
+      assert.ok(!briefing.includes("asd_plan"));
       assert.ok(!briefing.includes("## Attention Needed Tasks"));
       assert.ok(!briefing.includes("## Recently Completed Tasks"));
     } finally {
@@ -107,6 +109,8 @@ describe("CR-02: 0-Token Driver Briefing (buildDriverBriefing)", () => {
         locale: "ko",
       });
       assert.ok(koBriefing.includes("## 안내"));
+      assert.ok(koBriefing.includes("공식 `asd` CLI(`asd plan`, `asd dispatch`, `asd verify`, `asd debate`)"));
+      assert.ok(!koBriefing.includes("ASD MCP"));
       assert.ok(briefing.includes("## Attention Needed Tasks"));
       assert.ok(briefing.includes("**T1.2** [verifying]: Verifying task"));
       assert.ok(briefing.includes("**T1.3** [merge_conflict]: Conflict task"));

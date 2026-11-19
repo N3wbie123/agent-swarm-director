@@ -80,7 +80,15 @@ export type HarnessId =
   | "antigravity"
   | "cursor";
 
-export type TaskTrack = "LIGHT" | "HEAVY";
+export type TaskTrack = "DIRECT" | "LIGHT" | "HEAVY";
+
+export interface TaskTelemetry {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheTokens?: number;
+  reasoningTokens?: number;
+  costUsd?: number;
+}
 
 export type TaskStatus =
   | "pending"
@@ -275,7 +283,7 @@ export interface RoutingConfig {
 }
 
 // ============================================================================
-// MCP Tool I/O Types
+// Orchestrator Command I/O Types
 // ============================================================================
 
 export interface AsdPlanInput {
@@ -330,6 +338,7 @@ export interface AsdPlanOutput {
   planMdPath: string;
   progressBoard: string;
   foreground?: boolean;
+  warnings?: string[];
 }
 
 export interface AsyncDispatchJobMeta {
@@ -404,6 +413,8 @@ export interface AsdDispatchOutput {
     durationMs: number;
     error?: string;
     crossScopeRequests?: CrossScopeRequest[];
+    logPath?: string;
+    telemetry?: TaskTelemetry;
   }>;
   results: Array<{
     taskId: string;
@@ -414,10 +425,13 @@ export interface AsdDispatchOutput {
     durationMs: number;
     error?: string;
     crossScopeRequests?: CrossScopeRequest[];
+    logPath?: string;
+    telemetry?: TaskTelemetry;
   }>;
   autoCreatedTasks?: AutoCreatedCrossScopeTask[];
   deferredCrossScopeRequests?: DeferredCrossScopeRequest[];
   acpBridgeHints?: string[];
+  concurrencyWarnings?: string[];
   progressBoard: string;
 }
 
@@ -436,6 +450,10 @@ export interface AsdVerifyOutput {
   rollbackPerformed?: boolean;
   violations?: string[];
   testOutput?: string;
+  testOutputTruncated?: boolean;
+  attempts?: number;
+  escalationHint?: string;
+  logPath?: string;
   error?: string;
   autoCreatedTasks?: AutoCreatedCrossScopeTask[];
   deferredCrossScopeRequests?: DeferredCrossScopeRequest[];
