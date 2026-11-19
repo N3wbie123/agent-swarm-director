@@ -45,7 +45,8 @@ import {
   cursorAdapter,
   probeCursorHeadless,
 } from "../src/adapters/cursor.ts";
-import { AGENT_ROLES, ASD_VERSION, type HarnessAdapter } from "../src/core/types.ts";
+import { AGENT_ROLES, ASD_VERSION, type HarnessAdapter, type HarnessId } from "../src/core/types.ts";
+import { getSkillTemplate } from "../src/adapters/installer.ts";
 
 describe("Harness Adapters", () => {
   describe("1. Adapter Instantiation & HarnessAdapter Contract", () => {
@@ -535,6 +536,28 @@ describe("Harness Adapters", () => {
         });
       } finally {
         fs.rmSync(tmpRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("8. Harness-Targeted Skill Rendering Across All 5 Adapters", () => {
+    test("all 5 harness adapters receive clean harness-scoped skills for every ASD_SKILLS entry", () => {
+      const harnesses: HarnessId[] = [
+        "claude-code",
+        "opencode",
+        "codex",
+        "antigravity",
+        "cursor",
+      ];
+      for (const harnessId of harnesses) {
+        for (const skill of ASD_SKILLS) {
+          const content = getSkillTemplate(skill, { harnessId });
+          assert.ok(content.length > 0, `${harnessId}/${skill} should render non-empty content`);
+          assert.equal(content.includes("<!-- @harness:"), false);
+          assert.equal(content.includes("<!-- @end -->"), false);
+          assert.equal(/\{\{LIGHT_[A-Z]+_MODEL\}\}/.test(content), false);
+          assert.equal(/official ASD MCP|or MCP tool/i.test(content), false);
+        }
       }
     });
   });

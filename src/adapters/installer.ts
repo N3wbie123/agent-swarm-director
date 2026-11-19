@@ -3,13 +3,13 @@
  *
  * Implements:
  * 1. Strictly Global-Only `syncHarnessConfigs` / `runAsdSync`:
- *    - Installs skills, agents, hooks, and MCP configurations into global user homes
- *      (~/.claude, ~/.config/opencode, ~/.codex, ~/.gemini).
+ *    - Installs harness-targeted skills, agents, hooks, and external catalog MCP configurations
+ *      into global user homes (~/.claude, ~/.config/opencode, ~/.codex, ~/.gemini, ~/.cursor).
  *    - Never touches or pollutes project directories during sync.
  *    - Idempotent: checks composite SHA-256 hash against last-sync.json and file existence;
  *      skips unneeded writes with { skipped: true } indicators.
- *    - Injects PreToolUse and Stop hooks and asd-core MCP server pointing to dynamic
- *      <ASD_ROOT>/src/mcp/server.ts and <ASD_ROOT>/src/cli/index.ts.
+ *    - Injects SessionStart, PreToolUse, and Stop CLI hooks pointing to dynamic
+ *      <ASD_ROOT>/src/cli/index.ts (CLI-only; ASD's legacy MCP server is retired).
  * 2. Main-Session Auto-Sync (`autoSyncIfNeeded`):
  *    - Guarded by Subagent Shield (ASD_SESSION_ROLE !== "subagent").
  * 3. Surgical `uninstallHarnessConfigs` / `runAsdUninstall`:
@@ -29,7 +29,7 @@ import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { CLAUDE_ACP_INSTALL_HINT, CODEX_ACP_INSTALL_HINT } from "../core/acp-client.ts";
-import { parseJsonc, removeTomlFence, upsertTomlFence, escapeTomlBasicString } from "../core/jsonc.ts";
+import { parseJsonc, removeTomlFence, upsertTomlFence } from "../core/jsonc.ts";
 import {
   discoverHarnessModels,
   inspectOrRemapRoutingModels,
@@ -39,49 +39,74 @@ import {
   type RoutingModelWarning,
 } from "../core/models.ts";
 import { evaluatePreToolUse } from "../core/policy.ts";
-import {
-  normalizeAntigravityModel,
-  resolveBinaryOnPath,
-  resolveLightSubagentModel,
-  resolveLightSubagentRoute,
-} from "../core/router.ts";
+import { resolveLightSubagentRoute } from "../core/router.ts";
 import {
   AGENT_ROLES,
   ASD_VERSION,
   registerCoreInstallerHooks,
   type AcpHarnessReadiness,
-  type AgentRole,
   type HarnessAdapter,
   type HarnessId,
   type RoutingConfig,
 } from "../core/types.ts";
-import {
-  AntigravityAdapter,
-  antigravityAdapter,
-  probeAntigravityHeadless,
-} from "./antigravity.ts";
+import { antigravityAdapter } from "./antigravity.ts";
 import {
   ASD_SKILLS,
-  ClaudeCodeAdapter,
   claudeCodeAdapter,
   isAsdManagedClaudeHook,
   mergeClaudeSettings,
 } from "./claude-code.ts";
+import { codexAdapter } from "./codex.ts";
+import { cursorAdapter } from "./cursor.ts";
 import {
-  CodexAdapter,
-  codexAdapter,
-} from "./codex.ts";
-import {
-  CursorAdapter,
-  cursorAdapter,
-  probeCursorHeadless,
-  resolveCursorBinaryName,
-} from "./cursor.ts";
-import {
-  OpencodeAdapter,
   generateOpencodeGuardPlugin,
   opencodeAdapter,
 } from "./opencode.ts";
+import {
+  cleanupLegacyAgentFiles,
+  generateAgentContent,
+  generateAllAgentsMarkdown,
+  getAgentTemplate,
+  resolveHarnessRoleModel,
+  type GenerateAgentContentOptions,
+} from "./installer/agent-renderer.ts";
+import {
+  bootstrapGlobalMcpPreset,
+  buildCodexManagedTomlBlock,
+  loadCatalogMcpServers,
+  loadHarnessNativeCapabilities,
+  mergeJsonMcpServersForHarness,
+  stripAsdManagedMcpEntries,
+  syncJsonMcpConfigFile,
+  type CatalogMcpEntry,
+} from "./installer/mcp-sync.ts";
+import {
+  getSkillTemplate,
+  renderSkillTemplate,
+  resolveHarnessConditionalBlocks,
+  substituteLightModelPlaceholders,
+  type RenderSkillOptions,
+} from "./installer/skill-renderer.ts";
+
+// Backward-compatible Facade re-exports
+export {
+  getSkillTemplate,
+  renderSkillTemplate,
+  resolveHarnessConditionalBlocks,
+  substituteLightModelPlaceholders,
+  type RenderSkillOptions,
+  resolveHarnessRoleModel,
+  getAgentTemplate,
+  generateAgentContent,
+  generateAllAgentsMarkdown,
+  type GenerateAgentContentOptions,
+  loadHarnessNativeCapabilities,
+  loadCatalogMcpServers,
+  mergeJsonMcpServersForHarness,
+  syncJsonMcpConfigFile,
+  buildCodexManagedTomlBlock,
+  type CatalogMcpEntry,
+};
 
 // ============================================================================
 // Types and Interfaces
@@ -556,264 +581,9 @@ function computeUserConfigHashes(homeDir: string, harnessId: HarnessId): Record<
   return hashes;
 }
 
-// ============================================================================
-// Skill and Agent Markdown Generation
-// ============================================================================
-
-export function getSkillTemplate(skillName: string): string {
-  const canonicalName = skillName === "asd-handoff" ? "handoff" : skillName;
-  const skillsDir = path.join(getAsdRoot(), "src", "skills", canonicalName, "SKILL.md");
-  try {
-    if (fs.existsSync(skillsDir)) {
-      const rawContent = fs.readFileSync(skillsDir, "utf8");
-      const content = rawContent.replace(/\bASD v\d+\.\d+(?:\.\d+)?\b/g, `ASD v${ASD_VERSION}`);
-      if (skillName === "asd-handoff") {
-        return content.replace(/^name:\s*handoff$/m, "name: asd-handoff");
-      }
-      return content;
-    }
-  } catch {
-    // Ignore unreadable file
-  }
-  return `# ASD Skill: ${skillName}\n`;
-}
-
-/**
- * Resolves the highest-priority model configured for a given AgentRole on a specific HarnessId
- * by walking `[primary, ...fallbacks]` in `routing.jsonc`.
- * Example: if `critic` has 1st priority `claude-code` and 2nd priority `opencode (glm-5.3-flash)`,
- * calling `resolveHarnessRoleModel("critic", "opencode", routingConfig)` returns `"nvidia/z-ai/glm-5.3-flash"`.
- */
-export function resolveHarnessRoleModel(
-  role: AgentRole,
-  harnessId: HarnessId,
-  routingConfig?: RoutingConfig | null
-): string | undefined {
-  return resolveLightSubagentModel(harnessId, role, routingConfig);
-}
-
-const LEGACY_REMOVED_ROLES = [
-  "director",
-  "analyst",
-  "arbiter",
-  "builder",
-  "verifier",
-] as const;
-
-function cleanupLegacyAgentFiles(agentDir: string): void {
-  for (const legacyRole of LEGACY_REMOVED_ROLES) {
-    const legacyPath = path.join(agentDir, `asd-${legacyRole}.md`);
-    if (fs.existsSync(legacyPath)) {
-      try {
-        fs.unlinkSync(legacyPath);
-      } catch {
-        // Ignore removal error
-      }
-    }
-  }
-}
-
-export function getAgentTemplate(
-  role: AgentRole,
-  model?: string,
-  fallbacks?: string[]
-): string | null {
-  const presetPath = path.join(getAsdRoot(), "presets", "agents", `${role}.md`);
-  try {
-    if (fs.existsSync(presetPath)) {
-      const raw = fs.readFileSync(presetPath, "utf8").replace(/\r\n/g, "\n").trim();
-      if (raw.length > 0) {
-        let body = raw.replace(/^---\n[\s\S]*?\n---\n+/, "").trim() + "\n";
-        if (model) {
-          const fbSuffix =
-            fallbacks && fallbacks.length > 0
-              ? ` | **Fallbacks**: \`${fallbacks.join("` → `")}\``
-              : "";
-          const modelLine = `**Configured Model**: \`${model}\`${fbSuffix} (synced from \`routing.jsonc\`)`;
-          if (body.includes("multi-agent system.")) {
-            body = body.replace("multi-agent system.", `multi-agent system.\n${modelLine}`);
-          } else {
-            body = `${modelLine}\n\n${body}`;
-          }
-        }
-        return body;
-      }
-    }
-  } catch {
-    // Fallback to built-in template
-  }
-  return null;
-}
-
-export function generateAgentContent(
-  role: AgentRole,
-  opts?: { harnessId?: HarnessId; model?: string; fallbacks?: string[] }
-): string {
-  const roleDescriptions: Record<AgentRole, { title: string; desc: string; focus: string }> = {
-    planner: {
-      title: "Planner",
-      desc: "Task decomposition, requirements analysis, and orchestration architect. Produces structured .asd/PLAN.md specifications.",
-      focus: "Turn scheduling, dependency graph resolution, allowedFiles boundaries, and verification criteria.",
-    },
-    architect: {
-      title: "Architect",
-      desc: "System designer, escalation solver, and debate arbiter. Defines interfaces, resolves Round 2 conflicts, and handles complex architectural invariants.",
-      focus: "Modular boundaries, core purity, definitive arbitration (APPROVE/MINOR_AMEND/REJECT), and architectural elegance.",
-    },
-    worker: {
-      title: "Worker",
-      desc: "Core implementation and task executor. Handles feature implementation, scoped file modifications, bug fixes, refactoring, and unit tests.",
-      focus: "Idiomatic code, strict allowedFiles compliance, minimal diffs, and rapid test verification.",
-    },
-    scout: {
-      title: "Scout",
-      desc: "Read-only codebase explorer and fast inspector. Maps repository layouts, finds symbol declarations, and retrieves existing patterns.",
-      focus: "Zero-mutation discovery, reference gathering, and concise context provision.",
-    },
-    critic: {
-      title: "Critic",
-      desc: "Hostile adversarial evaluator. Challenges assumptions, cross-examines code evidence, surfaces blind spots, and stress-tests designs.",
-      focus: "Security boundaries, failure modes, over-engineering detection, and code-cited anti-pattern identification.",
-    },
-  };
-
-  const meta = roleDescriptions[role] ?? {
-    title: role,
-    desc: `ASD agent specialist for role '${role}'.`,
-    focus: "Specialized multi-agent execution.",
-  };
-
-  const effectiveModel =
-    opts?.harnessId === "antigravity"
-      ? (() => {
-          const norm = normalizeAntigravityModel(
-            opts.model ?? resolveLightSubagentModel("antigravity", role)
-          );
-          if (norm === "inherit") {
-            if (role === "scout") return "flash_lite";
-            if (role === "architect" || role === "critic") return "pro";
-            return "flash";
-          }
-          return norm;
-        })()
-      : opts?.model;
-
-  const isReadOnlyRole = role === "scout" || role === "critic";
-  const frontmatterLines = [
-    `---`,
-    `name: asd-${role}`,
-    `description: ASD v${ASD_VERSION} ${meta.title} Agent. ${meta.desc}`,
-  ];
-  if (opts?.harnessId === "opencode") {
-    frontmatterLines.push(`mode: subagent`);
-    if (isReadOnlyRole) {
-      frontmatterLines.push(`tools:`);
-      frontmatterLines.push(`  write: false`);
-      frontmatterLines.push(`  edit: false`);
-      frontmatterLines.push(`  patch: false`);
-    }
-  }
-  if (opts?.harnessId === "claude-code" && isReadOnlyRole) {
-    frontmatterLines.push(`disallowedTools: Write, Edit, MultiEdit, NotebookEdit`);
-  }
-  if (effectiveModel) {
-    frontmatterLines.push(`model: ${effectiveModel}`);
-  }
-  if (opts?.harnessId === "antigravity") {
-    frontmatterLines.push(`mainAgent: false`);
-    frontmatterLines.push(`subagent: true`);
-    if (isReadOnlyRole) {
-      frontmatterLines.push(`tools: [read_file, search_web]`);
-    } else {
-      frontmatterLines.push(
-        `tools: [read_file, edit_file, write_file, run_command, manage_task, search_web]`
-      );
-    }
-  }
-  frontmatterLines.push(`---`);
-  const protectedAsdRuleBlock = [
-    `## Protected \`.asd/\` Directory & Official CLI-Only Rule`,
-    `- **NEVER** directly create, edit, or overwrite any file inside \`.asd/\` (such as \`.asd/PLAN.md\`, \`.asd/core.db\`, \`.asd/sessions/**\`, \`.asd/handoff.md\`) using file-editing tools (\`edit_file\`, \`write_file\`, \`Edit\`, \`Write\`, or shell redirection \`>\` / \`>>\`). The \`.asd/\` directory is strictly protected by the \`PreToolUse\` security hook.`,
-    `- For ANY ASD state or \`.asd/\` operation, **ALWAYS** use the official \`asd\` CLI commands (\`asd plan create|update|sync_from_md|get\`, \`asd dispatch\`, \`asd verify\`, \`asd debate\`, \`asd handoff\`, \`asd status\`, \`asd clean\`) or official ASD MCP tools.`,
-    `- If an operation on \`.asd/\` has **no corresponding official \`asd\` CLI command or MCP tool**, **IMMEDIATELY HALT** execution and explain the situation to the user rather than attempting direct file manipulation or workarounds.`,
-  ].join("\n");
-
-  const presetBody = getAgentTemplate(role, effectiveModel, opts?.fallbacks);
-  if (presetBody) {
-    const bodyWithRule = presetBody.includes("Protected `.asd/` Directory")
-      ? presetBody
-      : `${presetBody.trimEnd()}\n\n${protectedAsdRuleBlock}\n`;
-    return `${frontmatterLines.join("\n")}\n\n${bodyWithRule}`;
-  }
-
-  const fbSuffix =
-    opts?.fallbacks && opts.fallbacks.length > 0
-      ? ` | **Fallbacks**: \`${opts.fallbacks.join("` → `")}\``
-      : "";
-
-  return `${frontmatterLines.join("\n")}
-
-# ASD Agent: asd-${role} (${meta.title})
-
-You are operating as the **${meta.title}** agent in the ASD v${ASD_VERSION} multi-agent system.${
-    effectiveModel ? `\n**Configured Model**: \`${effectiveModel}\`${fbSuffix} (synced from \`routing.jsonc\`)` : ""
-  }
-
-## Responsibilities
-${meta.desc}
-
-## Primary Focus
-${meta.focus}
-
-## Operational Guidelines
-1. Adhere strictly to assigned role boundaries and specified allowedFiles.
-2. Maintain high code quality, idiomatic patterns, and zero unverified assumptions.
-3. Ensure all changes are verified with automated tests before completing.
-
-${protectedAsdRuleBlock}
-`;
-}
-
-export function generateAllAgentsMarkdown(
-  routingConfig?: RoutingConfig | null,
-  harnessId?: HarnessId
-): string {
-  let md = `# ASD Multi-Agent Roster (v${ASD_VERSION})
-
-This document defines the 5 standard specialist agent roles in ASD v${ASD_VERSION} and the delegation rules for \`LIGHT\` vs \`HEAVY\` execution modes.
-
-## Execution Mode & Subagent Delegation Rules
-
-1. **\`LIGHT\` Mode (Single-Harness Internal Subagent Delegation)**:
-   - **NEVER** spawn external CLI processes via \`asd dispatch --mode parallel_spawn\`, \`asd debate\`, or raw \`opencode run\` / \`claude -p\` / \`codex exec\` / \`agy\` commands.
-   - Delegate work to the current harness's native internal subagents (\`asd-<role>\`):
-     - **OpenCode**: Use the \`task\` tool with \`subagent_type: "asd-<role>"\` (each \`asd-<role>\` agent in \`~/.config/opencode/agent/asd-<role>.md\` is pre-configured with the highest-priority OpenCode model from \`routing.jsonc\`).
-     - **Claude Code**: Use the \`Agent\` / \`Task\` tool with \`subagent_type: "asd-<role>"\`.
-     - **Antigravity**: Use the \`invoke_subagent\` tool.
-   - Use \`asd\` CLI only for local state/verification bookkeeping: \`asd plan\`, \`asd dispatch --turn <N> --mode claim_only\`, and \`asd verify --task <ID>\`.
-
-2. **\`HEAVY\` Mode (Multi-Harness External CLI & Worktree Execution)**:
-   - Used only after explicit user confirmation when true cross-harness CLI diversity (\`asd debate\`) or parallel Git worktree isolation (\`asd dispatch --turn <N> --mode parallel_spawn\`) is required.
-
-3. **Protected \`.asd/\` Directory & Official CLI-Only Rule**:
-   - **NEVER** directly create, edit, or overwrite any file inside \`.asd/\` (such as \`.asd/PLAN.md\`, \`.asd/core.db\`, \`.asd/sessions/**\`, \`.asd/handoff.md\`) using file-editing tools (\`edit_file\`, \`write_file\`, \`Edit\`, \`Write\`, or shell redirection \`>\` / \`>>\`). The \`.asd/\` directory is strictly protected by the \`PreToolUse\` security hook.
-   - For ANY ASD state or \`.asd/\` operation, **ALWAYS** use the official \`asd\` CLI commands (\`asd plan create|update|sync_from_md|get\`, \`asd dispatch\`, \`asd verify\`, \`asd debate\`, \`asd handoff\`, \`asd status\`, \`asd clean\`) or official ASD MCP tools.
-   - If an operation on \`.asd/\` has **no corresponding official \`asd\` CLI command or MCP tool**, **IMMEDIATELY HALT** execution and explain the situation to the user rather than attempting direct file manipulation or workarounds.
-
----
-
-`;
-
-  for (let i = 0; i < AGENT_ROLES.length; i++) {
-    const role = AGENT_ROLES[i]!;
-    const model = harnessId ? resolveHarnessRoleModel(role, harnessId, routingConfig) : undefined;
-    md += `## ${i + 1}. asd-${role}\n`;
-    md += generateAgentContent(role, { harnessId, model });
-    md += `\n---\n\n`;
-  }
-
-  return md;
-}
+// Skill & Agent Markdown Generation extracted to:
+//   - ./installer/skill-renderer.ts
+//   - ./installer/agent-renderer.ts
 
 // ============================================================================
 // Preset Bootstrapping & Hash Calculation
@@ -897,11 +667,9 @@ function bootstrapGlobalPresets(
   ensureDir(path.join(asdHome, "state"));
 
   const routingPath = path.join(asdHome, "routing.jsonc");
-  const mcpPath = path.join(asdHome, "mcp.jsonc");
 
   const asdRoot = getAsdRoot();
   const presetRouting = path.join(asdRoot, "presets", "default-routing.jsonc");
-  const presetMcp = path.join(asdRoot, "presets", "default-mcp.jsonc");
 
   let modelsBootstrapped: RoutingModelRemap[] = [];
   let modelsRemapped: RoutingModelRemap[] = [];
@@ -1005,36 +773,7 @@ function bootstrapGlobalPresets(
     }
   }
 
-  if (!fs.existsSync(mcpPath)) {
-    if (fs.existsSync(presetMcp)) {
-      const content = fs
-        .readFileSync(presetMcp, "utf8")
-        .replace(/\bASD v\d+\.\d+(?:\.\d+)?\b/g, `ASD v${ASD_VERSION}`)
-        .replace(/"_asdVersion":\s*"[^"]*"/g, `"_asdVersion": "${ASD_VERSION}"`);
-      safeWriteText(mcpPath, content);
-    } else {
-      safeWriteText(mcpPath, `// ASD Default MCP\n{\n  "_asdVersion": "${ASD_VERSION}"\n}\n`);
-    }
-  } else {
-    try {
-      const existingMcp = fs.readFileSync(mcpPath, "utf8");
-      const parsedMcp = parseJsonc<{ _asdVersion?: string }>(existingMcp);
-      if (
-        parsedMcp &&
-        typeof parsedMcp._asdVersion === "string" &&
-        compareSemver(parsedMcp._asdVersion, ASD_VERSION) < 0
-      ) {
-        const updatedMcp = existingMcp
-          .replace(/\bASD v\d+\.\d+(?:\.\d+)?\b/g, `ASD v${ASD_VERSION}`)
-          .replace(/"_asdVersion":\s*"[^"]*"/g, `"_asdVersion": "${ASD_VERSION}"`);
-        if (updatedMcp !== existingMcp) {
-          safeWriteText(mcpPath, updatedMcp);
-        }
-      }
-    } catch {
-      // Ignore unparseable user mcp.jsonc
-    }
-  }
+  const mcpPath = bootstrapGlobalMcpPreset(homeDir, asdRoot);
 
   return { routingPath, mcpPath, modelsBootstrapped, modelsRemapped };
 }
@@ -1080,11 +819,10 @@ function computeConfigHash(
     hash.update(fs.readFileSync(mcpPath));
   }
 
-  for (const skill of ASD_SKILLS) {
-    hash.update(getSkillTemplate(skill));
-  }
-
   for (const harnessId of DEFAULT_HARNESS_IDS) {
+    for (const skill of ASD_SKILLS) {
+      hash.update(getSkillTemplate(skill, { harnessId, routingConfig: parsedRouting }));
+    }
     for (const role of AGENT_ROLES) {
       const route = resolveLightSubagentRoute(harnessId, role, parsedRouting);
       const model = route?.model;
@@ -1113,285 +851,8 @@ function saveLastSync(homeDir: string, record: LastSyncRecord): void {
   safeWriteJson(lastSyncPath, record);
 }
 
-// ============================================================================
-// Capability-Aware & Dedup MCP Catalog Resolution
-// ============================================================================
-
-export interface CatalogMcpEntry {
-  command?: string;
-  args?: string[];
-  url?: string;
-}
-
-export function loadHarnessNativeCapabilities(): Record<HarnessId, Set<string>> {
-  return {
-    "claude-code": new Set(["websearch"]),
-    opencode: new Set(["lsp"]),
-    codex: new Set(["websearch"]),
-    antigravity: new Set(["websearch"]),
-    cursor: new Set(["websearch"]),
-  };
-}
-
-export function loadCatalogMcpServers(
-  homeDir: string,
-  asdRoot: string
-): Record<string, CatalogMcpEntry> {
-  const { mcpPath } = bootstrapGlobalPresets(homeDir);
-  const presetMcpPath = path.join(asdRoot, "presets", "default-mcp.jsonc");
-
-  let presetServers: Record<string, CatalogMcpEntry> = {};
-  try {
-    if (fs.existsSync(presetMcpPath)) {
-      const parsed = parseJsonc<{ mcpServers?: Record<string, CatalogMcpEntry> }>(
-        fs.readFileSync(presetMcpPath, "utf8")
-      );
-      if (parsed?.mcpServers && typeof parsed.mcpServers === "object") {
-        presetServers = { ...parsed.mcpServers };
-      }
-    }
-  } catch {
-    presetServers = {};
-  }
-
-  let userCatalogServers: Record<string, CatalogMcpEntry> = {};
-  try {
-    if (fs.existsSync(mcpPath)) {
-      const parsed = parseJsonc<{ mcpServers?: Record<string, CatalogMcpEntry> }>(
-        fs.readFileSync(mcpPath, "utf8")
-      );
-      if (parsed?.mcpServers && typeof parsed.mcpServers === "object") {
-        userCatalogServers = { ...parsed.mcpServers };
-      }
-    }
-  } catch {
-    userCatalogServers = {};
-  }
-
-  const merged: Record<string, CatalogMcpEntry> = {
-    ...presetServers,
-    ...userCatalogServers,
-  };
-
-  // Resolve <ASD_ROOT> placeholder in args (excluding legacy asd-core MCP)
-  const resolved: Record<string, CatalogMcpEntry> = {};
-  for (const [name, entry] of Object.entries(merged)) {
-    if (name === "asd-core" || !entry || typeof entry !== "object") continue;
-    if (entry.command) {
-      const args = Array.isArray(entry.args)
-        ? entry.args.map((arg) =>
-            arg.includes("<ASD_ROOT>")
-              ? path.normalize(arg.replace("<ASD_ROOT>", asdRoot))
-              : arg
-          )
-        : [];
-      resolved[name] = { command: entry.command, args };
-    } else if (entry.url) {
-      resolved[name] = { url: entry.url };
-    }
-  }
-
-  return resolved;
-}
-
-export function mergeJsonMcpServersForHarness(options: {
-  harnessId: "claude-code" | "opencode" | "antigravity" | "cursor";
-  existingMcpServers: Record<string, unknown>;
-  catalog: Record<string, CatalogMcpEntry>;
-  nativeCapabilities: Set<string>;
-  externalExistingKeys?: Set<string>;
-}): Record<string, unknown> {
-  const {
-    harnessId,
-    existingMcpServers,
-    catalog,
-    nativeCapabilities,
-    externalExistingKeys,
-  } = options;
-
-  // Keep only non-ASD-managed user entries first (and strip any legacy asd-core)
-  const result: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(existingMcpServers)) {
-    if (k === "asd-core") continue;
-    const isManaged =
-      v !== null &&
-      typeof v === "object" &&
-      (v as Record<string, unknown>)._asdManaged === true;
-    if (!isManaged) {
-      result[k] = v;
-    }
-  }
-
-  for (const [serverName, def] of Object.entries(catalog)) {
-    if (serverName === "asd-core") continue;
-    const lowerName = serverName.toLowerCase();
-
-    // 1. Native capability filter: skip if harness already has this feature built-in
-    if (nativeCapabilities.has(lowerName)) {
-      continue;
-    }
-    // 2. Existing user/plugin config dedup filter: skip if already defined by user
-    if (Object.prototype.hasOwnProperty.call(result, serverName)) {
-      continue;
-    }
-    // 3. External existing keys filter: skip if key exists in externalExistingKeys
-    // (externalExistingKeys is pre-filtered in syncJsonMcpConfigFile to only contain
-    // keys from other user config files or keys that exist in the current config)
-    if (externalExistingKeys?.has(serverName) || externalExistingKeys?.has(lowerName)) {
-      continue;
-    }
-
-    if (def.command) {
-      result[serverName] = {
-        command: def.command,
-        args: def.args ?? [],
-        _asdManaged: true,
-      };
-    } else if (def.url) {
-      if (harnessId === "claude-code") {
-        result[serverName] = {
-          type: "http",
-          url: def.url,
-          _asdManaged: true,
-        };
-      } else if (harnessId === "antigravity") {
-        result[serverName] = {
-          serverUrl: def.url,
-          _asdManaged: true,
-        };
-      } else {
-        result[serverName] = {
-          url: def.url,
-          _asdManaged: true,
-        };
-      }
-    }
-  }
-
-  return result;
-}
-
-export function syncJsonMcpConfigFile(options: {
-  filePath: string;
-  harnessId: "claude-code" | "opencode" | "antigravity" | "cursor";
-  catalog: Record<string, CatalogMcpEntry>;
-  nativeCapabilities: Set<string>;
-  externalExistingKeys?: Set<string>;
-  mutateBeforeMerge?: (config: Record<string, unknown>, extKeys: Set<string>) => void;
-}): void {
-  const { filePath, harnessId, catalog, nativeCapabilities, externalExistingKeys, mutateBeforeMerge } = options;
-  let config: Record<string, unknown> = {};
-  if (fs.existsSync(filePath)) {
-    backupUserFile(filePath);
-    try {
-      const parsed = parseJsonc(fs.readFileSync(filePath, "utf8"));
-      config = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-    } catch {
-      config = {};
-    }
-  }
-  const extKeys = new Set<string>(externalExistingKeys);
-  mutateBeforeMerge?.(config, extKeys);
-  // Filter extKeys: only keep keys that were in original externalExistingKeys
-  // or actually exist in the user's current config (mcpServers).
-  // This prevents mutateBeforeMerge from adding phantom keys (e.g., from cfg.mcp)
-  // that would incorrectly suppress ASD-managed server injection.
-  const currentMcpKeys = new Set<string>();
-  const existingMcp =
-    config.mcpServers && typeof config.mcpServers === "object"
-      ? (config.mcpServers as Record<string, unknown>)
-      : {};
-  for (const k of Object.keys(existingMcp)) {
-    currentMcpKeys.add(k);
-    currentMcpKeys.add(k.toLowerCase());
-  }
-  const originalExtKeys = new Set<string>(externalExistingKeys);
-  for (const k of extKeys) {
-    if (!originalExtKeys.has(k) && !currentMcpKeys.has(k)) {
-      extKeys.delete(k);
-    }
-  }
-  config.mcpServers = mergeJsonMcpServersForHarness({
-    harnessId,
-    existingMcpServers: existingMcp,
-    catalog,
-    nativeCapabilities,
-    externalExistingKeys: extKeys,
-  });
-  safeWriteJson(filePath, config);
-}
-
-export function buildCodexManagedTomlBlock(options: {
-  unmanagedToml: string;
-  catalog: Record<string, CatalogMcpEntry>;
-  nativeCapabilities: Set<string>;
-  asdCliPath?: string;
-}): string {
-  const { unmanagedToml, catalog, nativeCapabilities } = options;
-  const resolvedCliPath = escapeTomlBasicString(
-    (options.asdCliPath || path.join(getAsdRoot(), "src", "cli", "index.ts")).replaceAll("\\", "/")
-  );
-
-  // Detect any [mcp_servers.<name>] already defined outside ASD fence
-  const existingKeys = new Set<string>();
-  const sectionRegex = /^\s*\[mcp_servers\.([^\].\s]+)\]/gm;
-  let match: RegExpExecArray | null;
-  while ((match = sectionRegex.exec(unmanagedToml)) !== null) {
-    if (match[1]) {
-      existingKeys.add(match[1].replace(/^["']|["']$/g, ""));
-    }
-  }
-
-  const blocks: string[] = [];
-
-  // Codex notify hook: receives turn-complete JSON payload as final argv (and/or stdin)
-  // Check only the root-scope portion of unmanagedToml (before the first [table] header)
-  const firstTableMatch = /^\s*\[{1,2}[^\]\r\n]+\]{1,2}\s*(?:#.*)?$/m.exec(unmanagedToml);
-  const rootScopeToml =
-    firstTableMatch && firstTableMatch.index !== undefined
-      ? unmanagedToml.slice(0, firstTableMatch.index)
-      : unmanagedToml;
-  const hasUnmanagedNotify = /^\s*notify\s*=/m.test(rootScopeToml);
-  if (!hasUnmanagedNotify) {
-    blocks.push(
-      `notify = ["node", "--no-warnings", "${resolvedCliPath}", "hook", "stop", "--harness", "codex"]`
-    );
-  }
-
-  for (const [serverName, def] of Object.entries(catalog)) {
-    if (serverName === "asd-core") continue;
-    const lowerName = serverName.toLowerCase();
-    if (nativeCapabilities.has(lowerName)) continue;
-    if (existingKeys.has(serverName) || existingKeys.has(lowerName)) continue;
-
-    if (def.command) {
-      const escapedCommand = escapeTomlBasicString(def.command.replaceAll("\\", "/"));
-      const normalizedArgs = (def.args ?? []).map((a) =>
-        `"${escapeTomlBasicString(a.replaceAll("\\", "/"))}"`
-      );
-      blocks.push(
-        `[mcp_servers.${serverName}]\ncommand = "${escapedCommand}"\nargs = [${normalizedArgs.join(", ")}]`
-      );
-    } else if (def.url) {
-      blocks.push(`[mcp_servers.${serverName}]\nurl = "${escapeTomlBasicString(def.url)}"`);
-    }
-  }
-
-  return blocks.join("\n\n") + "\n";
-}
-
-function stripAsdManagedMcpEntries(mcpObj: Record<string, unknown>): void {
-  for (const [key, val] of Object.entries(mcpObj)) {
-    const isManaged =
-      key === "asd-core" ||
-      (val !== null &&
-        typeof val === "object" &&
-        (val as Record<string, unknown>)._asdManaged === true);
-    if (isManaged) {
-      delete mcpObj[key];
-    }
-  }
-}
+// Capability-Aware & Dedup External Catalog MCP Sync extracted to:
+//   - ./installer/mcp-sync.ts
 
 function getCliShimTargetDirs(homeDir: string): string[] {
   const dirs = [path.join(homeDir, ".asd", "bin")];
@@ -1665,7 +1126,10 @@ export async function syncHarnessConfigs(
         // All ASD skills
         for (const skill of ASD_SKILLS) {
           const skillPath = path.join(claudeDir, "skills", skill, "SKILL.md");
-          safeWriteText(skillPath, getSkillTemplate(skill));
+          safeWriteText(
+            skillPath,
+            getSkillTemplate(skill, { harnessId: "claude-code", routingConfig })
+          );
           written.push(skillPath);
         }
 
@@ -1704,7 +1168,10 @@ export async function syncHarnessConfigs(
         // All ASD command files
         for (const skill of ASD_SKILLS) {
           const cmdPath = path.join(opencodeDir, "command", `${skill}.md`);
-          safeWriteText(cmdPath, getSkillTemplate(skill));
+          safeWriteText(
+            cmdPath,
+            getSkillTemplate(skill, { harnessId: "opencode", routingConfig })
+          );
           written.push(cmdPath);
         }
 
@@ -1839,7 +1306,10 @@ export async function syncHarnessConfigs(
         // All ASD skills
         for (const skill of ASD_SKILLS) {
           const skillPath = path.join(codexDir, "skills", skill, "SKILL.md");
-          safeWriteText(skillPath, getSkillTemplate(skill));
+          safeWriteText(
+            skillPath,
+            getSkillTemplate(skill, { harnessId: "codex", routingConfig })
+          );
           written.push(skillPath);
         }
 
@@ -1913,7 +1383,10 @@ export async function syncHarnessConfigs(
         // All ASD skills
         for (const skill of ASD_SKILLS) {
           const skillPath = path.join(geminiDir, "skills", skill, "SKILL.md");
-          safeWriteText(skillPath, getSkillTemplate(skill));
+          safeWriteText(
+            skillPath,
+            getSkillTemplate(skill, { harnessId: "antigravity", routingConfig })
+          );
           written.push(skillPath);
         }
 
@@ -2057,7 +1530,10 @@ export async function syncHarnessConfigs(
 
         for (const skill of ASD_SKILLS) {
           const skillPath = path.join(cursorDir, "skills", skill, "SKILL.md");
-          safeWriteText(skillPath, getSkillTemplate(skill));
+          safeWriteText(
+            skillPath,
+            getSkillTemplate(skill, { harnessId: "cursor", routingConfig })
+          );
           written.push(skillPath);
         }
 
@@ -2344,6 +1820,49 @@ export function syncAgentModelsIfNeeded(options?: {
       path.join(codexDir, "AGENTS.md"),
       generateAllAgentsMarkdown(routingConfig, "codex")
     );
+  }
+
+  // Keep harness-targeted skill files synchronized with dynamic routing.jsonc models
+  const harnessSkillTargets: Array<{
+    harnessId: HarnessId;
+    dirPath: string;
+    fileForSkill: (skill: string) => string;
+  }> = [
+    {
+      harnessId: "claude-code",
+      dirPath: path.join(homeDir, ".claude", "skills"),
+      fileForSkill: (s) => path.join(homeDir, ".claude", "skills", s, "SKILL.md"),
+    },
+    {
+      harnessId: "opencode",
+      dirPath: path.join(opencodeDir, "command"),
+      fileForSkill: (s) => path.join(opencodeDir, "command", `${s}.md`),
+    },
+    {
+      harnessId: "codex",
+      dirPath: path.join(codexDir, "skills"),
+      fileForSkill: (s) => path.join(codexDir, "skills", s, "SKILL.md"),
+    },
+    {
+      harnessId: "antigravity",
+      dirPath: path.join(homeDir, ".gemini", "skills"),
+      fileForSkill: (s) => path.join(homeDir, ".gemini", "skills", s, "SKILL.md"),
+    },
+    {
+      harnessId: "cursor",
+      dirPath: path.join(homeDir, ".cursor", "skills"),
+      fileForSkill: (s) => path.join(homeDir, ".cursor", "skills", s, "SKILL.md"),
+    },
+  ];
+
+  for (const { harnessId, dirPath, fileForSkill } of harnessSkillTargets) {
+    if (!options?.force && !hasSyncedOnce && !fs.existsSync(dirPath)) continue;
+    for (const skill of ASD_SKILLS) {
+      writeIfChanged(
+        fileForSkill(skill),
+        getSkillTemplate(skill, { harnessId, routingConfig })
+      );
+    }
   }
 
   try {
@@ -2996,16 +2515,24 @@ export async function doctorProbe(
   });
 
   // 5. In-memory synthetic PreToolUse security policy probe (.GIT/config, .ENV)
-  const gitEval = evaluatePreToolUse({
-    toolName: "Write",
-    tool_input: { file_path: ".GIT/config" },
-    projectRoot,
-  });
-  const envEval = evaluatePreToolUse({
-    toolName: "Write",
-    tool_input: { file_path: ".ENV" },
-    projectRoot,
-  });
+  const gitEval = evaluatePreToolUse(
+    {
+      toolName: "Write",
+      tool_input: { file_path: ".GIT/config" },
+      projectRoot,
+    },
+    undefined,
+    {}
+  );
+  const envEval = evaluatePreToolUse(
+    {
+      toolName: "Write",
+      tool_input: { file_path: ".ENV" },
+      projectRoot,
+    },
+    undefined,
+    {}
+  );
 
   const gitBlocked = !gitEval.allowed;
   const envBlocked = !envEval.allowed;
