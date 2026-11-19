@@ -21,6 +21,7 @@ import type {
   HarnessId,
   SessionPhase,
   TaskStatus,
+  TaskTelemetry,
   TaskTrack,
 } from "./types.ts";
 
@@ -139,6 +140,11 @@ export interface TaskRow {
   is_cross_scope?: number;
   follow_up_of?: string | null;
   thinking_effort?: string | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  cost_usd?: number | null;
   updated_at?: number | null;
 }
 
@@ -226,7 +232,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   session_id TEXT NOT NULL,
   turn INTEGER NOT NULL DEFAULT 1,        -- Parallel execution wave (Turn) number
   title TEXT NOT NULL,
-  track TEXT NOT NULL DEFAULT 'LIGHT',    -- 'LIGHT' | 'HEAVY'
+  track TEXT NOT NULL DEFAULT 'LIGHT',    -- 'DIRECT' | 'LIGHT' | 'HEAVY'
   role TEXT NOT NULL DEFAULT 'worker',    -- 'worker' | 'planner' | 'architect' | 'scout' | 'critic'
   category TEXT NOT NULL DEFAULT 'general', -- 'visual-ui' | 'design' | 'research' | 'writing' | 'general'
   difficulty TEXT NOT NULL DEFAULT 'medium',-- 'low' | 'medium' | 'high'
@@ -245,6 +251,11 @@ CREATE TABLE IF NOT EXISTS tasks (
   commit_sha TEXT,                        -- Checkpoint/merge commit SHA created on completion
   duration_ms INTEGER,
   is_cross_scope INTEGER NOT NULL DEFAULT 0, -- Whether auto-created as Cross-Scope task (0 | 1)
+  input_tokens INTEGER DEFAULT NULL,
+  output_tokens INTEGER DEFAULT NULL,
+  cache_tokens INTEGER DEFAULT NULL,
+  reasoning_tokens INTEGER DEFAULT NULL,
+  cost_usd REAL DEFAULT NULL,
   updated_at INTEGER,
   PRIMARY KEY (session_id, task_id),
   FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
@@ -286,7 +297,7 @@ export function generateDriverId(nowMs = Date.now()): string {
   return `drv-${nowMs.toString(36)}-${rand}`;
 }
 
-const TASK_COLUMNS = `task_id, session_id, turn, title, track, role, category, difficulty, status, attempts, assigned_harness, assigned_model, depends_on_json, target_files_json, context_hint, acceptance, verify_cmd, done_claim_json, worktree_path, sub_session_id, commit_sha, duration_ms, is_cross_scope, follow_up_of, thinking_effort, updated_at`;
+const TASK_COLUMNS = `task_id, session_id, turn, title, track, role, category, difficulty, status, attempts, assigned_harness, assigned_model, depends_on_json, target_files_json, context_hint, acceptance, verify_cmd, done_claim_json, worktree_path, sub_session_id, commit_sha, duration_ms, is_cross_scope, follow_up_of, thinking_effort, input_tokens, output_tokens, cache_tokens, reasoning_tokens, cost_usd, updated_at`;
 
 // ============================================================================
 // SqliteDriver
@@ -402,6 +413,31 @@ export class SqliteDriver {
       if (!taskCols.some((c) => c.name === "updated_at")) {
         this.db.exec(
           "ALTER TABLE tasks ADD COLUMN updated_at INTEGER DEFAULT NULL"
+        );
+      }
+      if (!taskCols.some((c) => c.name === "input_tokens")) {
+        this.db.exec(
+          "ALTER TABLE tasks ADD COLUMN input_tokens INTEGER DEFAULT NULL"
+        );
+      }
+      if (!taskCols.some((c) => c.name === "output_tokens")) {
+        this.db.exec(
+          "ALTER TABLE tasks ADD COLUMN output_tokens INTEGER DEFAULT NULL"
+        );
+      }
+      if (!taskCols.some((c) => c.name === "cache_tokens")) {
+        this.db.exec(
+          "ALTER TABLE tasks ADD COLUMN cache_tokens INTEGER DEFAULT NULL"
+        );
+      }
+      if (!taskCols.some((c) => c.name === "reasoning_tokens")) {
+        this.db.exec(
+          "ALTER TABLE tasks ADD COLUMN reasoning_tokens INTEGER DEFAULT NULL"
+        );
+      }
+      if (!taskCols.some((c) => c.name === "cost_usd")) {
+        this.db.exec(
+          "ALTER TABLE tasks ADD COLUMN cost_usd REAL DEFAULT NULL"
         );
       }
       // CR-01: Idempotent migration for existing sessions without any session_drivers rows
@@ -1063,6 +1099,47 @@ export class SqliteDriver {
           "UPDATE sessions SET no_progress_count = 0, updated_at = ? WHERE session_id = ?"
         )
         .run(Date.now(), sessionId);
+    });
+  }
+
+  /** Record nullable token/cost telemetry on a task row. */
+  recordTaskTelemetry(
+    sessionId: string,
+    taskId: string,
+    telemetry: TaskTelemetry
+  ): void {
+    this.withImmediateTx(() => {
+      const sets: string[] = [];
+      const vals: Array<number | null> = [];
+      if (telemetry.inputTokens !== undefined) {
+        sets.push("input_tokens = ?");
+        vals.push(telemetry.inputTokens);
+      }
+      if (telemetry.outputTokens !== undefined) {
+        sets.push("output_tokens = ?");
+        vals.push(telemetry.outputTokens);
+      }
+      if (telemetry.cacheTokens !== undefined) {
+        sets.push("cache_tokens = ?");
+        vals.push(telemetry.cacheTokens);
+      }
+      if (telemetry.reasoningTokens !== undefined) {
+        sets.push("reasoning_tokens = ?");
+        vals.push(telemetry.reasoningTokens);
+      }
+      if (telemetry.costUsd !== undefined) {
+        sets.push("cost_usd = ?");
+        vals.push(telemetry.costUsd);
+      }
+      if (sets.length === 0) return;
+      const ts = this.nextTaskUpdatedAt(sessionId);
+      sets.push("updated_at = ?");
+      vals.push(ts);
+      this.db
+        .prepare(
+          `UPDATE tasks SET ${sets.join(", ")} WHERE session_id = ? AND task_id = ?`
+        )
+        .run(...vals, sessionId, taskId);
     });
   }
 

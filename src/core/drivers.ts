@@ -434,8 +434,8 @@ export function buildDriverBriefing(input: {
   // 7. Guidance footer
   const sec7 =
     sysLang === "en"
-      ? "## Guidance\nUse ASD MCP tools (asd_plan, asd_dispatch, asd_verify, asd_debate) for task planning, dispatching, and verification. Merge-conflict tasks are reviewed and resolved/re-merged or rejected by the user."
-      : "## 안내\n태스크 계획/디스패치/검증은 ASD MCP 도구(asd_plan, asd_dispatch, asd_verify, asd_debate)를 사용하라. 병합 충돌 태스크는 사용자가 검토 후 해결·재병합하거나 반려한다.";
+      ? "## Guidance\nUse the official `asd` CLI (`asd plan`, `asd dispatch`, `asd verify`, `asd debate`) for task planning, dispatching, and verification. Merge-conflict tasks are reviewed and resolved/re-merged or rejected by the user."
+      : "## 안내\n태스크 계획/디스패치/검증은 공식 `asd` CLI(`asd plan`, `asd dispatch`, `asd verify`, `asd debate`)를 사용하라. 병합 충돌 태스크는 사용자가 검토 후 해결·재병합하거나 반려한다.";
 
   const assemble = (s3: string, s5: string, s6: string): string =>
     [sec1, sec2, s3, sec4, s5, s6, sec7].filter((s) => s.length > 0).join("\n\n");
