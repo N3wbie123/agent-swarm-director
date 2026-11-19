@@ -25,7 +25,6 @@ import * as http from "node:http";
 import * as path from "node:path";
 
 import {
-  detectSystemLocale,
   discoverHarnessModels,
   getModelsDiskCachePath,
   type HarnessModelCatalog,
@@ -54,7 +53,7 @@ export {
 };
 
 function renderDashboardHtml(
-  defaultLocale = detectSystemLocale(),
+  defaultLocale = "en",
   csrfToken = ""
 ): string {
   const defaultLang = defaultLocale.toLowerCase().startsWith("ko") ? "ko" : "en";
@@ -485,8 +484,8 @@ function renderDashboardHtml(
     </div>
     <div class="header-right">
       <div class="meta-bar" id="lastUpdated">Auto-refresh: 2s</div>
-      <button type="button" class="btn btn-primary" id="btnToggleRouting" onclick="toggleRoutingEditor()">라우팅 편집</button>
-      <button type="button" class="btn" id="btnOpenModelsModal" onclick="openModelsModal()">모델 확인</button>
+      <button type="button" class="btn btn-primary" id="btnToggleRouting" onclick="toggleRoutingEditor()">Routing Editor</button>
+      <button type="button" class="btn" id="btnOpenModelsModal" onclick="openModelsModal()">Models</button>
       <div class="lang-toggle" role="group" aria-label="Language toggle">
         <button type="button" class="lang-btn" id="btnKo" onclick="setLang('ko')">한국어</button>
         <button type="button" class="lang-btn" id="btnEn" onclick="setLang('en')">EN</button>
@@ -499,11 +498,11 @@ function renderDashboardHtml(
     <div class="modal-window">
       <div class="modal-header">
         <div>
-          <strong id="modelsModalTitle" style="font-size:15px;color:var(--accent);">하네스별 사용 가능한 모델 목록</strong>
+          <strong id="modelsModalTitle" style="font-size:15px;color:var(--accent);">Available Models by Harness</strong>
         </div>
         <div style="display:flex; gap:8px;">
-          <button type="button" class="btn btn-primary" id="btnRefreshModelsOnly" onclick="refreshModelCatalogOnly()">🔄 모델 목록 새로고침</button>
-          <button type="button" class="btn" id="btnCloseModelsModal" onclick="closeModelsModal()">닫기</button>
+          <button type="button" class="btn btn-primary" id="btnRefreshModelsOnly" onclick="refreshModelCatalogOnly()">🔄 Refresh Model List</button>
+          <button type="button" class="btn" id="btnCloseModelsModal" onclick="closeModelsModal()">Close</button>
         </div>
       </div>
       <div class="modal-body">
@@ -527,10 +526,10 @@ function renderDashboardHtml(
             <div class="meta-bar" id="routingScopeBadge">-</div>
           </div>
           <div style="display:flex; gap:6px;">
-            <button type="button" class="btn" id="btnRefreshModelsInRouting" onclick="refreshModelCatalogOnly()">🔄 모델 목록 새로고침</button>
-            <button type="button" class="btn btn-primary" id="btnSaveRouting" onclick="saveRouting()">저장 (.asd/routing.jsonc)</button>
-            <button type="button" class="btn btn-warn" id="btnResetRouting" onclick="resetRouting()">글로벌 기본값으로 초기화</button>
-            <button type="button" class="btn" onclick="toggleRoutingEditor()">닫기</button>
+            <button type="button" class="btn" id="btnRefreshModelsInRouting" onclick="refreshModelCatalogOnly()">🔄 Refresh Model List</button>
+            <button type="button" class="btn btn-primary" id="btnSaveRouting" onclick="saveRouting()">Save (.asd/routing.jsonc)</button>
+            <button type="button" class="btn btn-warn" id="btnResetRouting" onclick="resetRouting()">Reset to Global Defaults</button>
+            <button type="button" class="btn" id="btnCloseRouting" onclick="toggleRoutingEditor()">Close</button>
           </div>
         </div>
         <div id="routingEditorBody"></div>
@@ -723,10 +722,9 @@ function renderDashboardHtml(
     function detectInitialLang() {
       try {
         const saved = localStorage.getItem("asd_lang");
-        if (saved === "ko" || saved === "en") return saved;
+        if (saved === "ko") return "ko";
       } catch {}
-      const navLang = (navigator.language || SERVER_DEFAULT_LANG || "en").toLowerCase();
-      return navLang.startsWith("ko") ? "ko" : "en";
+      return "en";
     }
 
     let currentLang = detectInitialLang();
@@ -870,6 +868,8 @@ function renderDashboardHtml(
         btnRtRef.disabled = refreshingModels;
       }
       document.getElementById("btnCloseModelsModal").textContent = t.btnCloseModelsModal;
+      const btnCloseRouting = document.getElementById("btnCloseRouting");
+      if (btnCloseRouting) btnCloseRouting.textContent = t.btnCloseModelsModal;
       document.getElementById("routingEditorTitle").textContent = t.routingEditorTitle;
       document.getElementById("btnSaveRouting").textContent = t.btnSaveRouting;
       document.getElementById("btnResetRouting").textContent = t.btnResetRouting;
@@ -926,7 +926,7 @@ function renderDashboardHtml(
         const label = (t.harnessLabels && t.harnessLabels[h]) || h;
         const itemsHtml = list.length
           ? list.map(m => \`<div class="model-item-pill">\${esc(m)}</div>\`).join("")
-          : \`<div class="meta-bar">(없음)</div>\`;
+          : \`<div class="meta-bar">\${esc(t.modelEmptyText)}</div>\`;
         return \`
           <div class="model-harness-box">
             <div class="model-harness-title">
