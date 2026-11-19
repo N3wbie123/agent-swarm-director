@@ -58,12 +58,17 @@ import {
 } from "./policy.ts";
 import { redactSecrets } from "./redact.ts";
 import { resolveBinaryOnPath } from "./router.ts";
-import { killProcessTree } from "./spawner.ts";
+import {
+  extractTelemetryFromJsonEvent,
+  killProcessTree,
+  mergeTaskTelemetry,
+} from "./spawner.ts";
 import {
   ASD_VERSION,
   type AcpHarnessReadiness,
   type AgentRole,
   type HarnessId,
+  type TaskTelemetry,
 } from "./types.ts";
 
 // ============================================================================
@@ -848,6 +853,7 @@ export class AcpStdioClient {
     string,
     Array<(stopReason: AcpStopReason) => void>
   >();
+  private readonly sessionTelemetry = new Map<string, TaskTelemetry>();
   private closed = false;
   private exitPromise: Promise<number> | null = null;
   private negotiatedProtocolVersion = 1;
@@ -1101,7 +1107,8 @@ export class AcpStdioClient {
     sessionId: string,
     promptText: string,
     opts?: { turnTimeoutMs?: number }
-  ): Promise<{ stopReason: AcpStopReason }> {
+  ): Promise<{ stopReason: AcpStopReason; telemetry?: TaskTelemetry }> {
+    this.sessionTelemetry.delete(sessionId);
     const stateCompletionPromise = new Promise<AcpStopReason>((resolve) => {
       const list = this.stateWaiters.get(sessionId) ?? [];
       list.push(resolve);
@@ -1119,9 +1126,26 @@ export class AcpStdioClient {
       opts?.turnTimeoutMs
     )) as AcpSessionPromptResult | null;
 
+    const recordResultTelemetry = (r: AcpSessionPromptResult | null): void => {
+      if (!r || typeof r !== "object") return;
+      const fromRes = extractTelemetryFromJsonEvent(r);
+      const fromMeta = r._meta ? extractTelemetryFromJsonEvent(r._meta) : null;
+      let merged = this.sessionTelemetry.get(sessionId);
+      merged = mergeTaskTelemetry(merged, fromRes, "replace");
+      merged = mergeTaskTelemetry(merged, fromMeta, "replace");
+      if (merged) {
+        this.sessionTelemetry.set(sessionId, merged);
+      }
+    };
+    recordResultTelemetry(res);
+
     if (res && typeof res.stopReason === "string" && res.stopReason.length > 0) {
       this.stateWaiters.delete(sessionId);
-      return { stopReason: res.stopReason };
+      const telemetry = this.sessionTelemetry.get(sessionId);
+      return {
+        stopReason: res.stopReason,
+        ...(telemetry ? { telemetry } : {}),
+      };
     }
 
     if (
@@ -1130,11 +1154,19 @@ export class AcpStdioClient {
       res?.state === "working"
     ) {
       const stopReason = await stateCompletionPromise;
-      return { stopReason };
+      const telemetry = this.sessionTelemetry.get(sessionId);
+      return {
+        stopReason,
+        ...(telemetry ? { telemetry } : {}),
+      };
     }
 
     this.stateWaiters.delete(sessionId);
-    return { stopReason: "end_turn" };
+    const telemetry = this.sessionTelemetry.get(sessionId);
+    return {
+      stopReason: "end_turn",
+      ...(telemetry ? { telemetry } : {}),
+    };
   }
 
   cancelSession(sessionId: string): void {
@@ -1339,6 +1371,17 @@ export class AcpStdioClient {
       const method = msg.method as string;
       if (method === "session/update") {
         const params = (msg.params ?? {}) as AcpSessionUpdateParams;
+        const sid = typeof params.sessionId === "string" ? params.sessionId : "";
+        if (sid) {
+          const fromParams = extractTelemetryFromJsonEvent(params);
+          const fromUpdate = params.update ? extractTelemetryFromJsonEvent(params.update) : null;
+          let merged = this.sessionTelemetry.get(sid);
+          merged = mergeTaskTelemetry(merged, fromParams, "replace");
+          merged = mergeTaskTelemetry(merged, fromUpdate, "replace");
+          if (merged) {
+            this.sessionTelemetry.set(sid, merged);
+          }
+        }
         const ev = normalizeAcpSessionUpdate(params);
         if (ev) {
           this.opts.onEvent?.(ev);
@@ -1504,7 +1547,7 @@ function formatEventForLog(ev: AcpNormalizedEvent): string {
 
 export async function executeAcpSubagentTurn(
   options: ExecuteAcpSubagentTurnOptions
-): Promise<AcpTurnExecutionResult> {
+): Promise<AcpTurnExecutionResult & { telemetry?: TaskTelemetry }> {
   const startedAt = Date.now();
   const logStream = fs.createWriteStream(options.logPath, { flags: "a" });
   logStream.on("error", () => {});
@@ -1641,6 +1684,7 @@ export async function executeAcpSubagentTurn(
   });
 
   let stopReason: AcpStopReason | null = null;
+  let telemetry: TaskTelemetry | undefined;
   let errorSummary: string | undefined;
   let exitCode = 0;
   let finalPid = 0;
@@ -1664,6 +1708,7 @@ export async function executeAcpSubagentTurn(
       abortRacePromise,
     ]);
     stopReason = turnRes.stopReason;
+    telemetry = turnRes.telemetry;
 
     if (stopReason === "cancelled" || stopReason === "refusal") {
       exitCode = 1;
@@ -1710,5 +1755,6 @@ export async function executeAcpSubagentTurn(
     status: !aborted && exitCode === 0 ? "done" : "failed",
     durationMs,
     ...(errorSummary ? { errorSummary } : {}),
+    ...(telemetry ? { telemetry } : {}),
   };
 }

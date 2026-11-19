@@ -909,4 +909,82 @@ rl.on("line", (line) => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("executeAcpSubagentTurn extracts best-effort telemetry from ACP prompt result _meta", async () => {
+    const dir = makeTempDir("asd-acp-telemetry-");
+    const mockServerPath = path.join(dir, "mock-acp-telemetry.mjs");
+    const logPath = path.join(dir, "output.log");
+
+    const script = `
+import * as readline from "node:readline";
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+    return;
+  }
+  if (msg.method === "session/new") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "ses-tel-1" } });
+    return;
+  }
+  if (msg.method === "session/prompt") {
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "ses-tel-1",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Done." },
+        },
+      },
+    });
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        stopReason: "end_turn",
+        _meta: {
+          usage: {
+            input_tokens: 1500,
+            output_tokens: 350,
+            cache_read_input_tokens: 200,
+            reasoning_tokens: 90,
+          },
+          cost_usd: 0.0275,
+        },
+      },
+    });
+  }
+});
+`;
+    fs.writeFileSync(mockServerPath, script, "utf8");
+
+    try {
+      const res = await executeAcpSubagentTurn({
+        harness: "claude-code",
+        role: "worker",
+        prompt: "Run with telemetry",
+        cwd: dir,
+        allowedFiles: [],
+        logPath,
+        commandOverride: { command: process.execPath, args: [mockServerPath] },
+      });
+      assert.equal(res.status, "done");
+      assert.equal(res.stopReason, "end_turn");
+      assert.deepEqual(res.telemetry, {
+        inputTokens: 1500,
+        outputTokens: 350,
+        cacheTokens: 200,
+        reasoningTokens: 90,
+        costUsd: 0.0275,
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
