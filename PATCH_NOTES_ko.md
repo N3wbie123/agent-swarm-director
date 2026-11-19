@@ -1,6 +1,6 @@
 # 패치 노트 (`agent-swarm-director` / ASD v2.7.0)
 
-[English](./PATCH_NOTES.md) | **한국어** | [📖 README로 돌아가기](./README_ko.md) | [🏛️ 아키텍처 및 파일·함수 레퍼런스](./PROJECT_STATUS.md) | [🔌 외부 SDK 레퍼런스](./EXTERNAL_SDK_REFERENCE.md)
+[English](./PATCH_NOTES.md) | **한국어** | [📖 README로 돌아가기](./README_ko.md) | [🏛️ 아키텍처 및 파일·함수 레퍼런스](./PROJECT_STATUS_ko.md) | [🔌 외부 SDK 레퍼런스](./EXTERNAL_SDK_REFERENCE_ko.md)
 
 **Agent Swarm Director (ASD v2.7.0)**의 초기 아키텍처 구축부터 최신 기능 업데이트까지의 전체 패치 내역을 최신순으로 정리한 문서입니다.
 

@@ -5,7 +5,7 @@
 [![Dependencies: 0 (Zero-Dep)](https://img.shields.io/badge/dependencies-0%20(zero--dep)-red.svg)](./package.json)
 [![GitHub Stars](https://img.shields.io/badge/stars-agent--swarm--director-yellow.svg?logo=github)](https://github.com/N3wbie123/agent-swarm-director/stargazers)
 
-[English](./README.md) | **한국어** | [🖥️ ASD-Nexus (공식 GUI)](https://github.com/N3wbie123/ASD-Nexus) | [⚡ ACP 로드맵](./docs/ACP_ROADMAP.md) | [🧭 라우팅 가이드](./ROUTING_GUIDE.md) | [🏛️ 아키텍처](./PROJECT_STATUS.md) | [🔌 외부 SDK](./EXTERNAL_SDK_REFERENCE.md) | [📋 패치 노트](./PATCH_NOTES_ko.md)
+[English](./README.md) | **한국어** | [🖥️ ASD-Nexus (공식 GUI)](https://github.com/N3wbie123/ASD-Nexus) | [⚡ ACP 로드맵](./docs/ACP_ROADMAP_ko.md) | [🧭 라우팅 가이드](./ROUTING_GUIDE_ko.md) | [🏛️ 아키텍처](./PROJECT_STATUS_ko.md) | [🔌 외부 SDK](./EXTERNAL_SDK_REFERENCE_ko.md) | [📋 패치 노트](./PATCH_NOTES_ko.md)
 
 > **외부 런타임 의존성 0개(Zero-Dependency)로 Claude Code, OpenCode, Codex CLI, Antigravity, Cursor CLI 5대 AI 코딩 하네스를 통합 제어하는 범용 멀티 에이전트 오케스트레이션 하네스 및 SDK**
 
@@ -135,12 +135,12 @@ asd migrate --clean-legacy   # 선택: 이관 완료 후 구버전 core.db 정�
 
 ## 문서 가이드
 
-- ⚡ **[ACP 아키텍처 및 추후 GUI 로드맵 (`docs/ACP_ROADMAP.md`)](./docs/ACP_ROADMAP.md)** — 무의존성 ACP v1/v2 구조, OpenCode `--async` 완료 콜백, 브리지 안내 및 추후 GUI(`runDriverTurn`) 이월 체크리스트
-- 🧭 **[모델 라우팅 가이드 (`ROUTING_GUIDE.md`)](./ROUTING_GUIDE.md)** — `~/.asd/routing.jsonc`의 `lightSubagents`, `agents`, `categories`, 폴백 체인, `thinkingEffort` 설정법
-- 🏛️ **[프로젝트 아키텍처 및 코드 레퍼런스 (`PROJECT_STATUS.md`)](./PROJECT_STATUS.md)** — 디렉토리 구조, 단일 SQLite DB 스키마, 모듈·함수별 상세 해설
-- 🔌 **[외부 SDK 및 DB 레퍼런스 (`EXTERNAL_SDK_REFERENCE.md`)](./EXTERNAL_SDK_REFERENCE.md)** — **ASD-Nexus** 등 외부 클라이언트 연동을 위한 Node.js SDK 및 DB 명세
-- 🔗 **[하네스 통합 레퍼런스 (`HARNESS_INTEGRATION_REFERENCE.md`)](./HARNESS_INTEGRATION_REFERENCE.md)** — 5대 하네스별 세션 저장소, 스트리밍 이벤트 실측 스키마 및 주의사항
-- 🤖 **[AI 에이전트 작업 프롬프트 (`AI_WORKFLOW_PROMPT.md`)](./AI_WORKFLOW_PROMPT.md)** — AI 코딩 에이전트 온보딩용 복사·붙여넣기 규칙 프롬프트
+- ⚡ **[ACP 아키텍처 및 추후 GUI 로드맵 (`docs/ACP_ROADMAP_ko.md`)](./docs/ACP_ROADMAP_ko.md)** — 무의존성 ACP v1/v2 구조, OpenCode `--async` 완료 콜백, 브리지 안내 및 추후 GUI(`runDriverTurn`) 이월 체크리스트
+- 🧭 **[모델 라우팅 가이드 (`ROUTING_GUIDE_ko.md`)](./ROUTING_GUIDE_ko.md)** — `~/.asd/routing.jsonc`의 `lightSubagents`, `agents`, `categories`, 폴백 체인, `thinkingEffort` 설정법
+- 🏛️ **[프로젝트 아키텍처 및 코드 레퍼런스 (`PROJECT_STATUS_ko.md`)](./PROJECT_STATUS_ko.md)** — 디렉토리 구조, 단일 SQLite DB 스키마, 모듈·함수별 상세 해설
+- 🔌 **[외부 SDK 및 DB 레퍼런스 (`EXTERNAL_SDK_REFERENCE_ko.md`)](./EXTERNAL_SDK_REFERENCE_ko.md)** — **ASD-Nexus** 등 외부 클라이언트 연동을 위한 Node.js SDK 및 DB 명세
+- 🔗 **[하네스 통합 레퍼런스 (`HARNESS_INTEGRATION_REFERENCE_ko.md`)](./HARNESS_INTEGRATION_REFERENCE_ko.md)** — 5대 하네스별 세션 저장소, 스트리밍 이벤트 실측 스키마 및 주의사항
+- 🤖 **[AI 에이전트 작업 프롬프트 (`AI_WORKFLOW_PROMPT_ko.md`)](./AI_WORKFLOW_PROMPT_ko.md)** — AI 코딩 에이전트 온보딩용 복사·붙여넣기 규칙 프롬프트
 - 📋 **[패치 노트 (한국어)](./PATCH_NOTES_ko.md)** · **[Patch Notes (EN)](./PATCH_NOTES.md)** — `v2.7.0`까지의 전체 버전별 변경 이력
 
 ---
