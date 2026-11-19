@@ -680,6 +680,15 @@ describe("T2.2 evasion gap closures", () => {
     ]) {
       const res = evaluatePreToolUse({ tool: "bash", command: cmd }, undefined, mainEnv);
       assert.equal(res.allowed, false, `Expected main-session .asd mutation to be blocked: ${cmd}`);
+      assert.match(res.reason ?? "", /asd plan create\|update\|sync_from_md\|get/);
+      assert.match(res.reason ?? "", /asd dispatch/);
+      assert.match(res.reason ?? "", /asd verify/);
+      assert.match(res.reason ?? "", /asd debate/);
+      assert.match(res.reason ?? "", /asd handoff/);
+      assert.match(res.reason ?? "", /asd status/);
+      assert.match(res.reason ?? "", /asd clean/);
+      assert.match(res.reason ?? "", /IMMEDIATELY HALT/);
+      assert.doesNotMatch(res.reason ?? "", /\bmcp\b|asd_plan|asd_dispatch|asd_debate/i);
     }
 
     // Blocked on main session: direct .env read/write/delete

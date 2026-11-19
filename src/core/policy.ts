@@ -255,6 +255,9 @@ export function resolveSafeTargetPath(
 // 2. Protected Path & Secret File Checks
 // ============================================================================
 
+const ASD_PROTECTED_CLI_GUIDANCE =
+  "Use official `asd` CLI commands instead (`asd plan create|update|sync_from_md|get`, `asd dispatch`, `asd verify`, `asd debate`, `asd handoff`, `asd status`, `asd clean`). If no official `asd` CLI command exists for this operation, IMMEDIATELY HALT and report the blocker to the user.";
+
 /**
  * Checks whether a relative path targets protected directories (.git/, .asd/)
  * or secret files (.env, *.pem, *.key, id_rsa). Case-normalized.
@@ -278,7 +281,7 @@ export function checkProtectedPath(relPath: string): ProtectedPathCheckResult {
   if (segments.some((seg) => seg === ".asd")) {
     return {
       protected: true,
-      reason: `Protected path: target '${relPath}' is inside protected .asd directory`,
+      reason: `Protected path: target '${relPath}' is inside protected .asd directory. ${ASD_PROTECTED_CLI_GUIDANCE}`,
     };
   }
 
@@ -1125,7 +1128,7 @@ export function evaluatePreToolUse(
         return {
           allowed: false,
           reason: formatPolicyDenyReason(
-            "Bash command blocked for subagent: targets protected .asd directory"
+            `Bash command blocked for subagent: targets protected .asd directory. ${ASD_PROTECTED_CLI_GUIDANCE}`
           ),
         };
       }
@@ -1171,7 +1174,7 @@ export function evaluatePreToolUse(
         return {
           allowed: false,
           reason: formatPolicyDenyReason(
-            "Bash command blocked: direct shell mutation/deletion of protected .asd directory is forbidden; use official 'asd' CLI commands instead"
+            `Bash command blocked: direct shell mutation/deletion of protected .asd directory is forbidden. ${ASD_PROTECTED_CLI_GUIDANCE}`
           ),
         };
       }
