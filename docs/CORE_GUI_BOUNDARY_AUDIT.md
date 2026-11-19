@@ -1,118 +1,120 @@
-# Core–GUI 경계 감사 (CORE_GUI_BOUNDARY_AUDIT.md)
+# Core–GUI Boundary Audit (CORE_GUI_BOUNDARY_AUDIT.md)
 
-> 작성일: 2026-11-06 · 대상: `asd-multiagent` (Core) `src/` 전체 26개 TS 파일 실측 스캔
-> 스캔 방법: 전체 파일 목록화 + `gui`/`createServer`/`<!DOCTYPE`/`WebSocket`/`runDriverTurn`/대시보드 서비스 5종 호출자 grep + 후보 파일 정밀 열람
+**English** | [한국어](./CORE_GUI_BOUNDARY_AUDIT_ko.md)
+
+> Date: 2026-11-06 · Target: Empirical scan across all 26 TS files in `asd-multiagent` (Core) `src/`
+> Scan Method: Full file inventory + grep for callers of `gui`/`createServer`/`<!DOCTYPE`/`WebSocket`/`runDriverTurn`/5 dashboard services + close inspection of candidate files
 
 ---
 
-## 0. 경계 원칙 (확정)
+## 0. Boundary Principles (Confirmed)
 
-| Core(asd-multiagent)에 남는 것 | GUI 리포(asd-gui / 신규 앱)로 가는 것 |
+| Remains in Core (`asd-multiagent`) | Moves to GUI Repo (`asd-gui` / new app) |
 |---|---|
-| ① CLI (`asd` 명령 전반) | 모든 UI 렌더링 (HTML/CSS/React) |
-| ② 코어 관리: 계획(PLAN), 대시보드(`asd ui` — 예외 허용), git worktree 분리/머지, 세션·드라이버 상태, 훅, MCP | HTTP/WS 서버 구동과 라우팅 (`asd ui` 제외) |
-| ③ 최소 SDK/API: 스트리밍 턴, 트랜스크립트 읽기, 세션 탐색, 라우팅 로드 등 순수 데이터/실행 프리미티브 | 브라우저/화면 표현용 문자열·상태·이벤트 UI |
+| 1. CLI (all `asd` commands) | All UI rendering (HTML/CSS/React) |
+| 2. Core management: planning (`PLAN`), dashboard (`asd ui` — exception allowed), git worktree isolation/merge, session & driver state, hooks, MCP | HTTP/WS server hosting and routing (except `asd ui`) |
+| 3. Minimal SDK/API: pure data and execution primitives such as streaming turns, transcript reading, session discovery, and routing loading | Browser/screen presentation strings, state, and event UI |
 
-**판정 축**
-1. 호출 주체가 CLI/훅/MCP/에이전트인가 → Core OK
-2. 데이터/실행 프리미티브(DB 쿼리, 프로세스 스폰, 스트림 파싱, git 조작)인가 → Core OK (최소 SDK)
-3. 서버 구동·엔드포인트 라우팅·화면 렌더링·UI 상태인가 → GUI 이관
-4. 예외: `asd ui` 명령과 그 구현(`src/cli/dashboard.ts`의 서버+HTML)은 사용자가 명시적으로 허용
+**Evaluation Axes**
+1. Is the caller the CLI, a hook, MCP, or an agent? → Core OK
+2. Is it a data/execution primitive (DB query, process spawn, stream parsing, git manipulation)? → Core OK (minimal SDK)
+3. Is it server hosting, endpoint routing, screen rendering, or UI state? → Move to GUI
+4. Exception: The `asd ui` command and its implementation (server + HTML in `src/cli/dashboard.ts`) are explicitly permitted by the user
 
 ---
 
-## 1. 요약 판정표
+## 1. Summary Verdict Table
 
-| # | 위치 | 항목 | 판정 | 권고 조치 |
+| # | Location | Item | Verdict | Recommended Action |
 |---|---|---|---|---|
-| W1 | `src/cli/dashboard.ts:247/617/687/843/1461` | GUI가 import하는 **데이터 서비스 5종이 프레젠테이션 파일에 구현**됨 | ⚠️ 경계 위반 (레이어링) | `src/core/` 서비스 파일로 이관, dashboard.ts는 서버+HTML만 유지 |
-| W2 | `src/index.ts` | 공개 SDK 표면에 dashboard 서버·서비스 혼재, GUI가 쓰지 않는 항목(`startDashboardServer`) 포함 | ✅ 완료 (이 변경, T4.2) | 루트 export 제거, `startDashboardServer`는 서브패스 `./cli/dashboard.ts` 전용 |
-| W3 | `src/core/drivers.ts:423-424/482/588` | GUI 전용 동기 SDK의 주석·프롬프트 텍스트가 경계를 흐림 | 🔵 표기 문제 (동작 아님) | 주석 정리 + 프롬프트 내 GUI 문구 파라미터화 |
-| W4 | (역방향) `asd-gui/src/server/core-api.ts:239` | `buildInteractiveResumeHarnessCommand`를 GUI가 자체 구현 — Core 어댑터의 `buildInteractiveResumeCommand`와 중복 | 🔵 역방향 위반 | GUI 구현 삭제, Core 구현 직접 사용 (실행 결과: 어댑터 버그 발견으로 상위 함수 re-export 채택 — §5) |
+| W1 | `src/cli/dashboard.ts:247/617/687/843/1461` | **5 data services imported by the GUI are implemented inside a presentation file** | ⚠️ Boundary Violation (Layering) | Move to service files under `src/core/`; keep only server + HTML in `dashboard.ts` |
+| W2 | `src/index.ts` | Public SDK surface mixes dashboard server and services, including items unused by the GUI (`startDashboardServer`) | ✅ Completed (this change, T4.2) | Remove root export; restrict `startDashboardServer` to subpath `./cli/dashboard.ts` |
+| W3 | `src/core/drivers.ts:423-424/482/588` | Comments and prompt text in GUI-oriented synchronous SDK blur the boundary | 🔵 Naming/Wording Issue (not behavior) | Clean up comments + parameterize GUI wording inside prompts |
+| W4 | (Reverse) `asd-gui/src/server/core-api.ts:239` | GUI re-implements `buildInteractiveResumeHarnessCommand` — duplicating Core adapter `buildInteractiveResumeCommand` | 🔵 Reverse Violation | Delete GUI implementation and use Core implementation directly (execution note: adopted higher-level function re-export after discovering an adapter bug — see Section 5) |
 
-**결론: 명백한 "GUI 기능의 Core 침범"은 없음** (웹 서버·HTML은 `asd ui` 예외 1곳뿐). 위반은 ①GUI가 import하는 서비스가 dashboard.ts에 갇힌 레이어링 문제, ②SDK 표면 과다, ③표기 문제 수준.
-
----
-
-## 2. 상세
-
-### W1. GUI용 데이터 서비스 5종이 `dashboard.ts`(프레젠테이션)에 갇혀 있음
-
-**증거** (`src/cli/dashboard.ts`):
-- `discoverHarnessModels` (247행) — 5하네스 모델 탐색 + `~/.asd/state/models-cache.json` 캐시
-- `saveSessionMemo` (617행) — 세션 메모 저장
-- `saveProjectRoutingConfig` (687행) — 라우팅 설정 저장
-- `runSubagentControlAction` (843행) — 서브에이전트 kill/retry/fallback/resume
-- `collectDashboardSnapshot` (1461행) — 전체 상태 스냅샷
-
-**문제**: 이 5종은 UI가 아닌 **순수 데이터/상태 서비스**인데, `asd ui`의 HTML+서버 파일(129KB) 안에 구현되어 있고 `src/index.ts:52-57`으로 재노출되어 asd-gui가 import한다 (asd-gui `core-api.ts:132/135/180-182` 확인). Core의 "최소 SDK"와 "asd ui 구현체"가 한 파일에 섞여 경계가 흐려짐 — GUI가 SDK를 쓰려면 129KB UI 파일을 거쳐야 함.
-
-**권고**: 5종을 `src/core/`로 이관 (예: `core/models.ts`, `core/session-services.ts`, `core/subagent-control.ts`). `cli/dashboard.ts`는 `startDashboardServer` + HTML만 남김. 이관 후 `src/index.ts`는 core 경유로 재노출.
-
-### W2. `src/index.ts` 공개 SDK 표면 과다
-
-**상태 (이 변경, T4.2 — 완료)**: `startDashboardServer` 및 `type DashboardServerHandle` 루트 export를 `src/index.ts`에서 제거함. 대시보드 서버는 서브패스 `./cli/dashboard.ts`(`agent-swarm-director/cli/dashboard.ts`)로만 접근 가능하며, 루트 SDK 엔트리에서는 비노출. `package.json` `./cli/*` → `./src/cli/*.ts` 매핑이 `dashboard.ts`를 커버하므로 서브패스 import는 유효함.
-
-**근거**: `startDashboardServer`는 GUI가 절대 쓰지 않음(asd-gui는 자체 서버 보유) — asd ui 전용 구현이 공개 SDK에 노출되지 않음. 나머지 대시보드 데이터 서비스(`collectDashboardSnapshot` 등)는 이미 `src/core/`로 이관되어 core 경유로 재노출됨(W1 완료).
-
-### W3. `drivers.ts`의 GUI 전용 SDK 표기 문제
-
-**증거**:
-- 482행: `// CR-03: GUI Headless Driver Turn Runner (runDriverTurn)` — GUI 변경요청서(CR) 번호가 코어 소스에 박제됨
-- 588행: parseDriverStreamLine 주석 "for real-time GUI rendering"
-- 423-424행: 드라이버 브리핑 프롬프트에 "병합 충돌 태스크는 사용자가 GUI에서 해결" 문구 하드코딩
-
-**판정**: 동작 자체는 정당 — `runDriverTurn`/`parseDriverStreamLine`/`buildDriverBriefing`은 신규 앱 계획의 **필수 최소 SDK**이고, 드라이버 CRUD(attach/detach)는 MCP가 사용(`mcp/server.ts:862`, CR-04)하므로 코어 관리 기능. 다만 주석·프롬프트가 "GUI 전용"처럼 읽혀 경계를 흐림.
-
-**권고**: 주석을 "SDK: 헤드리스 스트리밍 턴 실행" 등 주체 중립 표기로 정리, 프롬프트 내 GUI 문구는 옵션 파라미터화.
-
-### W4. (역방향) GUI가 코어 어댑터 로직을 재구현
-
-**증거**: `asd-gui/src/server/core-api.ts:239` `buildInteractiveResumeHarnessCommand` — agy `--resume`→`--conversation` 정규화를 GUI가 자체 구현. Core 어댑터의 `buildInteractiveResumeCommand`(`adapters/antigravity.ts:90`)와 중복.
-
-**권고**: GUI 구현 삭제 → Core 어댑터 사용. 양방향 경계 원칙: "코어 로직 필요 시 GUI에서 구현하지 말고 Core에 요청(GUI_ARCHITECTURE.md ADR-01-3도 동일 원칙)".
-
-**갱신 (2026-11-13, v2.6.0)**: 위 어댑터 메서드(`buildHeadlessCommand`/`buildResumeCommand`/`buildInteractiveResumeCommand`)는 프로덕션 미호출로 확인되어 `HarnessAdapter` 인터페이스와 5개 어댑터에서 **삭제**됨. Core의 명령 조립 단일 경로는 `src/core/session-tracker.ts`의 `buildSpawnSpec` / `buildHeadlessHarnessCommand` / `buildResumeHarnessCommand` / `buildInteractiveResumeHarnessCommand`이며, GUI/TUI는 이 함수들(외부 SDK 문서의 `core/session-tracker` 표)을 직접 사용해야 함. §5의 어댑터 버그 발견 경위는 역사 기록으로 보존.
+**Conclusion: There is no blatant "GUI feature intrusion into Core"** (the web server and HTML exist only in the single `asd ui` exception). The violations consist of (1) a layering issue where services imported by the GUI are trapped in `dashboard.ts`, (2) an overly broad SDK surface, and (3) minor wording issues.
 
 ---
 
-## 3. 유지 확정 목록 (검토했으나 위반 아님)
+## 2. Detailed Findings
 
-| 위치 | 항목 | 유지 근거 |
+### W1. Five Data Services for the GUI Are Trapped in `dashboard.ts` (Presentation)
+
+**Evidence** (`src/cli/dashboard.ts`):
+- `discoverHarnessModels` (line 247) — 5-harness model discovery + `~/.asd/state/models-cache.json` cache
+- `saveSessionMemo` (line 617) — session memo persistence
+- `saveProjectRoutingConfig` (line 687) — routing configuration persistence
+- `runSubagentControlAction` (line 843) — subagent kill/retry/fallback/resume
+- `collectDashboardSnapshot` (line 1461) — full state snapshot
+
+**Problem**: These 5 functions are **pure data/state services** rather than UI, yet they are implemented inside the 129KB HTML + server file for `asd ui` and re-exported through `src/index.ts:52-57` for `asd-gui` to import (confirmed in `asd-gui` `core-api.ts:132/135/180-182`). Mixing Core's "minimal SDK" and the "`asd ui` implementation" in a single file blurs the boundary — the GUI must pull in a 129KB UI file just to consume the SDK.
+
+**Recommendation**: Move all 5 services to `src/core/` (e.g., `core/models.ts`, `core/session-services.ts`, `core/subagent-control.ts`). Leave only `startDashboardServer` + HTML in `cli/dashboard.ts`. Re-export from `src/index.ts` via `core`.
+
+### W2. Overly Broad Public SDK Surface in `src/index.ts`
+
+**Status (this change, T4.2 — Completed)**: Removed the `startDashboardServer` and `type DashboardServerHandle` root exports from `src/index.ts`. The dashboard server is now accessible exclusively via the subpath `./cli/dashboard.ts` (`agent-swarm-director/cli/dashboard.ts`) and is no longer exposed from the root SDK entry. Because `package.json` maps `./cli/*` → `./src/cli/*.ts`, the subpath import remains valid.
+
+**Rationale**: `startDashboardServer` is never used by the GUI (`asd-gui` has its own server), so `asd ui`-specific implementation details should not be exposed on the root public SDK. The remaining dashboard data services (`collectDashboardSnapshot`, etc.) have already been migrated to `src/core/` and are re-exported via `core` (W1 completed).
+
+### W3. GUI-Specific SDK Wording in `drivers.ts`
+
+**Evidence**:
+- Line 482: `// CR-03: GUI Headless Driver Turn Runner (runDriverTurn)` — a GUI change request (CR) number is baked into Core source code
+- Line 588: `parseDriverStreamLine` comment mentions "for real-time GUI rendering"
+- Lines 423-424: Driver briefing prompt hardcodes the phrase "merge conflict tasks are resolved by the user in the GUI"
+
+**Verdict**: The behavior itself is legitimate — `runDriverTurn`, `parseDriverStreamLine`, and `buildDriverBriefing` are **essential minimal SDK primitives** in the new app plan, and driver CRUD (`attach`/`detach`) is used by MCP (`mcp/server.ts:862`, CR-04) as a Core management feature. However, the comments and prompts read as if they are "GUI-only", blurring the boundary.
+
+**Recommendation**: Neutralize comments to caller-agnostic phrasing such as "SDK: Headless streaming turn execution", and parameterize GUI wording in prompts via options.
+
+### W4. (Reverse) GUI Re-Implements Core Adapter Logic
+
+**Evidence**: `asd-gui/src/server/core-api.ts:239` `buildInteractiveResumeHarnessCommand` — the GUI implements its own `agy` `--resume` → `--conversation` normalization, duplicating Core adapter `buildInteractiveResumeCommand` (`adapters/antigravity.ts:90`).
+
+**Recommendation**: Delete the GUI implementation and use the Core adapter. Bidirectional boundary rule: "When core logic is needed, request it in Core rather than implementing it in the GUI (`GUI_ARCHITECTURE.md` ADR-01-3 states the same rule)."
+
+**Update (2026-11-13, v2.6.0)**: The adapter methods above (`buildHeadlessCommand` / `buildResumeCommand` / `buildInteractiveResumeCommand`) were confirmed unused in production and **deleted** from the `HarnessAdapter` interface and all 5 adapters. The single canonical command-assembly path in Core is `buildSpawnSpec` / `buildHeadlessHarnessCommand` / `buildResumeHarnessCommand` / `buildInteractiveResumeHarnessCommand` in `src/core/session-tracker.ts`, and GUI/TUI consumers must use these functions directly (see the `core/session-tracker` table in the external SDK reference). The adapter bug discovery account in Section 5 is preserved as historical record.
+
+---
+
+## 3. Confirmed Retention List (Reviewed, No Violation)
+
+| Location | Item | Retention Rationale |
 |---|---|---|
-| `src/mcp/server.ts` (78KB) + `mcp/stdio-rpc.ts` | asd_plan/dispatch/verify/debate + 드라이버 부착 | CLI·에이전트(하네스)용 코어 관리 |
-| `src/core/workspace.ts:1421-1942` | `getWorktreeDiff` / `approvePendingTask` / `rejectPendingTask` ("GUI Gate") | git worktree diff/머지/롤백 = **사용자 정의 코어 관리 기능**. 단 Core 내부 호출자 0개(grep 확인) — GUI 전용 호출 SDK임을 문서화할 것 |
-| `src/core/drivers.ts` | 드라이버 CRUD(`attachDriver` 등), `runDriverTurn`, `parseDriverStreamLine`, `buildDriverBriefing` | CRUD는 MCP 사용 / 스트리밍 턴·파서는 신규 앱의 최소 SDK (W3 표기 정리만) |
-| `src/core/transcripts.ts` (CR-10) | 5하네스 트랜스크립트 리더 | 세션 자동 로드용 최소 SDK. cursor는 네이티브 포맷 미제공 → lossy JSONL 폴백(`~/.asd/transcripts/cursor/`, `~/.cursor/transcripts/`)만 존재, 폴백 부재 시 `unsupported` (갱신 2026-11-13) |
-| `src/cli/dashboard.ts` 서버+HTML | `asd ui` | **사용자 예외 허용**. 단 이후 기능 확장 금지 원칙 명문화 권장 (새 기능은 GUI 리포로) |
-| `src/core/{db,render,router,session-tracker,spawner,policy,debate,redact,jsonc,config}.ts`, `src/adapters/*`, `src/cli/index.ts` | 전부 CLI/코어 관리/SDK | GUI 흔적 grep 결과 0 (주석 1건 제외 전부 코어 관리 문언) |
-| `.asd/sessions/` 산출물 구조 | `drivers/<id>/runs/`, `subagents/<id>/` | GUI 턴 로그(`gui-turns`)는 GUI가 직접 기록·판독 (asd-gui `routes/transcripts.ts`) — Core 무관 ✅ |
+| `src/mcp/server.ts` (78KB) + `mcp/stdio-rpc.ts` | `asd_plan`/`dispatch`/`verify`/`debate` + driver attachment | Core management for CLI & agent harnesses |
+| `src/core/workspace.ts:1421-1942` | `getWorktreeDiff` / `approvePendingTask` / `rejectPendingTask` ("GUI Gate") | Git worktree diff/merge/rollback = **user-defined Core management capability**. Note: 0 internal callers in Core (confirmed via grep) — document explicitly as an external SDK surface for GUI consumers |
+| `src/core/drivers.ts` | Driver CRUD (`attachDriver`, etc.), `runDriverTurn`, `parseDriverStreamLine`, `buildDriverBriefing` | CRUD is used by MCP; streaming turn & parser form the minimal SDK for the new app (only W3 wording cleanup needed) |
+| `src/core/transcripts.ts` (CR-10) | 5-harness transcript reader | Minimal SDK for automatic session loading. Cursor does not provide a native format → only lossy JSONL fallback (`~/.asd/transcripts/cursor/`, `~/.cursor/transcripts/`) exists, returning `unsupported` when absent (updated 2026-11-13) |
+| `src/cli/dashboard.ts` server + HTML | `asd ui` | **Explicit user exception**. Recommend codifying a feature-freeze rule going forward (new UI features belong in the GUI repo) |
+| `src/core/{db,render,router,session-tracker,spawner,policy,debate,redact,jsonc,config}.ts`, `src/adapters/*`, `src/cli/index.ts` | All CLI / Core management / SDK | 0 GUI traces found via grep (all wording is Core management except 1 comment) |
+| `.asd/sessions/` artifact layout | `drivers/<id>/runs/`, `subagents/<id>/` | GUI turn logs (`gui-turns`) are written and read directly by the GUI (`asd-gui` `routes/transcripts.ts`) — independent of Core ✅ |
 
 ---
 
-## 4. 정리 작업 체크리스트
+## 4. Cleanup Action Checklist
 
-1. [x] **(P1)** W1: dashboard.ts 데이터 서비스 5종 → `src/core/` 이관 — **완료 (2026-11-06)**. 신규 파일: `core/models.ts`(모델 탐색+캐시), `core/session-services.ts`(메모+스냅샷), `core/subagent-control.ts`(서브에이전트 제어), `core/subagent-logs.ts`(scanSubagentLogs — cli/index.ts가 re-export). `saveProjectRoutingConfig`는 `core/router.ts`로. dashboard.ts는 서버+HTML만 잔존(-1,605줄).
-2. [x] **(P1)** W2: `src/index.ts` 표면 정리 — **완료**. 5종 서비스+`getModelsDiskCachePath`를 core 경유 export(심볼명 불변 — asd-gui 호환), `startDashboardServer`는 루트 export 제거(패키지 서브패스 `./cli/dashboard.ts`로만 접근).
-3. [x] **(P2)** W3: drivers.ts 정리 — **완료**. CR-03 주석·"GUI rendering" 문언 중립화, 브리핑 프롬프트 EN/KO GUI 문구 제거. 파일 내 "GUI" 문자열 0건 확인.
-4. [x] **(P2)** W4: asd-gui 중복 제거 — **완료 (경로 조정)**. 계획은 어댑터 사용이었으나 실행 중 어댑터 버그 발견(§5) → GUI 래퍼(30줄 no-op 정규화) 삭제 후 Core 상위 함수 `buildInteractiveResumeHarnessCommand`를 core-api.ts에서 직접 re-export. 4개 호출부 무변경.
-5. [x] **(P3)** W5: README/README_ko에 "asd ui 기능 동결 — 신규 UI 기능은 asd-gui로" 원칙 추가 — **완료**.
-6. [ ] **(P3)** cursor 트랜스크립트 리더 보강 — 네이티브 포맷이 하네스 측에서 미제공이라 현재 lossy JSONL 폴백만 존재. 폴백 파서 고도화는 별도 과제 (갱신 2026-11-13).
+1. [x] **(P1)** W1: Migrate 5 data services from `dashboard.ts` → `src/core/` — **Completed (2026-11-06)**. New files: `core/models.ts` (model discovery + cache), `core/session-services.ts` (memo + snapshot), `core/subagent-control.ts` (subagent control), `core/subagent-logs.ts` (`scanSubagentLogs` — re-exported by `cli/index.ts`). Moved `saveProjectRoutingConfig` to `core/router.ts`. Only server + HTML remain in `dashboard.ts` (-1,605 lines).
+2. [x] **(P1)** W2: Clean up `src/index.ts` surface — **Completed**. Re-exported the 5 services + `getModelsDiskCachePath` via `core` (symbol names unchanged for `asd-gui` compatibility); removed `startDashboardServer` from root exports (accessible only via package subpath `./cli/dashboard.ts`).
+3. [x] **(P2)** W3: Clean up `drivers.ts` — **Completed**. Neutralized CR-03 comments and "GUI rendering" wording; removed EN/KO GUI phrases from briefing prompts. Confirmed 0 occurrences of the string "GUI" in the file.
+4. [x] **(P2)** W4: Remove duplication in `asd-gui` — **Completed (path adjusted)**. Originally planned to call the adapter method, but discovered an adapter bug during execution (Section 5) → deleted the GUI wrapper (30-line no-op normalization) and directly re-exported the higher-level Core function `buildInteractiveResumeHarnessCommand` from `core-api.ts`. All 4 call sites required zero changes.
+5. [x] **(P3)** W5: Add the "`asd ui` feature freeze — new UI features go to `asd-gui`" rule to `README.md` / `README_ko.md` — **Completed**.
+6. [ ] **(P3)** Enhance Cursor transcript reader — because the harness does not expose a native format, only a lossy JSONL fallback currently exists. Improving the fallback parser is tracked as a separate task (updated 2026-11-13).
 
 ---
 
-## 5. 실행 결과 (2026-11-06)
+## 5. Execution Results (2026-11-06)
 
-**테스트**: Core `node scripts/run-tests.mjs` **355/356 통과**, asd-gui `npm test` **14/14 통과**.
+**Tests**: Core `node scripts/run-tests.mjs` **355/356 passed**, `asd-gui` `npm test` **14/14 passed**.
 
-**유일한 실패 1건은 변경과 무관한 기존 문제**: `tests/installer-sync.test.ts:650` "Runtime Isolation: ... Staged CLI entrypoint must exist in isolated runtimeDir" — `git stash`로 HEAD 기준선에서 동일 재현을 확인했다. (참고: stash 대조 과정에서 기존의 `asd-auto-stash` 항목이 발견되어 그대로 보존함.)
+**The single failure was a pre-existing issue unrelated to these changes**: `tests/installer-sync.test.ts:650` "Runtime Isolation: ... Staged CLI entrypoint must exist in isolated runtimeDir" — verified identical reproduction on the baseline `HEAD` via `git stash`. (Note: an existing `asd-auto-stash` entry was found during the stash comparison and preserved untouched.)
 
-**검증 증거**:
-- `src/core/**` → `src/cli/**` import: 0건 (grep)
-- `src/cli/dashboard.ts` 내 5종 서비스 정의: 0건 (grep), 서버 코드는 core에서 import
-- `src/core/drivers.ts` 내 "GUI" 문언: 0건 (grep)
-- W1 과정에서 tests 3종(artifact-lifecycle, dashboard, subagent-resume)의 import 경로를 새 core 위치로 갱신
+**Verification Evidence**:
+- `src/core/**` → `src/cli/**` imports: 0 occurrences (grep)
+- Definitions of the 5 services inside `src/cli/dashboard.ts`: 0 occurrences (grep); server code imports them from `core`
+- "GUI" wording inside `src/core/drivers.ts`: 0 occurrences (grep)
+- Updated import paths in 3 test files (`artifact-lifecycle`, `dashboard`, `subagent-resume`) to their new `core` locations during W1
 
-**신규 발견 → 즉시 수정**: 어댑터 `buildInteractiveResumeCommand`(claude-code/opencode/codex/cursor)가 **빈 세션ID에서도 `--resume ""` 같은 무효 플래그를 무조건 생성**하는 버그(antigravity만 정상) → 4개 어댑터에 조건부 가드 적용(`harnessSessionId ? [...] : []`). 유효 sid 동작은 불변. 이 버그가 W4의 어댑터 직접 사용 경로를 막았고, 그래서 W4는 Core 상위 함수 re-export 방식으로 완료했다.
+**New Discovery → Immediate Fix**: Adapter `buildInteractiveResumeCommand` (`claude-code`/`opencode`/`codex`/`cursor`) had a bug where it **unconditionally generated invalid flags like `--resume ""` even on an empty session ID** (only `antigravity` handled it properly) → applied conditional guards (`harnessSessionId ? [...] : []`) across the 4 adapters. Behavior for valid session IDs is unchanged. Because this bug blocked the direct-adapter path for W4, W4 was completed by re-exporting the higher-level Core function instead.
 
-**진행 중 발생한 일시 문제(기록용)**: W1 실행 중 asd-gui 테스트가 Core `router.ts` 파싱 오류로 실패한 적이 있는데, 이는 asd-gui의 `node_modules/agent-swarm-director`가 Core 소스에 라이브 연결되어 있어 리팩터링 중간 쓰기 상태를 읽은 레이스였음. 최종 상태에서는 재현되지 않음.
+**Transient Issue Encountered During Execution (For Record)**: While executing W1, `asd-gui` tests briefly failed with a parse error in Core `router.ts`; this was a race condition where `asd-gui`'s live-linked `node_modules/agent-swarm-director` read an intermediate write state during refactoring. It did not reproduce in the final state.
