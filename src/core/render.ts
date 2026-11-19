@@ -703,14 +703,14 @@ function formatHarnessModel(
   if (prefix) {
     return `\`${prefix}\``;
   }
-  return "`대기중`";
+  return "`pending`";
 }
 
 /**
  * Produces live TODO Progress Board markdown:
- * `### 📊 ASD TODO 진행 현황 [Turn X/Y 완료 | 진행률: M/N (P%)]`
+ * `### 📊 ASD TODO Progress [Turn X/Y done | Progress: M/N (P%)]`
  * followed by per-task lines:
- * `- [x] **T1.1** (Turn 1, \`@oc/glm-5\`, 12.4s): DB 스키마 작성 — 완료 (\`a1b2c3d\`)`
+ * `- [x] **T1.1** (Turn 1, \`@oc/glm-5\`, 12.4s): Write DB schema — done (\`a1b2c3d\`)`
  */
 export function renderProgressBoard(
   session:
@@ -754,7 +754,7 @@ export function renderProgressBoard(
     }
   }
 
-  const header = `### 📊 ASD TODO 진행 현황 [Turn ${completedTurns}/${totalTurns} 완료 | 진행률: ${doneCount}/${totalTasks} (${pct}%)]`;
+  const header = `### 📊 ASD TODO Progress [Turn ${completedTurns}/${totalTurns} done | Progress: ${doneCount}/${totalTasks} (${pct}%)]`;
   const lines: string[] = [header];
   const updateNotice = readCachedUpdateNotice();
   if (updateNotice?.updateAvailable) {
@@ -803,26 +803,26 @@ export function renderProgressBoard(
     } else {
       switch (status) {
         case "running":
-          thirdPart = "실행중";
+          thirdPart = "running";
           break;
         case "verifying":
-          thirdPart = "검증중";
+          thirdPart = "verifying";
           break;
         case "escalated":
-          thirdPart = "에스컬레이션";
+          thirdPart = "escalated";
           break;
         case "merge_conflict":
-          thirdPart = "충돌";
+          thirdPart = "conflict";
           break;
         case "failed":
-          thirdPart = "실패";
+          thirdPart = "failed";
           break;
         case "done":
-          thirdPart = "완료";
+          thirdPart = "done";
           break;
         case "pending":
         default:
-          thirdPart = "대기중";
+          thirdPart = "pending";
           break;
       }
     }
@@ -839,13 +839,13 @@ export function renderProgressBoard(
 
     let statusSuffix = "";
     if (status === "done") {
-      statusSuffix = ` — 완료${commitStr}`;
+      statusSuffix = ` — done${commitStr}`;
     } else if (status === "failed") {
-      statusSuffix = " — 실패";
+      statusSuffix = " — failed";
     } else if (status === "merge_conflict") {
-      statusSuffix = " — 병합 충돌";
+      statusSuffix = " — merge conflict";
     } else if (status === "escalated") {
-      statusSuffix = " — 에스컬레이션";
+      statusSuffix = " — escalated";
     }
 
     lines.push(

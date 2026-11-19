@@ -512,8 +512,8 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.equal(resp.tasks[1]?.taskId, "T1.2");
       assert.equal(resp.tasks[1]?.track, "HEAVY");
 
-      // progressBoard check: MUST include ### 📊 ASD TODO 진행 현황
-      assert.ok(resp.progressBoard.includes("### 📊 ASD TODO 진행 현황"));
+      // progressBoard check: MUST include ### 📊 ASD TODO Progress
+      assert.ok(resp.progressBoard.includes("### 📊 ASD TODO Progress"));
       assert.ok(resp.progressBoard.includes("T1.1"));
       assert.ok(resp.progressBoard.includes("T1.2"));
 
@@ -596,7 +596,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.equal(getResp.sessionId, "session-get-1");
       assert.equal(getResp.tasks.length, 1);
       assert.equal(getResp.tasks[0]?.taskId, "T1.1");
-      assert.ok(getResp.progressBoard.includes("### 📊 ASD TODO 진행 현황"));
+      assert.ok(getResp.progressBoard.includes("### 📊 ASD TODO Progress"));
     });
 
     test("action: 'sync_from_md' syncs manual checkbox and title edits from PLAN.md to SQLite", async () => {
@@ -626,7 +626,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
 
       assert.equal(syncResp.tasks[0]?.status, "done");
       assert.equal(syncResp.stateVersion, 2); // stateVersion incremented
-      assert.ok(syncResp.progressBoard.includes("완료"));
+      assert.ok(syncResp.progressBoard.includes("done"));
     });
 
     test("calling asd_plan through tools/call returns both content and structured fields", async () => {
@@ -646,7 +646,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.ok(Array.isArray(resp.content));
       assert.equal(resp.content[0]?.type, "text");
       assert.equal(resp.sessionId, "session-tools-call");
-      assert.ok(resp.progressBoard.includes("### 📊 ASD TODO 진행 현황"));
+      assert.ok(resp.progressBoard.includes("### 📊 ASD TODO Progress"));
     });
 
     test("implicit 'create' never mutates a completed latest session", async () => {
@@ -764,8 +764,8 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.ok(fs.existsSync(wtDir), "HEAVY task worktree must exist");
 
       // Progress board emitted
-      assert.ok(dispatchResp.progressBoard.includes("### 📊 ASD TODO 진행 현황"));
-      assert.ok(dispatchResp.progressBoard.includes("실행중"));
+      assert.ok(dispatchResp.progressBoard.includes("### 📊 ASD TODO Progress"));
+      assert.ok(dispatchResp.progressBoard.includes("running"));
     });
 
     test("verifies upstream depends_on and blocks dispatch when dependencies are unfinished", async () => {
@@ -854,8 +854,8 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.equal(dispatchResp.results[0]?.taskId, "T1.1");
       assert.equal(dispatchResp.results[0]?.status, "done");
       assert.ok(dispatchResp.results[0]?.commitSha, "Commit SHA must be recorded");
-      assert.ok(dispatchResp.progressBoard.includes("### 📊 ASD TODO 진행 현황"));
-      assert.ok(dispatchResp.progressBoard.includes("완료"));
+      assert.ok(dispatchResp.progressBoard.includes("### 📊 ASD TODO Progress"));
+      assert.ok(dispatchResp.progressBoard.includes("done"));
 
       // Subagent session directory and prompt.md written
       const subSessionDir = path.join(
@@ -917,7 +917,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.equal(dispatchResp.results[0]?.taskId, "T1.1");
       assert.equal(dispatchResp.results[0]?.status, "running");
       assert.equal(dispatchResp.results[0]?.harness, "opencode");
-      assert.ok(dispatchResp.progressBoard.includes("(Turn 1, `LIGHT`, 실행중)"), "LIGHT task in progressBoard must display `LIGHT` instead of @harness/model");
+      assert.ok(dispatchResp.progressBoard.includes("(Turn 1, `LIGHT`, running)"), "LIGHT task in progressBoard must display `LIGHT` instead of @harness/model");
       assert.equal(fs.existsSync(path.join(projectRoot, ".asd", "sessions", "dispatch-light-default", "subagents")), false, "LIGHT claim_only must not create fake subagents/ directory");
     });
 
@@ -1305,7 +1305,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.equal(verifyResp.taskId, "T1.1");
       assert.equal(verifyResp.status, "done");
       assert.ok(verifyResp.commitSha);
-      assert.ok(verifyResp.progressBoard.includes("### 📊 ASD TODO 진행 현황"));
+      assert.ok(verifyResp.progressBoard.includes("### 📊 ASD TODO Progress"));
 
       // no_progress_count must be reset to 0
       const dbAfter = openProjectDb(projectRoot);
@@ -1555,7 +1555,7 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.equal(typeof debateResp.diversityDegraded, "boolean");
 
       // Progress board must be present and contain header
-      assert.ok(debateResp.progressBoard.includes("### 📊 ASD TODO 진행 현황"));
+      assert.ok(debateResp.progressBoard.includes("### 📊 ASD TODO Progress"));
     });
 
     test("cross-scope requests bundle caller A files with target B file, link dependsOn [A, B], cap at 2 per subagent, and forward excess to Main Agent", async () => {
@@ -1676,8 +1676,8 @@ describe("ASD MCP Server (src/mcp/server.ts)", () => {
       assert.equal(dispatchResp.deferredCrossScopeRequests![0]!.requestedByTaskId, "T1.1");
       assert.equal(dispatchResp.deferredCrossScopeRequests![0]!.target_file, "src/api/audit.ts");
 
-      assert.ok(dispatchResp.progressBoard.includes("자동 생성된 Cross-Scope 후속 태스크"));
-      assert.ok(dispatchResp.progressBoard.includes("메인 에이전트 판단 필요"));
+      assert.ok(dispatchResp.progressBoard.includes("Auto-Created Cross-Scope Follow-up Tasks"));
+      assert.ok(dispatchResp.progressBoard.includes("Main Agent Review Required"));
       const db = openProjectDb(projectRoot);
       const session = db.getSession("cross-scope-session");
       assert.notEqual(session?.phase, "done");

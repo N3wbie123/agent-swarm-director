@@ -97,7 +97,16 @@ describe("CR-02: 0-Token Driver Briefing (buildDriverBriefing)", () => {
 
       assert.ok(briefing.includes("## Previous Drivers"));
       assert.ok(briefing.includes("claude-code/claude-sonnet-4"));
-      assert.ok(briefing.includes("### 📊 ASD TODO 진행 현황"));
+      assert.ok(briefing.includes("### 📊 ASD TODO Progress"));
+      assert.ok(briefing.includes("## Guidance"));
+
+      const koBriefing = buildDriverBriefing({
+        db,
+        projectRoot: root,
+        sessionId: sid,
+        locale: "ko",
+      });
+      assert.ok(koBriefing.includes("## 안내"));
       assert.ok(briefing.includes("## Attention Needed Tasks"));
       assert.ok(briefing.includes("**T1.2** [verifying]: Verifying task"));
       assert.ok(briefing.includes("**T1.3** [merge_conflict]: Conflict task"));

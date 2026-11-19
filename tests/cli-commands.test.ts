@@ -422,7 +422,7 @@ describe("CLI Parser, Hook Latency, Clean Safety, Handoff, Migrate & Update Chec
             startedAt: Date.now() - 50,
             finishedAt: Date.now(),
             summary: "- T1.1: done (@opencode/glm-5)",
-            progressBoard: "### 📊 ASD TODO 진행 현황",
+            progressBoard: "### 📊 ASD TODO Progress",
           },
           tmpHome
         );

@@ -24,7 +24,7 @@
  *    - asd_verify: LIGHT & HEAVY verification, resets no_progress_count, marks phase = "done" &
  *      generates .asd/summary.md when all tasks complete, returns progressBoard.
  *    - asd_debate: delegates to core debate broker, returns verdict & progressBoard.
- * 4. Every tool response includes progressBoard containing "### 📊 ASD TODO 진행 현황".
+ * 4. Every tool response includes progressBoard containing "### 📊 ASD TODO Progress".
  *
  * Invariants:
  * - Erasable TypeScript only: NO enum, type-only imports where applicable.
@@ -1758,7 +1758,7 @@ export class AsdMcpServer {
             t.turn,
             completedCount,
             totalCount,
-            `[✓ ${t.task_id} 완료 (@${activeRoute.harness}/${activeRoute.model}, ${(spawnResult.durationMs / 1000).toFixed(1)}s)]`
+            `[✓ ${t.task_id} done (@${activeRoute.harness}/${activeRoute.model}, ${(spawnResult.durationMs / 1000).toFixed(1)}s)]`
           );
 
           // Update PLAN.md atomically
@@ -2193,19 +2193,19 @@ export class AsdMcpServer {
     }
     const extra: string[] = [progressBoard, ""];
     if (autoCreatedTasks.length > 0) {
-      extra.push("#### 🔄 자동 생성된 Cross-Scope 후속 태스크 (최대 2개/서브하네스)");
+      extra.push("#### 🔄 Auto-Created Cross-Scope Follow-up Tasks (max 2/sub-harness)");
       for (const t of autoCreatedTasks) {
         extra.push(
-          `- **${t.taskId}** (Turn ${t.turn}, 요청: ${t.requestedBy.join(", ")}, 선행: ${t.dependsOn.join(", ")}) → 묶인 파일: \`${t.targetFiles.join("`, `")}\``
+          `- **${t.taskId}** (Turn ${t.turn}, requested by: ${t.requestedBy.join(", ")}, depends on: ${t.dependsOn.join(", ")}) → bundled files: \`${t.targetFiles.join("`, `")}\``
         );
       }
       extra.push("");
     }
     if (deferredCrossScopeRequests.length > 0) {
-      extra.push("#### ⚠️ 메인 에이전트 판단 필요 (보류된 Cross-Scope 요청)");
+      extra.push("#### ⚠️ Main Agent Review Required (Deferred Cross-Scope Requests)");
       for (const d of deferredCrossScopeRequests) {
         extra.push(
-          `- **[요청: ${d.requestedByTaskId}]** 대상: \`${d.target_file}\` — 사유: ${d.reason} / 제안: ${d.suggested_change} *(보류 사유: ${d.deferReason})*`
+          `- **[Requested by: ${d.requestedByTaskId}]** target: \`${d.target_file}\` — reason: ${d.reason} / suggested change: ${d.suggested_change} *(defer reason: ${d.deferReason})*`
         );
       }
       extra.push("");
