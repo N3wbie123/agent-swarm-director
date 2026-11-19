@@ -1,48 +1,42 @@
 ---
 name: asd-debug
-description: Systematic hypothesis-driven debugging workflow for ASD v2.7.0. Reproduce first, diagnose, fix, and verify.
+description: ASD v2.7.0 hypothesis-driven debugging workflow to reproduce, diagnose, fix, and verify failures across DIRECT, LIGHT, and HEAVY tracks.
 ---
 
-# ASD v2.7.0 — Hypothesis-Driven Debugging Workflow (`/asd-debug`)
+> **Protected `.asd/` Directory & Official CLI-Only Rule:** NEVER directly edit or create files inside `.asd/` (protected by `PreToolUse` hook); ALWAYS use official `asd` CLI commands, and `IMMEDIATELY HALT` if no official CLI command exists.
 
-You are running a rigorous, evidence-backed debugging loop to resolve a failure or quarantined task.
+**Response Language Policy:** Respond in the user's language while preserving exact CLI commands, flags, file paths, task IDs, and JSON keys.
 
-> [!IMPORTANT]
-> **Protected `.asd/` Directory & Official CLI-Only Rule**
-> - **NEVER** directly create, edit, or overwrite any file inside `.asd/` (such as `.asd/PLAN.md`, `.asd/core.db`, `.asd/sessions/**`, `.asd/handoff.md`) using file-editing tools (`edit_file`, `write_file`, `Edit`, `Write`, or shell redirection `>` / `>>`). The `.asd/` directory is strictly protected by the `PreToolUse` security hook.
-> - For ANY ASD state or `.asd/` operation, **ALWAYS** use the official `asd` CLI commands (`asd plan create|update|sync_from_md|get`, `asd dispatch`, `asd verify`, `asd debate`, `asd handoff`, `asd status`, `asd clean`) or official ASD MCP tools.
-> - If an operation on `.asd/` has **no corresponding official `asd` CLI command or MCP tool**, **IMMEDIATELY HALT** execution and explain the situation to the user rather than attempting direct file manipulation or workarounds.
-
-> **Response Language Policy**
-> - Respond, explain plans/verdicts, ask confirmation questions, and summarize `progressBoard` or tool output naturally in the **user's language** (translating English runtime labels when helpful for non-English users), while preserving exact CLI commands, flags, file paths, task IDs, and structured JSON keys.
-
-## 1. Mode Classification Criteria (`LIGHT` vs `HEAVY`)
-
-Use the standard ASD criteria (canonical definition in `/asd`, Section 2):
-- **`LIGHT`**: bug reproducible locally and localized to 1–3 files or one subsystem; root-cause tracing (`asd-scout`), hypothesis critique (`asd-critic`), and minimal fix (`asd-worker`) via internal subagents on the synced `routing.jsonc` model.
-- **`HEAVY`**: repeated local hypotheses failed (3-Strike escalation) or the bug spans cross-cutting concurrency/architecture boundaries requiring an external cross-harness oracle (`asd debate` via external CLIs).
+## 1. 3-Track Debugging Criteria
+Select or escalate the debugging track per `/asd` boundaries:
+- **`DIRECT`**: Obvious, localized 1–3 file failure reproduced and fixed directly in the main session + regression test.
+- **`LIGHT`**: Localized bug needing read-only log/code tracing (`asd-scout`), hypothesis critique (`asd-critic`), and minimal fix (`asd-worker`) via internal subagents (no external CLIs).
+- **`HEAVY`**: 3-Strike escalation after failed local hypotheses or cross-cutting concurrency/architecture bug requiring external cross-harness `asd debate`.
 
 ## 2. Debugging Protocol
 
-1. **Step 1: Reproduce First & Gather Evidence**
-   - Identify the exact failing command, stack trace, or quarantined task log in `.asd/sessions/`.
-   - Delegate read-only log/codebase tracing to `asd-scout` via your harness's internal subagent tool (`task` in OpenCode, `Agent`/`Task` in Claude Code, `invoke_subagent` in Antigravity).
-   - Run the reproduction test to confirm the failure deterministically before proposing any code changes.
+### Step 1: Reproduce First & Gather Evidence
+1. Identify the failing command, stack trace, or task log in `.asd/sessions/` and reproduce deterministically before editing code.
+2. When tracing is needed, delegate read-only tracing to `asd-scout`:
+<!-- @harness:opencode -->- Spawn `@asd-scout` for read-only log/code tracing and `file:line` isolation.<!-- @end -->
+<!-- @harness:claude-code -->- Run `Agent(subagent_type="asd-scout")` for read-only log/code tracing and `file:line` isolation.<!-- @end -->
+<!-- @harness:antigravity -->- Delegate to `asd-scout` (`model: {{LIGHT_SCOUT_MODEL}}`) for read-only log/code tracing and `file:line` isolation.<!-- @end -->
+<!-- @harness:codex -->- Spawn `asd-scout` sub-agent (read-only) for log/code tracing and `file:line` isolation.<!-- @end -->
+<!-- @harness:cursor -->- Launch `asd-scout` subagent (read-only) for log/code tracing and `file:line` isolation.<!-- @end -->
 
-2. **Step 2: Formulate Hypotheses & Confirm Mode with User**
-   - List the top 1–3 root-cause hypotheses with `file:line` citations and a proposed minimal fix + regression test plan.
-   - Present your AI mode recommendation (`LIGHT (Recommended)` vs `HEAVY`) and **ask for user confirmation** before modifying files.
+### Step 2: Hypothesize & Confirm Track
+List the top 1–3 root-cause hypotheses with `file:line` citations, minimal fix + regression test plan, recommend `DIRECT` / `LIGHT` / `HEAVY`, and ask for confirmation.
 
-3. **Step 3: Execute Diagnosis & Minimal Fix**
-   - **`LIGHT` Confirmed (Internal Subagent Delegation — NO External CLI Spawning)**:
-     - Do **NOT** spawn external CLI processes via `asd dispatch --mode parallel_spawn` or `asd debate`.
-     - Optionally stress-test the root-cause hypothesis with `asd-critic` via the internal subagent tool.
-     - Apply the minimal fix within `allowedFiles` (directly or by delegating to `asd-worker`) and add a regression test.
-   - **`HEAVY` Confirmed (External Cross-Harness Escalation)**:
-     - Run `asd debate` with the failure evidence and competing hypotheses for a cross-harness diagnosis, then dispatch the verified fix.
+### Step 3: Execute Diagnosis & Fix (3-Strike Escalation)
+- **`DIRECT`**: Apply minimal fix + regression test directly within `targetFiles`.
+- **`LIGHT`**: Strictly no external CLI spawn. Optionally challenge hypothesis via internal `asd-critic` and apply minimal fix via `asd-worker`:
+<!-- @harness:opencode -->- Invoke `@asd-critic` (optional), then `@asd-worker` scoped to `targetFiles` + regression test.<!-- @end -->
+<!-- @harness:claude-code -->- Run `Agent(subagent_type="asd-critic")` (optional), then `Agent(subagent_type="asd-worker")` scoped to `targetFiles`.<!-- @end -->
+<!-- @harness:antigravity -->- Run `asd-critic` (`model: {{LIGHT_CRITIC_MODEL}}`, optional), then `asd-worker` (`model: {{LIGHT_WORKER_MODEL}}`) scoped to `targetFiles`.<!-- @end -->
+<!-- @harness:codex -->- Spawn `asd-critic` (optional), then `asd-worker` sub-agents scoped to `targetFiles` + regression test.<!-- @end -->
+<!-- @harness:cursor -->- Launch `asd-critic` (optional), then `asd-worker` subagents scoped to `targetFiles` + regression test.<!-- @end -->
+- **`HEAVY`**: Run `asd debate` with failure evidence and competing hypotheses, then dispatch the verified fix.
+- **3-Strike Escalation**: Strike 1 (in-place fix) → Strike 2 (raise `thinkingEffort` or invoke `asd-critic`) → Strike 3 (escalate to `HEAVY` `asd debate`).
 
-4. **Step 4: Gate Verification (`asd verify`)**
-   ```bash
-   asd verify --task <T-ID> --cmd "<reproduction_and_regression_test_cmd>"
-   ```
-   - Confirm zero regressions across the test suite, display the updated `progressBoard` (including any `autoCreatedTasks` or `deferredCrossScopeRequests` returned by verification), and report the result to the user.
+### Step 4: Gate Verification
+Run `asd verify --task <T-ID> --cmd "<repro_and_regression_cmd>"`, confirm zero regressions, surface `autoCreatedTasks`/`deferredCrossScopeRequests`, and render the updated `progressBoard`.
