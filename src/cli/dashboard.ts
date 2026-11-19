@@ -616,7 +616,7 @@ function renderDashboardHtml(
         installedNo: "미설치",
         tasksSectionTitle: "세션 내 작업(Task) 실행 현황 (클릭 시 우측에 서브에이전트 로그 표시)",
         noTasks: "선택된 세션에 등록된 작업이 없습니다.",
-        debatesSectionTitle: "세션 내 적대적 토론 (클릭 시 해당 토론의 리뷰어 서브에이전트 로그 표시)",
+        debatesSectionTitle: "세션 내 적대적 토론 (클릭 시 내용 펼침/접기 · 우측에 리뷰어 로그 표시)",
         noDebates: "선택된 세션에 기록된 토론 내역이 없습니다.",
         inspectorSectionTitle: "서브에이전트 제어 & 실행 로그 뷰어",
         noLogs: "선택된 항목의 서브에이전트 실행 로그가 없습니다",
@@ -693,7 +693,7 @@ function renderDashboardHtml(
         installedNo: "N/A",
         tasksSectionTitle: "Session Tasks & Wave Execution (Click any task to inspect logs)",
         noTasks: "No tasks in selected session.",
-        debatesSectionTitle: "Session Adversarial Debates (Click any debate to inspect reviewer logs)",
+        debatesSectionTitle: "Session Adversarial Debates (Click to expand/collapse · inspect reviewer logs)",
         noDebates: "No debates in selected session.",
         inspectorSectionTitle: "Subagent Controller & Log Inspector",
         noLogs: "No subagent log found",
@@ -733,6 +733,7 @@ function renderDashboardHtml(
     let selectedSessionId = null;
     let selectedTaskId = null;
     let selectedSubSessionId = null;
+    let expandedDebateKeys = new Set();
     let editingMemoSessionId = null;
     let editingMemoDraft = "";
     let routingEditorOpen = false;
@@ -1273,6 +1274,21 @@ function renderDashboardHtml(
       render(latestState);
     }
 
+    function onDebateRowClick(rowEl) {
+      if (!rowEl) return;
+      if (window.getSelection && String(window.getSelection()).length > 0) return;
+      const debateId = rowEl.getAttribute("data-debate-id") || "";
+      const debateKey = rowEl.getAttribute("data-debate-key") || debateId;
+      if (rowEl.getAttribute("data-has-details") === "1") {
+        if (expandedDebateKeys.has(debateKey)) {
+          expandedDebateKeys.delete(debateKey);
+        } else {
+          expandedDebateKeys.add(debateKey);
+        }
+      }
+      selectTask(debateId);
+    }
+
     function selectSubSession(subSessionId) {
       selectedSubSessionId = subSessionId;
       actionStatusMsg = "";
@@ -1523,18 +1539,20 @@ function renderDashboardHtml(
             const risksHtml = iv && Array.isArray(iv.risks) && iv.risks.length
               ? \`<div class="meta-bar" style="margin-top:6px;"><strong>Risks:</strong><ul style="margin:4px 0 0 18px;padding:0;">\${iv.risks.map(x => \`<li>\${esc(x)}</li>\`).join("")}</ul></div>\`
               : "";
+            const detailsHtml = decisionsHtml + constraintsHtml + risksHtml;
+            const hasDetails = detailsHtml.length > 0;
+            const debateKey = (d.session_id || "") + "::" + d.debate_id;
+            const isExpanded = hasDetails && expandedDebateKeys.has(debateKey);
             const targetLogKey = d.task_id || d.debate_id;
             const isSel = selectedTaskId === targetLogKey || selectedTaskId === d.debate_id;
             return \`
-              <div class="debate-row \${isSel ? 'active' : ''}" onclick="selectTask('\${esc(d.debate_id)}')">
+              <div class="debate-row \${isSel ? 'active' : ''}" data-debate-key="\${esc(debateKey)}" data-debate-id="\${esc(d.debate_id)}" data-has-details="\${hasDetails ? '1' : '0'}" aria-expanded="\${isExpanded ? 'true' : 'false'}" onclick="onDebateRowClick(this)">
                 <div>
-                  <strong>\${esc(d.debate_id)}</strong> — \${esc(d.topic)}
+                  \${hasDetails ? \`<span style="display:inline-block;width:14px;color:var(--muted);">\${isExpanded ? '▾' : '▸'}</span>\` : ''}<strong>\${esc(d.debate_id)}</strong> — \${esc(d.topic)}
                   <span class="badge st-\${d.status === 'done' ? 'done' : 'running'}">\${esc(d.status)}</span>
                   \${verdictBadge}
                 </div>
-                \${decisionsHtml}
-                \${constraintsHtml}
-                \${risksHtml}
+                \${isExpanded ? \`<div class="debate-details" style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border);">\${detailsHtml}</div>\` : ''}
               </div>
             \`;
           }).join("");

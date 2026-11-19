@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as vm from "node:vm";
 import {
   discoverHarnessModels,
   getModelsDiskCachePath,
@@ -485,6 +486,122 @@ test("Dashboard Routing Save: preserves lightSubagents, surfaces save/reset/poll
     });
     assert.equal(staleCsrfRes.statusCode, 403);
     assert.match(staleCsrfRes.body, /csrf/i);
+  } finally {
+    await handle.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+    fs.rmSync(projDir, { recursive: true, force: true });
+  }
+});
+
+test("Dashboard Debates UI: renders debate details collapsed by default and toggles expand/collapse on click across polls", async () => {
+  const homeDir = makeTempDir("asd-ui-deb-home-");
+  const projDir = makeTempDir("asd-ui-deb-proj-");
+  const handle = await startDashboardServer({
+    port: 0,
+    projectRoot: projDir,
+    homeDir,
+  });
+  try {
+    const html = await (await fetch(handle.url)).text();
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch?.[1], "Inline <script> block must exist");
+
+    const elements = new Map<string, { id: string; innerHTML: string; textContent: string; style: Record<string, string>; disabled: boolean; classList: { toggle: () => void; add: () => void; remove: () => void; contains: () => boolean } }>();
+    const getEl = (id: string) => {
+      if (!elements.has(id)) {
+        elements.set(id, {
+          id,
+          innerHTML: "",
+          textContent: "",
+          style: {},
+          disabled: false,
+          classList: {
+            toggle: () => {},
+            add: () => {},
+            remove: () => {},
+            contains: () => false,
+          },
+        });
+      }
+      return elements.get(id)!;
+    };
+
+    const sandbox: Record<string, unknown> = {
+      window: { getSelection: () => "" },
+      navigator: { language: "ko-KR" },
+      localStorage: { getItem: () => null, setItem: () => {} },
+      document: {
+        documentElement: { lang: "ko" },
+        activeElement: null,
+        getElementById: (id: string) => (id === "outputLogPre" || id === "promptPre" ? null : getEl(id)),
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        addEventListener: () => {},
+      },
+      fetch: async () => ({ ok: true, json: async () => null }),
+      setInterval: () => 0,
+      setTimeout: () => 0,
+    };
+    vm.runInNewContext(scriptMatch[1]!, sandbox);
+
+    const mockState = {
+      projectRoot: projDir,
+      timestamp: Date.now(),
+      sessions: [{ session_id: "sess-1", created_at: Date.now(), phase: "done", memo: "" }],
+      allTasks: [],
+      allDebates: [
+        {
+          debate_id: "DEB-1",
+          session_id: "sess-1",
+          task_id: null,
+          topic: "Architecture trade-off",
+          status: "done",
+          insight_verdict_json: JSON.stringify({
+            verdict: "APPROVE",
+            decisions: ["Use SQLite WAL mode"],
+            hard_constraints: ["Zero npm deps"],
+            risks: ["Busy timeout contention"],
+          }),
+        },
+      ],
+      subagentLogs: [],
+      harnesses: {},
+    };
+
+    const renderFn = sandbox.render as (s: unknown) => void;
+    const clickFn = sandbox.onDebateRowClick as (el: { getAttribute: (k: string) => string | null }) => void;
+
+    // 1. Default render: collapsed even though DEB-1 is auto-selected
+    renderFn(mockState);
+    const collapsedHtml = getEl("debateList").innerHTML;
+    assert.match(collapsedHtml, /DEB-1/);
+    assert.match(collapsedHtml, /aria-expanded="false"/);
+    assert.doesNotMatch(collapsedHtml, /Use SQLite WAL mode/);
+    assert.doesNotMatch(collapsedHtml, /Zero npm deps/);
+
+    const rowStub = {
+      getAttribute: (name: string) => {
+        const m = collapsedHtml.match(new RegExp(`${name}="([^"]*)"`));
+        return m ? m[1]! : null;
+      },
+    };
+
+    // 2. First click: expands debate content
+    clickFn(rowStub);
+    const expandedHtml = getEl("debateList").innerHTML;
+    assert.match(expandedHtml, /aria-expanded="true"/);
+    assert.match(expandedHtml, /Use SQLite WAL mode/);
+    assert.match(expandedHtml, /Zero npm deps/);
+    assert.match(expandedHtml, /Busy timeout contention/);
+
+    // 3. Subsequent poll render: keeps debate expanded
+    renderFn({ ...mockState, timestamp: Date.now() + 2000 });
+    assert.match(getEl("debateList").innerHTML, /Use SQLite WAL mode/);
+
+    // 4. Second click: collapses debate content again
+    clickFn(rowStub);
+    assert.match(getEl("debateList").innerHTML, /aria-expanded="false"/);
+    assert.doesNotMatch(getEl("debateList").innerHTML, /Use SQLite WAL mode/);
   } finally {
     await handle.close();
     fs.rmSync(homeDir, { recursive: true, force: true });
