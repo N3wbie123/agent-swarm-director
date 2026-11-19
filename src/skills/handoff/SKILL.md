@@ -3,7 +3,7 @@ name: handoff
 description: Multi-harness session handoff skill for ASD v2.7.0. Summarizes conversation history, SQLite session/task state, progressBoard, and multi-harness routing context into handoff.md for seamless continuation across Claude Code, OpenCode, Codex CLI, Antigravity, and Cursor CLI.
 ---
 
-# ASD v2.7.0 — Multi-Harness Session Handoff (`/handoff`, `/asd-handoff`)
+# ASD v2.7.0 — Multi-Harness Session Handoff (`/asd-handoff`, `/handoff`)
 
 You are generating a structured, high-signal session handoff document (`handoff.md`) so the user or another AI coding harness (**Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, or **Cursor CLI**) can seamlessly resume work in a new session without losing context.
 
@@ -12,6 +12,9 @@ You are generating a structured, high-signal session handoff document (`handoff.
 > - **NEVER** directly create, edit, or overwrite any file inside `.asd/` (such as `.asd/PLAN.md`, `.asd/core.db`, `.asd/sessions/**`, `.asd/handoff.md`) using file-editing tools (`edit_file`, `write_file`, `Edit`, `Write`, or shell redirection `>` / `>>`). The `.asd/` directory is strictly protected by the `PreToolUse` security hook.
 > - For ANY ASD state or `.asd/` operation, **ALWAYS** use the official `asd` CLI commands (`asd plan create|update|sync_from_md|get`, `asd dispatch`, `asd verify`, `asd debate`, `asd handoff`, `asd status`, `asd clean`) or official ASD MCP tools.
 > - If an operation on `.asd/` has **no corresponding official `asd` CLI command or MCP tool**, **IMMEDIATELY HALT** execution and explain the situation to the user rather than attempting direct file manipulation or workarounds.
+
+> **Response Language Policy**
+> - Respond, explain plans/verdicts, ask confirmation questions, and summarize `progressBoard` or tool output naturally in the **user's language** (translating English runtime labels when helpful for non-English users), while preserving exact CLI commands, flags, file paths, task IDs, and structured JSON keys.
 
 ## Workflow
 

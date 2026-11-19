@@ -13,6 +13,9 @@ You are executing or resuming an existing `.asd/PLAN.md` across dependency turns
 > - For ANY ASD state or `.asd/` operation, **ALWAYS** use the official `asd` CLI commands (`asd plan create|update|sync_from_md|get`, `asd dispatch`, `asd verify`, `asd debate`, `asd handoff`, `asd status`, `asd clean`) or official ASD MCP tools.
 > - If an operation on `.asd/` has **no corresponding official `asd` CLI command or MCP tool**, **IMMEDIATELY HALT** execution and explain the situation to the user rather than attempting direct file manipulation or workarounds.
 
+> **Response Language Policy**
+> - Respond, explain plans/verdicts, ask confirmation questions, and summarize `progressBoard` or tool output naturally in the **user's language** (translating English runtime labels when helpful for non-English users), while preserving exact CLI commands, flags, file paths, task IDs, and structured JSON keys.
+
 ## 1. Mode Classification Criteria (`LIGHT` vs `HEAVY`)
 
 Use the standard ASD criteria (canonical definition in `/asd`, Section 2):

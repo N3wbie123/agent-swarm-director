@@ -13,6 +13,9 @@ You are the **Debate Broker** coordinating a hostile design review before commit
 > - For ANY ASD state or `.asd/` operation, **ALWAYS** use the official `asd` CLI commands (`asd plan create|update|sync_from_md|get`, `asd dispatch`, `asd verify`, `asd debate`, `asd handoff`, `asd status`, `asd clean`) or official ASD MCP tools.
 > - If an operation on `.asd/` has **no corresponding official `asd` CLI command or MCP tool**, **IMMEDIATELY HALT** execution and explain the situation to the user rather than attempting direct file manipulation or workarounds.
 
+> **Response Language Policy**
+> - Respond, explain plans/verdicts, ask confirmation questions, and summarize `progressBoard` or tool output naturally in the **user's language** (translating English runtime labels when helpful for non-English users), while preserving exact CLI commands, flags, file paths, task IDs, and structured JSON keys.
+
 ## 1. Mode Classification Criteria (`LIGHT` vs `HEAVY`)
 
 Use the standard ASD criteria (canonical definition in `/asd`, Section 2):
@@ -25,12 +28,12 @@ Use the standard ASD criteria (canonical definition in `/asd`, Section 2):
    - State the **Topic** and **Proposal** (including key files and trade-offs).
    - If the user has not specified `LIGHT` or `HEAVY`, present your recommendation with a brief rationale.
    - **When `HEAVY` Mode is selected or recommended**, ALWAYS ask the user how they want to assign the participating harnesses and reviewer count before running `asd debate` (unless the user already specified them):
-     1. **직접 지정 (User-Specified Harnesses & Count)**:
+     1. **User-Specified Harnesses & Count**:
         - Ask which harnesses (`claude-code`, `opencode`, `codex`, `cursor`, `antigravity`) and how many reviewers (`2`~`5`) to spawn.
-        - Example: *"opencode, codex, claude-code 3개로 해줘"* → `--harnesses "opencode,codex,claude-code"`
-     2. **자동 배정 ("알아서 배정해줘" / Auto-Assign)**:
-        - **AI 자율 배정 (AI Autonomous Assignment)**: Choose the best combination of harnesses/count suited to the topic (`--harnesses "..." --count N`).
-        - **`routing.jsonc` 역할 기반 배정 (Role-Based Assignment from `routing.jsonc`)**: Pick roles from `routing.jsonc` (`critic`, `architect`, `planner`, `worker`, `scout`) matching the debate topic (`--roles "critic,architect,planner"` or `--count N`).
+        - Example: *"Use opencode, codex, and claude-code (3 reviewers)"* → `--harnesses "opencode,codex,claude-code"`
+     2. **Auto-Assign**:
+        - **AI Autonomous Assignment**: Choose the best combination of harnesses/count suited to the topic (`--harnesses "..." --count N`).
+        - **Role-Based Assignment from `routing.jsonc`**: Pick roles from `routing.jsonc` (`critic`, `architect`, `planner`, `worker`, `scout`) matching the debate topic (`--roles "critic,architect,planner"` or `--count N`).
 
 2. **Step 2: Execute Adversarial Debate**
    - **`LIGHT` Confirmed (Internal Subagent Delegation — NO External CLI Spawning)**:
