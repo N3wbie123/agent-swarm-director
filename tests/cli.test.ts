@@ -5,7 +5,7 @@
  * 1. CLI help and unknown command handling.
  * 2. `asd doctor` runs in < 150ms and exits 0.
  * 3. `asd sync` and `asd uninstall` round-trip in isolated temp homeDir.
- * 4. `asd status` with seeded SQLite session displays `### 📊 ASD TODO 진행 현황` and detects stashed work warning.
+ * 4. `asd status` with seeded SQLite session displays `### 📊 ASD TODO Progress` and detects stashed work warning.
  * 5. `asd clean --pop` cleans worktrees and restores auto-stashed work.
  * 6. `asd hook pre-tool-use` denies `.GIT/config` and `.ENV` with exit code 2 on claude-code, and allows safe tool use.
  * 7. `asd hook stop` applies Subagent Shield and 3-strike breaker.
@@ -279,7 +279,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
           cwd: statusProject,
         });
         assert.equal(res.exitCode, 0, `status failed: ${res.stderr}`);
-        assert.ok(res.stdout.includes("### 📊 ASD TODO 진행 현황"));
+        assert.ok(res.stdout.includes("### 📊 ASD TODO Progress"));
         assert.ok(res.stdout.includes("T1.1"));
         assert.ok(res.stdout.includes("T1.2"));
         assert.ok(
@@ -972,7 +972,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
           { cwd: orchProj }
         );
         assert.equal(planRes.exitCode, 0, `plan stderr: ${planRes.stderr}`);
-        assert.ok(planRes.stdout.includes("### 📊 ASD TODO 진행 현황"));
+        assert.ok(planRes.stdout.includes("### 📊 ASD TODO Progress"));
         assert.ok(planRes.stdout.includes("T1.1"));
 
         // 2. asd dispatch --mode claim_only (auto-resolving latest session without --session)

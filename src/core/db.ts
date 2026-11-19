@@ -204,54 +204,54 @@ export interface DebateBundles {
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS sessions (
-  session_id TEXT PRIMARY KEY,            -- 예: '20261026-0300-main'
+  session_id TEXT PRIMARY KEY,            -- e.g., '20261026-0300-main'
   project_root TEXT NOT NULL,
   main_harness TEXT NOT NULL,             -- 'claude-code' | 'opencode' | 'codex' | 'antigravity' | 'cursor'
-  main_model TEXT DEFAULT NULL,           -- 메인 하네스 사용 모델 ID
-  harness_session_id TEXT DEFAULT NULL,   -- 하네스 자체 고유 세션 ID (CLI <-> GUI 양방향 Resume용)
-  auto_approve INTEGER NOT NULL DEFAULT 1,-- 태스크 검증 통과 시 자동 승인/병합 여부 (1: 자동, 0: 수동 승인 대기)
+  main_model TEXT DEFAULT NULL,           -- Main harness model ID
+  harness_session_id TEXT DEFAULT NULL,   -- Native harness session ID (for CLI <-> GUI bidirectional resume)
+  auto_approve INTEGER NOT NULL DEFAULT 1,-- Auto-approve/merge on verification pass (1: auto, 0: manual approval)
   main_pid INTEGER,
   phase TEXT NOT NULL DEFAULT 'planning', -- 'planning' | 'running' | 'paused' | 'done'
   state_version INTEGER NOT NULL DEFAULT 1,
-  base_sha TEXT,                          -- 세션 시작 시점의 Git HEAD SHA
-  stashed_work_sha TEXT,                  -- Dirty tree auto-stash 수행 시 보관된 stash SHA
-  no_progress_count INTEGER NOT NULL DEFAULT 0, -- Stop 훅 3회 무진전 서킷 브레이커 카운터
-  memo TEXT DEFAULT '',                   -- 세션 한 줄 메모 (.asd 내부 관리용)
+  base_sha TEXT,                          -- Git HEAD SHA at session start
+  stashed_work_sha TEXT,                  -- Stash SHA saved during dirty tree auto-stash
+  no_progress_count INTEGER NOT NULL DEFAULT 0, -- Stop hook 3-strike no-progress circuit breaker counter
+  memo TEXT DEFAULT '',                   -- One-line session memo (internal .asd management)
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
-  task_id TEXT NOT NULL,                  -- 예: 'T1.1', 'T1.2'
+  task_id TEXT NOT NULL,                  -- e.g., 'T1.1', 'T1.2'
   session_id TEXT NOT NULL,
-  turn INTEGER NOT NULL DEFAULT 1,        -- 병렬 실행 웨이브(Turn) 번호
+  turn INTEGER NOT NULL DEFAULT 1,        -- Parallel execution wave (Turn) number
   title TEXT NOT NULL,
   track TEXT NOT NULL DEFAULT 'LIGHT',    -- 'LIGHT' | 'HEAVY'
   role TEXT NOT NULL DEFAULT 'worker',    -- 'worker' | 'planner' | 'architect' | 'scout' | 'critic'
   category TEXT NOT NULL DEFAULT 'general', -- 'visual-ui' | 'design' | 'research' | 'writing' | 'general'
   difficulty TEXT NOT NULL DEFAULT 'medium',-- 'low' | 'medium' | 'high'
   status TEXT NOT NULL DEFAULT 'pending', -- 'pending'|'running'|'verifying'|'done'|'escalated'|'failed'|'merge_conflict'
-  attempts INTEGER NOT NULL DEFAULT 0,    -- 검증 실패 횟수 (최대 maxAttemptsPerTask = 3)
-  assigned_harness TEXT,                  -- 라우터가 배정한 하네스 ID
-  assigned_model TEXT,                    -- 라우터가 배정한 모델 ID
-  depends_on_json TEXT NOT NULL DEFAULT '[]',   -- 선행 task_id 배열 JSON (예: '["T1.1"]')
-  target_files_json TEXT NOT NULL DEFAULT '[]', -- 수정 허용된 파일/디렉토리 글로브 배열 JSON
-  context_hint TEXT,                      -- 'src/auth.ts:10-50 (주의사항 1줄)'
-  acceptance TEXT,                        -- 수용 기준 (토론 Insight Bundle 자동 주입 대상)
-  verify_cmd TEXT,                        -- 태스크 전용 검증/테스트 명령어 (선택)
-  done_claim_json TEXT,                   -- 완료 시 기록: { summary, changed_files, key_decisions, risks }
-  worktree_path TEXT,                     -- HEAVY 실행 시 '.asd/wt/<turn>-<taskId>'
+  attempts INTEGER NOT NULL DEFAULT 0,    -- Verification failure count (max maxAttemptsPerTask = 3)
+  assigned_harness TEXT,                  -- Harness ID assigned by router
+  assigned_model TEXT,                    -- Model ID assigned by router
+  depends_on_json TEXT NOT NULL DEFAULT '[]',   -- Prerequisite task_id JSON array (e.g., '["T1.1"]')
+  target_files_json TEXT NOT NULL DEFAULT '[]', -- Allowed target file/directory globs JSON array
+  context_hint TEXT,                      -- 'src/auth.ts:10-50 (1-line caution note)'
+  acceptance TEXT,                        -- Acceptance criteria (auto-injected with debate Insight Bundle)
+  verify_cmd TEXT,                        -- Task-specific verify/test command (optional)
+  done_claim_json TEXT,                   -- Recorded on completion: { summary, changed_files, key_decisions, risks }
+  worktree_path TEXT,                     -- '.asd/wt/<turn>-<taskId>' for HEAVY execution
   sub_session_id TEXT,                    -- 'sub-<turn>-<taskId>-<role>-<harness>'
-  commit_sha TEXT,                        -- 완료 후 생성된 체크포인트/병합 커밋 SHA
+  commit_sha TEXT,                        -- Checkpoint/merge commit SHA created on completion
   duration_ms INTEGER,
-  is_cross_scope INTEGER NOT NULL DEFAULT 0, -- Cross-Scope 자동 생성 태스크 여부 (0 | 1)
+  is_cross_scope INTEGER NOT NULL DEFAULT 0, -- Whether auto-created as Cross-Scope task (0 | 1)
   updated_at INTEGER,
   PRIMARY KEY (session_id, task_id),
   FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS debates (
-  debate_id TEXT PRIMARY KEY,             -- 예: 'D1'
+  debate_id TEXT PRIMARY KEY,             -- e.g., 'D1'
   session_id TEXT NOT NULL,
   task_id TEXT,
   topic TEXT NOT NULL,

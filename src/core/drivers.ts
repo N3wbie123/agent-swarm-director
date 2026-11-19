@@ -316,12 +316,7 @@ export function buildDriverBriefing(input: {
   locale?: "ko" | "en";
 }): string {
   const maxChars = input.maxChars ?? 6000;
-  const sysLang = (
-    input.locale ??
-    (Intl.DateTimeFormat().resolvedOptions().locale.toLowerCase().startsWith("ko")
-      ? "ko"
-      : "ko")
-  ) as "ko" | "en";
+  const sysLang: "ko" | "en" = input.locale ?? "en";
 
   const session = input.db.getSession(input.sessionId);
   const paths = resolveAsdPaths(input.projectRoot);

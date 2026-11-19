@@ -1867,7 +1867,7 @@ export async function runDebateBroker(
       progressBoard = renderProgressBoard(sessionRow, taskRows);
     } catch {
       progressBoard =
-        "### 📊 ASD TODO 진행 현황 [Turn 1/1 완료 | 진행률: 0/0 (0%)]";
+        "### 📊 ASD TODO Progress [Turn 1/1 done | Progress: 0/0 (0%)]";
     }
 
     return {

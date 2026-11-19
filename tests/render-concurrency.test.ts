@@ -473,14 +473,14 @@ test("renderProgressBoard: generates live TODO board with Turn completion, perce
 
   // 1. Header
   assert.ok(
-    board.includes("### 📊 ASD TODO 진행 현황 [Turn 1/2 완료 | 진행률: 2/3 (67%)]"),
+    board.includes("### 📊 ASD TODO Progress [Turn 1/2 done | Progress: 2/3 (67%)]"),
     `Board header mismatch: ${board}`
   );
 
   // 2. Task 1 (Turn 1, @oc/glm-5, 12.4s, commit sha)
   assert.ok(
     board.includes(
-      "- [x] **T1.1** (Turn 1, `LIGHT`, 12.4s): DB 스키마 작성 — 완료 (`a1b2c3d`)"
+      "- [x] **T1.1** (Turn 1, `LIGHT`, 12.4s): DB 스키마 작성 — done (`a1b2c3d`)"
     ),
     `T1.1 line mismatch: ${board}`
   );
@@ -488,15 +488,15 @@ test("renderProgressBoard: generates live TODO board with Turn completion, perce
   // 3. Task 2 (Turn 1, @cx/gpt-5-codex, 18.1s, commit sha)
   assert.ok(
     board.includes(
-      "- [x] **T1.2** (Turn 1, `@cx/gpt-5-codex`, 18.1s): 인증 미들웨어 구현 — 완료 (`e4f5g6h`)"
+      "- [x] **T1.2** (Turn 1, `@cx/gpt-5-codex`, 18.1s): 인증 미들웨어 구현 — done (`e4f5g6h`)"
     ),
     `T1.2 line mismatch: ${board}`
   );
 
-  // 4. Task 3 (Turn 2, @cc/claude-sonnet-4-6, 대기중)
+  // 4. Task 3 (Turn 2, @cc/claude-sonnet-4-6, pending)
   assert.ok(
     board.includes(
-      "- [ ] **T2.1** (Turn 2, `LIGHT`, 대기중): 통합 라우터 연결"
+      "- [ ] **T2.1** (Turn 2, `LIGHT`, pending): 통합 라우터 연결"
     ),
     `T2.1 line mismatch: ${board}`
   );
