@@ -952,4 +952,65 @@ describe("Bash .git and .asd boundary regex (P0 Issue 6b)", () => {
     assert.equal(explicitRes.allowed, true);
     assert.equal(explicitRes.overwrite, undefined);
   });
+
+  test("all .asd/ Write and Bash denials include actionable official asd CLI guidance and IMMEDIATELY HALT fallback without MCP mentions", () => {
+    const rootDir = makeTmpDir();
+    const metaPath = path.join(rootDir, "meta.json");
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify({
+        roleType: "subagent",
+        allowedFiles: ["*"],
+        worktreePath: rootDir,
+      })
+    );
+    const subEnv = {
+      ASD_SESSION_ROLE: "subagent",
+      ASD_SUBAGENT_META: metaPath,
+      ASD_PROJECT_ROOT: rootDir,
+    };
+    const mainEnv = { ASD_PROJECT_ROOT: rootDir };
+
+    const requiredCliTokens = [
+      "asd plan create|update|sync_from_md|get",
+      "asd dispatch",
+      "asd verify",
+      "asd debate",
+      "asd handoff",
+      "asd status",
+      "asd clean",
+      "IMMEDIATELY HALT",
+    ];
+
+    const reasons = [
+      checkProtectedPath(".asd/PLAN.md").reason ?? "",
+      evaluatePreToolUse(
+        { tool_name: "Write", tool_input: { file_path: ".asd/PLAN.md" }, projectRoot: rootDir },
+        DEFAULT_HARNESS_TOOL_MANIFEST,
+        mainEnv
+      ).reason ?? "",
+      evaluatePreToolUse(
+        { tool: "write", filePath: ".asd/meta.json" },
+        DEFAULT_HARNESS_TOOL_MANIFEST,
+        subEnv
+      ).reason ?? "",
+      evaluatePreToolUse(
+        { tool: "bash", command: "cat .asd/meta.json" },
+        DEFAULT_HARNESS_TOOL_MANIFEST,
+        subEnv
+      ).reason ?? "",
+      evaluatePreToolUse(
+        { tool: "bash", command: "echo x > .asd/PLAN.md" },
+        DEFAULT_HARNESS_TOOL_MANIFEST,
+        mainEnv
+      ).reason ?? "",
+    ];
+
+    for (const reason of reasons) {
+      for (const token of requiredCliTokens) {
+        assert.ok(reason.includes(token), `Expected '${token}' in deny reason: ${reason}`);
+      }
+      assert.doesNotMatch(reason, /\bmcp\b|asd_plan|asd_dispatch|asd_debate/i);
+    }
+  });
 });
