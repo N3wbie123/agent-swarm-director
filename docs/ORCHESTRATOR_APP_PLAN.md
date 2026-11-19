@@ -21,7 +21,7 @@ ASD v2.4.2(`asd-multiagent`)에는 앱의 코어 로직 대부분이 이미 구�
 | 웹 UI 원형 | `asd ui` (node:http, :3847) | `src/cli/dashboard.ts` |
 | 서브세션 스폰/로그 | `spawnSubagent`, `scanSubagentLogs` | `src/core/spawner.ts` |
 | 하네스 명령 조립 | `buildSpawnSpec` / `buildHeadlessHarnessCommand` / `buildResumeHarnessCommand` / `buildInteractiveResumeHarnessCommand` | `src/core/session-tracker.ts` |
-| GUI 프로젝트 | ASD-Nexus (`yjsjs0987/ASD-Nexus`) | 별도 리포 |
+| GUI 프로젝트 | ASD-Nexus (`https://github.com/N3wbie123/ASD-Nexus`) | 별도 리포 |
 
 ---
 

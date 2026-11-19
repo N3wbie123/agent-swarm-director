@@ -1,13 +1,18 @@
 # Agent Swarm Director (`ASD` v2.7.0)
 
-[English](./README.md) | **한국어** | [🖥️ ASD-Nexus (공식 GUI)](https://github.com/yjsjs0987/ASD-Nexus) | [⚡ ACP 로드맵](./docs/ACP_ROADMAP.md) | [🧭 라우팅 가이드](./ROUTING_GUIDE.md) | [🏛️ 아키텍처](./PROJECT_STATUS.md) | [🔌 외부 SDK](./EXTERNAL_SDK_REFERENCE.md) | [📋 패치 노트](./PATCH_NOTES_ko.md)
+[![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-blue.svg)](./LICENSE)
+[![Node.js: >=22.13.0](https://img.shields.io/badge/node-%3E%3D22.13.0-brightgreen.svg)](https://nodejs.org/)
+[![Dependencies: 0 (Zero-Dep)](https://img.shields.io/badge/dependencies-0%20(zero--dep)-red.svg)](./package.json)
+[![GitHub Stars](https://img.shields.io/badge/stars-agent--swarm--director-yellow.svg?logo=github)](https://github.com/N3wbie123/agent-swarm-director/stargazers)
+
+[English](./README.md) | **한국어** | [🖥️ ASD-Nexus (공식 GUI)](https://github.com/N3wbie123/ASD-Nexus) | [⚡ ACP 로드맵](./docs/ACP_ROADMAP.md) | [🧭 라우팅 가이드](./ROUTING_GUIDE.md) | [🏛️ 아키텍처](./PROJECT_STATUS.md) | [🔌 외부 SDK](./EXTERNAL_SDK_REFERENCE.md) | [📋 패치 노트](./PATCH_NOTES_ko.md)
 
 > **외부 런타임 의존성 0개(Zero-Dependency)로 Claude Code, OpenCode, Codex CLI, Antigravity, Cursor CLI 5대 AI 코딩 하네스를 통합 제어하는 범용 멀티 에이전트 오케스트레이션 하네스 및 SDK**
 
 **Agent Swarm Director (`agent-swarm-director` / ASD v2.7.0)**는 5대 이기종 AI 코딩 하네스를 단일 컨트롤 플레인으로 묶어 주는 오케스트레이터입니다. 외부 npm 런타임 패키지를 단 하나도 쓰지 않고(`dependencies: {}`), 순수 Node.js(`>=22.13.0`) 네이티브 TypeScript 실행과 내장 `node:sqlite`(WAL 모드)만으로 **ACP(Agent Client Protocol) v1/v2 하이브리드 실행**, **Git 워크트리 격리 병렬 처리**, **교차 모델 적대적 토론**, **1ms Fail-Closed 보안 정책 게이트**를 제공합니다.
 
 > [!TIP]
-> **🖥️ 공식 데스크톱 / 웹 GUI — [ASD-Nexus](https://github.com/yjsjs0987/ASD-Nexus)**  
+> **🖥️ 공식 데스크톱 / 웹 GUI — [ASD-Nexus](https://github.com/N3wbie123/ASD-Nexus)**  
 > 5대 하네스의 로컬 세션을 한눈에 탐색하고, 대화 기록 4분류(*Thinking / Tool Use / Tool Result / 응답*) 열람, 실시간 스트리밍 대화, 클릭 한 번으로 CLI ↔ ASD 세션 승격·하강을 제어할 수 있습니다.
 
 ---

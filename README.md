@@ -1,13 +1,18 @@
 # Agent Swarm Director (`ASD` v2.7.0)
 
-**English** | [한국어](./README_ko.md) | [🖥️ ASD-Nexus (GUI)](https://github.com/yjsjs0987/ASD-Nexus) | [⚡ ACP Roadmap](./docs/ACP_ROADMAP.md) | [🧭 Routing Guide](./ROUTING_GUIDE.md) | [🏛️ Architecture](./PROJECT_STATUS.md) | [🔌 External SDK](./EXTERNAL_SDK_REFERENCE.md) | [📋 Patch Notes](./PATCH_NOTES.md)
+[![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-blue.svg)](./LICENSE)
+[![Node.js: >=22.13.0](https://img.shields.io/badge/node-%3E%3D22.13.0-brightgreen.svg)](https://nodejs.org/)
+[![Dependencies: 0 (Zero-Dep)](https://img.shields.io/badge/dependencies-0%20(zero--dep)-red.svg)](./package.json)
+[![GitHub Stars](https://img.shields.io/badge/stars-agent--swarm--director-yellow.svg?logo=github)](https://github.com/N3wbie123/agent-swarm-director/stargazers)
+
+**English** | [한국어](./README_ko.md) | [🖥️ ASD-Nexus (GUI)](https://github.com/N3wbie123/ASD-Nexus) | [⚡ ACP Roadmap](./docs/ACP_ROADMAP.md) | [🧭 Routing Guide](./ROUTING_GUIDE.md) | [🏛️ Architecture](./PROJECT_STATUS.md) | [🔌 External SDK](./EXTERNAL_SDK_REFERENCE.md) | [📋 Patch Notes](./PATCH_NOTES.md)
 
 > **Zero-dependency universal multi-agent orchestration harness and SDK across Claude Code, OpenCode, Codex CLI, Antigravity, and Cursor CLI.**
 
 **Agent Swarm Director (`agent-swarm-director` / ASD v2.7.0)** coordinates five heterogeneous AI coding harnesses under a single deterministic control plane. Built purely on native Node.js (`>=22.13.0`) TypeScript execution and `node:sqlite` (WAL mode) with **zero external npm runtime dependencies (`dependencies: {}`)**, ASD combines **Agent Client Protocol (ACP) v1/v2 orchestration**, **Git worktree isolation**, **cross-model adversarial debate**, and a **1ms fail-closed security policy engine**.
 
 > [!TIP]
-> **🖥️ Official Desktop / Web GUI — [ASD-Nexus](https://github.com/yjsjs0987/ASD-Nexus)**  
+> **🖥️ Official Desktop / Web GUI — [ASD-Nexus](https://github.com/N3wbie123/ASD-Nexus)**  
 > Manage all 5 local harness sessions visually, inspect 4-way structured transcripts (*Thinking / Tool Use / Tool Result / Assistant*), stream live multi-harness turns, and promote or demote sessions with one click.
 
 ---
