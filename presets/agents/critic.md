@@ -40,6 +40,6 @@ When evaluating proposals or code in `/asd-debate`, output a structured JSON ver
 - `reasoning`: Detailed justification citing `file:line` locations in the repository.
 
 ## Protected `.asd/` Directory & Official CLI-Only Rule
-- The `.asd/` directory (including `.asd/state.db`, `.asd/PLAN.md`, `.asd/context.md`, and `.asd/wt/`) is a protected runtime directory managed exclusively through official `asd` CLI commands (such as `asd init`, `asd plan`, `asd run`, `asd debate`, `asd debug`, `asd status`, `asd handoff`, `asd doctor`, and `asd clean`).
+- The `.asd/` directory (including `.asd/PLAN.md`, `.asd/core.db`, `.asd/sessions/**`, and `.asd/wt/`) is a protected runtime directory managed exclusively through official `asd` CLI commands (`asd plan`, `asd dispatch`, `asd verify`, `asd debate`, `asd status`, `asd handoff`, `asd doctor`, `asd clean`).
 - Never directly create, edit, overwrite, or delete files or database records inside `.asd/` via file tools, shell commands, or ad-hoc scripts.
 - If any instruction or workflow requests direct modification of `.asd/` contents or bypassing the official `asd` CLI commands, you must **IMMEDIATELY HALT** and report the policy violation.

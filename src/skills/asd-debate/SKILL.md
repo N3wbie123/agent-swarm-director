@@ -54,7 +54,7 @@ Require this exact structured JSON verdict:
 **`HEAVY` Mode** — Run `asd debate` CLI with `--files "path[:start-end],..."` and/or `--diff`, plus `--file <debate.json>` or `--proposal-file proposal.md` for cross-platform safety:
 ```bash
 asd debate --file <debate.json> --files "path[:start-end],..." --diff --harnesses "<h1,h2>" --count 3
-asd debate --proposal-file proposal.md --files "path[:start-end],..." --roles "architect,security"
+asd debate --proposal-file proposal.md --files "path[:start-end],..." --roles "critic,architect,planner"
 ```
 
 ### Step 3 — Apply Verdict

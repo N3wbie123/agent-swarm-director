@@ -38,7 +38,7 @@ description: Execution & resume workflow for ASD v2.7.0 across 3-track DIRECT/LI
   - **Claude Code**: invoke `Agent` / `Task` with `subagent_type: "asd-<role>"`.
   <!-- @end -->
   <!-- @harness:antigravity -->
-  - **Antigravity**: invoke `invoke_subagent` with `TypeName: "asd-<role>"` and explicit `Model` from `{{LIGHT_SCOUT_MODEL}}`, `{{LIGHT_WORKER_MODEL}}`, `{{LIGHT_PLANNER_MODEL}}`, `{{LIGHT_ARCHITECT_MODEL}}`, `{{LIGHT_CRITIC_MODEL}}` — never `"inherit"`.
+  - **Antigravity**: invoke `invoke_subagent` with `TypeName: "asd-<role>"` and explicit `Model` (`scout={{LIGHT_SCOUT_MODEL}}`, `worker={{LIGHT_WORKER_MODEL}}`, `planner={{LIGHT_PLANNER_MODEL}}`, `architect={{LIGHT_ARCHITECT_MODEL}}`, `critic={{LIGHT_CRITIC_MODEL}}`) — never `"inherit"`.
   <!-- @end -->
   <!-- @harness:codex -->
   - **Codex**: delegate via native subagent or execute directly within `targetFiles`.
@@ -50,7 +50,18 @@ description: Execution & resume workflow for ASD v2.7.0 across 3-track DIRECT/LI
   <!-- @harness:opencode -->
   - **OpenCode Non-Blocking Rule**: ALWAYS pass `--async` (`asd dispatch --turn <N> --mode parallel_spawn --async`); `asd-guard.js` auto-notifies your session on wave completion (optional wait: `asd status` / `asd wait --timeout 600000`).
   <!-- @end -->
-  - **Other Harnesses (default)**: run `asd dispatch --turn <N> --mode parallel_spawn` (optional `--transport <auto|acp|cli>`).
+  <!-- @harness:claude-code -->
+  - Run `asd dispatch --turn <N> --mode parallel_spawn` (optional `--transport <auto|acp|cli>`).
+  <!-- @end -->
+  <!-- @harness:antigravity -->
+  - Run `asd dispatch --turn <N> --mode parallel_spawn` (optional `--transport <auto|acp|cli>`).
+  <!-- @end -->
+  <!-- @harness:codex -->
+  - Run `asd dispatch --turn <N> --mode parallel_spawn` (optional `--transport <auto|acp|cli>`).
+  <!-- @end -->
+  <!-- @harness:cursor -->
+  - Run `asd dispatch --turn <N> --mode parallel_spawn` (optional `--transport <auto|acp|cli>`).
+  <!-- @end -->
 
 ### Step 4: Gate Verification, Cross-Scope & 3-Strike Escalation
 1. Run `asd verify --task <T-ID> --cmd "<verifyCmd>"` (or `--file <verify.json>`).

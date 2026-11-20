@@ -34,10 +34,10 @@ Inspect the repository and `.asd/PLAN.md` (via `asd status` or `asd plan get`). 
 <!-- @harness:cursor -->- Delegate read-only exploration to the `asd-scout` subagent or run targeted local search.<!-- @end -->
 
 ### Step 2: Plan
-Run `asd plan schema` for the full schema. Create or update the plan via `asd plan create --file <path.json>` or stdin (`--file -`):
+Run `asd plan schema` for the full schema. Create or update the plan via `asd plan create --file <path.json>` or stdin (`--payload -`):
 ```bash
-asd plan create --file - <<'EOF'
-{"goal":"<goal>","turns":[{"turn":1,"tasks":[{"id":"T1.1","role":"worker","category":"general","targetFiles":["src/app.ts","tests/app.test.ts"],"prompt":"..."}]}]}
+asd plan create --payload - <<'EOF'
+{"tasks":[{"taskId":"T1.1","turn":1,"title":"<Task>","track":"DIRECT","role":"worker","category":"general","difficulty":"low","targetFiles":["src/app.ts","tests/app.test.ts"],"verifyCmd":"npm test"}]}
 EOF
 ```
 Note: Domain `category` applies to `role: "worker"` (specialist roles take Tier 2 precedence); always include relevant test files in `targetFiles`.
@@ -46,14 +46,14 @@ Note: Domain `category` applies to `role: "worker"` (specialist roles take Tier 
 Present the plan summary, recommend `DIRECT`, `LIGHT`, or `HEAVY` (plus optional `/asd-debate` for high-risk decisions), and wait for explicit user confirmation.
 
 ### Step 4: Wave Execution Loop
-- **`DIRECT`**: Claim via `asd dispatch --turn <N> --mode claim_only` or execute directly within `targetFiles`, then gate with `asd verify --turn <N>`.
-- **`LIGHT`**: Strictly forbid external CLI spawns. Run `asd dispatch --turn <N> --mode claim_only`, enforce sequential execution or strictly disjoint `targetFiles` across concurrent `worker` tasks, invoke internal `asd-<role>` subagents, and gate with `asd verify --turn <N>`:
+- **`DIRECT`**: Claim via `asd dispatch --turn <N> --mode claim_only`, edit directly within `targetFiles`, then gate each task with `asd verify --task <T-ID>`.
+- **`LIGHT`**: Strictly forbid external CLI spawns. Run `asd dispatch --turn <N> --mode claim_only`, enforce sequential execution or strictly disjoint `targetFiles` across concurrent `worker` tasks, invoke internal `asd-<role>` subagents, and gate each task with `asd verify --task <T-ID>`:
 <!-- @harness:opencode -->  - Invoke `task` with `subagent_type: "asd-<role>"`.<!-- @end -->
 <!-- @harness:claude-code -->  - Invoke `Agent` / `Task` with `subagent_type: "asd-<role>"`.<!-- @end -->
-<!-- @harness:antigravity -->  - Call `invoke_subagent(TypeName="asd-<role>", Model="<model>")` using synced models: `{{LIGHT_SCOUT_MODEL}}`, `{{LIGHT_WORKER_MODEL}}`, `{{LIGHT_PLANNER_MODEL}}`, `{{LIGHT_ARCHITECT_MODEL}}`, `{{LIGHT_CRITIC_MODEL}}` (never `"inherit"`).<!-- @end -->
+<!-- @harness:antigravity -->  - Call `invoke_subagent(TypeName="asd-<role>", Model="<model>")` using synced models: `scout={{LIGHT_SCOUT_MODEL}}`, `worker={{LIGHT_WORKER_MODEL}}`, `planner={{LIGHT_PLANNER_MODEL}}`, `architect={{LIGHT_ARCHITECT_MODEL}}`, `critic={{LIGHT_CRITIC_MODEL}}` (never `"inherit"`).<!-- @end -->
 <!-- @harness:codex -->  - Spawn internal `asd-<role>` subagent on its synced `routing.jsonc` model.<!-- @end -->
 <!-- @harness:cursor -->  - Spawn internal `asd-<role>` subagent on its synced `routing.jsonc` model.<!-- @end -->
-- **`HEAVY`**: Dispatch isolated worktree workers and gate with `asd verify --turn <N>`:
+- **`HEAVY`**: Dispatch isolated worktree workers (auto-verified per task; run `asd verify --task <T-ID>` for manual re-checks):
 <!-- @harness:opencode -->  - MUST pass `--async`: `asd dispatch --turn <N> --mode parallel_spawn --async` (`asd-guard.js` auto-notifies on completion).<!-- @end -->
 <!-- @harness:claude-code -->  - Run `asd dispatch --turn <N> --mode parallel_spawn`.<!-- @end -->
 <!-- @harness:antigravity -->  - Run `asd dispatch --turn <N> --mode parallel_spawn`.<!-- @end -->

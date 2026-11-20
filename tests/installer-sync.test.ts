@@ -1638,7 +1638,11 @@ describe("T3.1: Facade Split, Harness-Conditional Skills, Dynamic routing.jsonc 
       routingConfig: customRouting,
     });
     assert.ok(agAsd.includes('Model="flash"'));
-    assert.ok(agAsd.includes("`flash`, `pro`, `pro`, `flash`, `flash_lite`"));
+    assert.ok(
+      agAsd.includes(
+        "`scout=flash`, `worker=pro`, `planner=pro`, `architect=flash`, `critic=flash_lite`"
+      )
+    );
 
     const agDebate = getSkillTemplate("asd-debate", {
       harnessId: "antigravity",
