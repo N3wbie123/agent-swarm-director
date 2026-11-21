@@ -37,12 +37,14 @@ import {
 } from "./db.ts";
 import { attachDriver, detachDriver, type DriverRow, type DriverSource } from "./drivers.ts";
 import { withFileLockSync } from "./file-lock.ts";
+import { resolveOpenCodeCapabilityProfile } from "./opencode-profile.ts";
 import { atomicWriteFileSync, setForegroundSession } from "./render.ts";
 import { buildSpawnCommand, MAX_ARGV_CHARS } from "./spawner.ts";
 import type {
   CliRecentSessionEntry,
   HarnessId,
   KnownProjectSummary,
+  OpenCodeCapabilityProfile,
 } from "./types.ts";
 
 export {
@@ -73,15 +75,46 @@ export interface HeadlessHarnessCommandOptions {
   reasoningEffort?: string | null;
   /** Emit the harness's streaming event format (NDJSON) instead of a single final JSON payload. */
   streaming?: boolean;
-  /** Pass `--pure` for OpenCode headless runs to isolate external TUI plugins. */
+  /** Pass `--pure` for OpenCode V1 headless runs to isolate external TUI plugins (omitted on V2). */
   pure?: boolean;
-  /** Pass non-interactive permission/sandbox flags (`--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`). */
+  /** Pass non-interactive permission/sandbox flags (`--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox` / OpenCode V2 `--auto`). */
   skipPermissions?: boolean;
+  /** Environment variables used to resolve OpenCode V1/V2 capabilities when `openCodeProfile` is omitted. */
+  env?: Record<string, string | undefined>;
+  /** Pre-resolved OpenCode capability profile (`v1` vs `v2`). */
+  openCodeProfile?: OpenCodeCapabilityProfile;
+}
+
+function appendOpenCodeRunFlags(
+  args: string[],
+  options: {
+    pure?: boolean;
+    skipPermissions?: boolean;
+    env?: Record<string, string | undefined>;
+    openCodeProfile?: OpenCodeCapabilityProfile;
+  }
+): void {
+  const profile =
+    options.openCodeProfile ??
+    (options.env !== undefined || options.skipPermissions !== undefined
+      ? resolveOpenCodeCapabilityProfile({ env: options.env })
+      : undefined);
+  if (profile) {
+    const allowAuto = options.skipPermissions !== false;
+    const allowPure = options.pure !== false;
+    for (const flag of profile.headlessRunFlags) {
+      if (flag === "--pure" && !allowPure) continue;
+      if (flag === "--auto" && !allowAuto) continue;
+      if (!args.includes(flag)) args.push(flag);
+    }
+  } else if (options.pure) {
+    args.push("--pure");
+  }
 }
 
 /**
  * Builds high-level spawn specifications handling long prompt stdin offloading,
- * streaming NDJSON output by default, dangerous permission skipping, `--pure` isolation,
+ * streaming NDJSON output by default, dangerous permission skipping, OpenCode V2 `--auto` / V1 `--pure` flags,
  * and platform-specific stdin closure.
  */
 export function buildSpawnSpec(
@@ -97,8 +130,19 @@ export function buildSpawnSpec(
     options.harness === "antigravity"
       ? (options.streaming ?? true)
       : (options.streaming ?? false);
+  const effectiveOpenCodeProfile =
+    options.harness === "opencode"
+      ? (options.openCodeProfile ??
+        (options.pure === undefined || options.env !== undefined
+          ? resolveOpenCodeCapabilityProfile({ env: options.env })
+          : undefined))
+      : undefined;
   const effectivePure =
-    options.harness === "opencode" ? (options.pure ?? true) : options.pure;
+    options.harness === "opencode"
+      ? effectiveOpenCodeProfile
+        ? options.pure
+        : (options.pure ?? true)
+      : options.pure;
 
   const base = options.resumeSessionId
     ? buildResumeHarnessCommand({
@@ -110,11 +154,15 @@ export function buildSpawnSpec(
         reasoningEffort: options.reasoningEffort,
         streaming: effectiveStreaming,
         pure: effectivePure,
+        skipPermissions: options.skipPermissions,
+        env: options.env,
+        openCodeProfile: effectiveOpenCodeProfile,
       })
     : buildHeadlessHarnessCommand({
         ...options,
         streaming: effectiveStreaming,
         pure: effectivePure,
+        ...(effectiveOpenCodeProfile ? { openCodeProfile: effectiveOpenCodeProfile } : {}),
       });
 
   const spec = buildSpawnCommand(
@@ -178,7 +226,7 @@ export function buildHeadlessHarnessCommand(
     }
     case "opencode": {
       const args = ["run", textPrompt, "--format", "json"];
-      if (options.pure) args.push("--pure");
+      appendOpenCodeRunFlags(args, options);
       if (resolvedModel) args.push("--model", resolvedModel);
       return { command: "opencode", args };
     }
@@ -213,10 +261,14 @@ export interface ResumeHarnessCommandOptions {
   reasoningEffort?: string | null;
   /** Emit the harness's streaming event format (NDJSON) instead of a single final JSON payload. */
   streaming?: boolean;
-  /** Pass `--pure` for OpenCode headless resume runs. */
+  /** Pass `--pure` for OpenCode V1 headless resume runs (omitted on V2). */
   pure?: boolean;
+  /** Pass non-interactive permission flags (OpenCode V2 `--auto`). */
+  skipPermissions?: boolean;
   cwd?: string;
-  env?: Record<string, string>;
+  env?: Record<string, string | undefined>;
+  /** Pre-resolved OpenCode capability profile (`v1` vs `v2`). */
+  openCodeProfile?: OpenCodeCapabilityProfile;
 }
 
 /**
@@ -256,7 +308,7 @@ export function buildResumeHarnessCommand(
         "--format",
         "json",
       ];
-      if (options.pure) args.push("--pure");
+      appendOpenCodeRunFlags(args, options);
       if (resolvedModel) args.push("--model", resolvedModel);
       return { command: "opencode", args };
     }
@@ -1392,6 +1444,92 @@ function scanCodexLocalSessions(
   }
 }
 
+interface OpenCodeSessionRow {
+  id: string;
+  title?: string | null;
+  dir?: string | null;
+  proj_dir?: string | null;
+  created_at?: number | string | null;
+  updated_at?: number | string | null;
+  parent_id?: string | null;
+}
+
+function parseOpenCodeTimestamp(
+  v: number | string | null | undefined,
+  fallback: number
+): number {
+  if (typeof v === "number" && Number.isFinite(v)) {
+    return v < 1e11 ? Math.round(v * 1000) : Math.round(v);
+  }
+  if (typeof v === "string" && v.trim()) {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n < 1e11 ? Math.round(n * 1000) : Math.round(n);
+    const parsed = Date.parse(v);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function queryOpenCodeSessionsFromTable(
+  db: DatabaseSync,
+  tableName: "session_v2" | "session",
+  tableNames: Set<string>,
+  maxRows: number
+): OpenCodeSessionRow[] {
+  if (!tableNames.has(tableName)) return [];
+  const sessionColsInfo = db
+    .prepare(`PRAGMA table_info(${tableName})`)
+    .all() as Array<{ name: string }>;
+  const sessionCols = new Set(sessionColsInfo.map((c) => c.name));
+  if (!sessionCols.has("id")) return [];
+
+  const hasProjectTable = tableNames.has("project") && sessionCols.has("project_id");
+  let projectWorktreeCol: string | null = null;
+  if (hasProjectTable) {
+    const projCols = new Set(
+      (db.prepare("PRAGMA table_info(project)").all() as Array<{ name: string }>).map(
+        (c) => c.name
+      )
+    );
+    for (const cand of ["worktree", "directory", "path", "project_root"]) {
+      if (projCols.has(cand)) {
+        projectWorktreeCol = cand;
+        break;
+      }
+    }
+  }
+
+  const dirCol =
+    ["directory", "cwd", "project_root", "worktree"].find((c) => sessionCols.has(c)) ?? null;
+  const titleCol = ["title", "summary", "name"].find((c) => sessionCols.has(c)) ?? null;
+  const createdCol =
+    ["time_created", "created_at", "started_at"].find((c) => sessionCols.has(c)) ?? null;
+  const updatedCol = ["time_updated", "updated_at"].find((c) => sessionCols.has(c)) ?? null;
+  const parentIdCol = sessionCols.has("parent_id")
+    ? "parent_id"
+    : sessionCols.has("parentID")
+      ? "parentID"
+      : null;
+
+  let sql = `SELECT s.id AS id`;
+  sql += titleCol ? `, s.${titleCol} AS title` : `, NULL AS title`;
+  sql += dirCol ? `, s.${dirCol} AS dir` : `, NULL AS dir`;
+  sql += createdCol ? `, s.${createdCol} AS created_at` : `, NULL AS created_at`;
+  sql += updatedCol ? `, s.${updatedCol} AS updated_at` : `, NULL AS updated_at`;
+  sql += parentIdCol ? `, s.${parentIdCol} AS parent_id` : `, NULL AS parent_id`;
+  if (hasProjectTable && projectWorktreeCol) {
+    sql += `, p.${projectWorktreeCol} AS proj_dir FROM ${tableName} s LEFT JOIN project p ON s.project_id = p.id`;
+  } else {
+    sql += `, NULL AS proj_dir FROM ${tableName} s`;
+  }
+  if (updatedCol) {
+    sql += ` ORDER BY s.${updatedCol} DESC`;
+  }
+  sql += ` LIMIT ${maxRows}`;
+
+  return db.prepare(sql).all() as unknown as OpenCodeSessionRow[];
+}
+
 function scanOpenCodeLocalSessions(
   resolvedRoot: string,
   homeDir: string,
@@ -1407,6 +1545,10 @@ function scanOpenCodeLocalSessions(
   }
 
   const targetNorm = normalizePathForCompare(resolvedRoot);
+  const deduped = new Map<
+    string,
+    { entry: DiscoveredLocalTranscript; isV2: boolean; hasExplicitTitle: boolean }
+  >();
 
   for (const dbPath of dbCandidates) {
     if (!fs.existsSync(dbPath)) continue;
@@ -1417,90 +1559,56 @@ function scanOpenCodeLocalSessions(
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
         .all() as Array<{ name: string }>;
       const tableNames = new Set(tables.map((t) => t.name));
-      if (!tableNames.has("session")) continue;
-
-      const sessionColsInfo = db.prepare("PRAGMA table_info(session)").all() as Array<{ name: string }>;
-      const sessionCols = new Set(sessionColsInfo.map((c) => c.name));
-      if (!sessionCols.has("id")) continue;
-
-      const hasProjectTable = tableNames.has("project") && sessionCols.has("project_id");
-      let projectWorktreeCol: string | null = null;
-      if (hasProjectTable) {
-        const projCols = new Set(
-          (db.prepare("PRAGMA table_info(project)").all() as Array<{ name: string }>).map((c) => c.name)
-        );
-        for (const cand of ["worktree", "directory", "path", "project_root"]) {
-          if (projCols.has(cand)) {
-            projectWorktreeCol = cand;
-            break;
-          }
-        }
-      }
-
-      const dirCol = ["directory", "cwd", "project_root", "worktree"].find((c) => sessionCols.has(c)) ?? null;
-      const titleCol = ["title", "summary", "name"].find((c) => sessionCols.has(c)) ?? null;
-      const createdCol = ["time_created", "created_at", "started_at"].find((c) => sessionCols.has(c)) ?? null;
-      const updatedCol = ["time_updated", "updated_at"].find((c) => sessionCols.has(c)) ?? null;
-      const parentIdCol = sessionCols.has("parent_id") ? "parent_id" : sessionCols.has("parentID") ? "parentID" : null;
-
-      let sql = `SELECT s.id AS id`;
-      sql += titleCol ? `, s.${titleCol} AS title` : `, NULL AS title`;
-      sql += dirCol ? `, s.${dirCol} AS dir` : `, NULL AS dir`;
-      sql += createdCol ? `, s.${createdCol} AS created_at` : `, NULL AS created_at`;
-      sql += updatedCol ? `, s.${updatedCol} AS updated_at` : `, NULL AS updated_at`;
-      sql += parentIdCol ? `, s.${parentIdCol} AS parent_id` : `, NULL AS parent_id`;
-      if (hasProjectTable && projectWorktreeCol) {
-        sql += `, p.${projectWorktreeCol} AS proj_dir FROM session s LEFT JOIN project p ON s.project_id = p.id`;
-      } else {
-        sql += `, NULL AS proj_dir FROM session s`;
-      }
-      if (updatedCol) {
-        sql += ` ORDER BY s.${updatedCol} DESC`;
-      }
-      sql += ` LIMIT ${maxRows}`;
-
-      const rows = db.prepare(sql).all() as Array<{
-        id: string;
-        title?: string | null;
-        dir?: string | null;
-        proj_dir?: string | null;
-        created_at?: number | string | null;
-        updated_at?: number | string | null;
-        parent_id?: string | null;
-      }>;
+      if (!tableNames.has("session_v2") && !tableNames.has("session")) continue;
 
       const fileMtime = Math.round(fs.statSync(dbPath).mtimeMs);
-      for (const row of rows) {
-        if (!row.id || row.parent_id) continue; // skip subagent sessions
-        const rawDir = (row.dir || row.proj_dir || "").trim();
-        if (!rawDir || normalizePathForCompare(rawDir) !== targetNorm) continue;
+      for (const tableName of ["session_v2", "session"] as const) {
+        const rows = queryOpenCodeSessionsFromTable(db, tableName, tableNames, maxRows);
+        const isV2 = tableName === "session_v2";
+        for (const row of rows) {
+          if (!row.id || row.parent_id) continue; // skip subagent sessions
+          const rawDir = (row.dir || row.proj_dir || "").trim();
+          if (!rawDir || normalizePathForCompare(rawDir) !== targetNorm) continue;
 
-        const parseTs = (v: number | string | null | undefined, fallback: number): number => {
-          if (typeof v === "number" && Number.isFinite(v)) {
-            return v < 1e11 ? Math.round(v * 1000) : Math.round(v);
+          const id = String(row.id);
+          const updatedAt = parseOpenCodeTimestamp(row.updated_at, fileMtime);
+          const startedAt = parseOpenCodeTimestamp(row.created_at, updatedAt);
+          const rawTitle = row.title ? normalizeOneLineSummary(String(row.title)) : "";
+          const summary = rawTitle || `OpenCode session (${id.slice(0, 8)})`;
+          const entry: DiscoveredLocalTranscript = {
+            harnessSessionId: id,
+            harness: "opencode",
+            model: null,
+            summary,
+            transcriptPath: dbPath,
+            startedAt,
+            updatedAt,
+          };
+
+          const prev = deduped.get(id);
+          if (!prev) {
+            deduped.set(id, { entry, isV2, hasExplicitTitle: Boolean(rawTitle) });
+            continue;
           }
-          if (typeof v === "string" && v.trim()) {
-            const n = Number(v);
-            if (Number.isFinite(n)) return n < 1e11 ? Math.round(n * 1000) : Math.round(n);
-            const parsed = Date.parse(v);
-            if (!Number.isNaN(parsed)) return parsed;
+          const shouldReplace =
+            entry.updatedAt > prev.entry.updatedAt ||
+            (entry.updatedAt === prev.entry.updatedAt && isV2 && !prev.isV2);
+          if (shouldReplace) {
+            const mergedSummary =
+              rawTitle || !prev.hasExplicitTitle ? entry.summary : prev.entry.summary;
+            deduped.set(id, {
+              entry: { ...entry, summary: mergedSummary },
+              isV2,
+              hasExplicitTitle: Boolean(rawTitle) || prev.hasExplicitTitle,
+            });
+          } else if (!prev.hasExplicitTitle && rawTitle) {
+            deduped.set(id, {
+              ...prev,
+              entry: { ...prev.entry, summary: rawTitle },
+              hasExplicitTitle: true,
+            });
           }
-          return fallback;
-        };
-
-        const updatedAt = parseTs(row.updated_at, fileMtime);
-        const startedAt = parseTs(row.created_at, updatedAt);
-        const summary = row.title ? normalizeOneLineSummary(String(row.title)) : `OpenCode session (${row.id.slice(0, 8)})`;
-
-        discovered.push({
-          harnessSessionId: String(row.id),
-          harness: "opencode",
-          model: null,
-          summary,
-          transcriptPath: dbPath,
-          startedAt,
-          updatedAt,
-        });
+        }
       }
     } catch {
       // Ignore locked or incompatible SQLite DB
@@ -1509,6 +1617,10 @@ function scanOpenCodeLocalSessions(
         db?.close();
       } catch {}
     }
+  }
+
+  for (const { entry } of deduped.values()) {
+    discovered.push(entry);
   }
 }
 

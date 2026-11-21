@@ -1186,19 +1186,50 @@ interface OpencodePartAccumulator {
   toolResult: TranscriptToolResultItem[];
 }
 
+function extractOpencodeToolOutput(outputVal: unknown): string {
+  if (typeof outputVal === "string") return outputVal;
+  const text = contentToText(outputVal);
+  if (text) return text;
+  if (isRec(outputVal)) {
+    const msg =
+      getStr(outputVal, "message") ??
+      getStr(outputVal, "error") ??
+      getStr(outputVal, "output");
+    if (msg) return msg;
+  }
+  try {
+    return JSON.stringify(outputVal);
+  } catch {
+    return String(outputVal);
+  }
+}
+
 function accumulateOpencodePart(acc: OpencodePartAccumulator, data: Rec): void {
   const partType = (getStr(data, "type") ?? "text").toLowerCase();
   if (partType === "reasoning" || partType === "thinking") {
-    const th = (getStr(data, "text") ?? getStr(data, "reasoning") ?? "").trim();
+    const th = (
+      getStr(data, "text") ??
+      getStr(data, "thinking") ??
+      getStr(data, "reasoning") ??
+      ""
+    ).trim();
     if (th) acc.thinkings.push(th);
     return;
   }
   if (partType === "tool" || partType === "tool-invocation" || partType === "tool_use") {
     const name = getStr(data, "tool") ?? getStr(data, "name") ?? "tool";
     const id = getStr(data, "callID") ?? getStr(data, "call_id") ?? getStr(data, "id");
-    const state = getRec(data, "state") ?? data;
-    const inputVal = state.input ?? data.input ?? data.args;
-    const outputVal = state.output ?? data.output ?? data.result;
+    const state = getRec(data, "state");
+    const inputVal = state?.input ?? data.input ?? data.args ?? data.arguments;
+    const outputVal =
+      state?.output ??
+      state?.content ??
+      state?.result ??
+      state?.error ??
+      data.output ??
+      data.content ??
+      data.result ??
+      data.error;
     const inputStr = serializeToolInput(inputVal);
     acc.toolUse.push({
       name,
@@ -1206,21 +1237,220 @@ function accumulateOpencodePart(acc: OpencodePartAccumulator, data: Rec): void {
       ...(inputStr !== undefined ? { input: inputStr } : {}),
     });
     if (outputVal !== undefined && outputVal !== null) {
-      const outStr =
-        typeof outputVal === "string"
-          ? outputVal
-          : contentToText(outputVal) || JSON.stringify(outputVal);
+      const isError =
+        state?.status === "error" ||
+        Boolean(state?.error) ||
+        data.isError === true ||
+        data.is_error === true ||
+        Boolean(data.error);
       acc.toolResult.push({
-        output: outStr,
+        output: extractOpencodeToolOutput(outputVal),
         ...(id ? { toolUseId: id } : {}),
         ...(name ? { name } : {}),
-        ...(state.status === "error" || Boolean(state.error) ? { isError: true } : {}),
+        ...(isError ? { isError: true } : {}),
       });
     }
     return;
   }
-  const text = getStr(data, "text");
+  if (partType === "tool_result" || partType === "tool-result") {
+    const id =
+      getStr(data, "callID") ??
+      getStr(data, "call_id") ??
+      getStr(data, "tool_use_id") ??
+      getStr(data, "id");
+    const name = getStr(data, "tool") ?? getStr(data, "name");
+    const outputVal = data.output ?? data.content ?? data.result ?? data.error ?? "";
+    const isError = data.isError === true || data.is_error === true || Boolean(data.error);
+    acc.toolResult.push({
+      output: extractOpencodeToolOutput(outputVal),
+      ...(id ? { toolUseId: id } : {}),
+      ...(name ? { name } : {}),
+      ...(isError ? { isError: true } : {}),
+    });
+    return;
+  }
+  const text =
+    getStr(data, "text") ??
+    (typeof data.content === "string" ? data.content : contentToText(data.content));
   if (text) acc.texts.push(text);
+}
+
+function accumulateOpencodeMessageData(acc: OpencodePartAccumulator, data: Rec): void {
+  if (typeof data.thinking === "string" && data.thinking.trim()) {
+    acc.thinkings.push(data.thinking.trim());
+  } else if (typeof data.reasoning === "string" && data.reasoning.trim()) {
+    acc.thinkings.push(data.reasoning.trim());
+  }
+
+  if (Array.isArray(data.content)) {
+    for (const item of data.content) {
+      if (typeof item === "string") {
+        if (item) acc.texts.push(item);
+      } else if (isRec(item)) {
+        accumulateOpencodePart(acc, item);
+      }
+    }
+  } else if (isRec(data.content)) {
+    if (typeof data.content.text === "string" && data.content.text) {
+      acc.texts.push(data.content.text);
+    }
+    if (Array.isArray(data.content.parts)) {
+      for (const item of data.content.parts) {
+        if (isRec(item)) accumulateOpencodePart(acc, item);
+      }
+    }
+  } else if (typeof data.content === "string" && data.content) {
+    acc.texts.push(data.content);
+  }
+
+  if (Array.isArray(data.parts)) {
+    for (const item of data.parts) {
+      if (isRec(item)) accumulateOpencodePart(acc, item);
+    }
+  }
+
+  if (typeof data.text === "string" && data.text && acc.texts.length === 0) {
+    acc.texts.push(data.text);
+  }
+}
+
+function buildOpencodeRawMessage(
+  id: string,
+  role: string,
+  acc: OpencodePartAccumulator | undefined,
+  fallbackText: string,
+  created: unknown
+): OpencodeRawMessage | null {
+  const text = acc && acc.texts.length > 0 ? acc.texts.join("\n") : fallbackText;
+  const thinking = acc && acc.thinkings.length > 0 ? acc.thinkings.join("\n") : undefined;
+  const toolUse = acc && acc.toolUse.length > 0 ? acc.toolUse : undefined;
+  const toolResult = acc && acc.toolResult.length > 0 ? acc.toolResult : undefined;
+  if (!text.trim() && !thinking && !toolUse && !toolResult) return null;
+  const msg: OpencodeRawMessage = {
+    id,
+    role,
+    text,
+    ...(thinking ? { thinking } : {}),
+    ...(toolUse ? { toolUse } : {}),
+    ...(toolResult ? { toolResult } : {}),
+  };
+  const ts = epochToIso(created);
+  if (ts) msg.timestamp = ts;
+  return msg;
+}
+
+function readOpencodeV2DbMessages(
+  db: DatabaseSync,
+  tableNames: Set<string>,
+  sessionId: string
+): OpencodeRawMessage[] | null {
+  if (!tableNames.has("session_message")) return null;
+  const msgCols = new Set(
+    (db.prepare("PRAGMA table_info(session_message)").all() as Array<{ name: string }>).map(
+      (c) => c.name
+    )
+  );
+  if (!msgCols.has("id") || !msgCols.has("data")) return null;
+
+  const selectCols = ["id", "data"];
+  if (msgCols.has("type")) selectCols.push("type");
+  if (msgCols.has("time_created")) selectCols.push("time_created");
+
+  const orderParts: string[] = [];
+  if (msgCols.has("seq")) orderParts.push("seq ASC");
+  if (msgCols.has("time_created")) orderParts.push("time_created ASC");
+  orderParts.push("rowid ASC");
+
+  const msgRows = db
+    .prepare(
+      `SELECT ${selectCols.join(", ")} FROM session_message WHERE session_id = ? ORDER BY ${orderParts.join(", ")}`
+    )
+    .all(sessionId) as Array<{
+      id: unknown;
+      data: unknown;
+      type?: unknown;
+      time_created?: unknown;
+    }>;
+
+  if (msgRows.length === 0) {
+    return [];
+  }
+
+  const partsByMessage = new Map<string, OpencodePartAccumulator>();
+  if (tableNames.has("session_part")) {
+    const partCols = new Set(
+      (db.prepare("PRAGMA table_info(session_part)").all() as Array<{ name: string }>).map(
+        (c) => c.name
+      )
+    );
+    if (partCols.has("message_id") && partCols.has("data")) {
+      const pSelect = ["message_id", "data"];
+      if (partCols.has("type")) pSelect.push("type");
+      if (partCols.has("call_id")) pSelect.push("call_id");
+      const pOrder: string[] = [];
+      if (partCols.has("ordinal")) pOrder.push("ordinal ASC");
+      if (partCols.has("time_created")) pOrder.push("time_created ASC");
+      pOrder.push("rowid ASC");
+
+      const partRows = db
+        .prepare(
+          `SELECT ${pSelect.join(", ")} FROM session_part WHERE session_id = ? ORDER BY ${pOrder.join(", ")}`
+        )
+        .all(sessionId) as Array<{
+          message_id: unknown;
+          data: unknown;
+          type?: unknown;
+          call_id?: unknown;
+        }>;
+
+      for (const row of partRows) {
+        if (typeof row.message_id !== "string") continue;
+        const parsed = parseJsonObject(row.data);
+        if (!parsed) continue;
+        const partData: Rec = {
+          ...(typeof row.type === "string" && !parsed.type ? { type: row.type } : {}),
+          ...(typeof row.call_id === "string" && !parsed.call_id && !parsed.callID && !parsed.id
+            ? { call_id: row.call_id }
+            : {}),
+          ...parsed,
+        };
+        let acc = partsByMessage.get(row.message_id);
+        if (!acc) {
+          acc = { texts: [], thinkings: [], toolUse: [], toolResult: [] };
+          partsByMessage.set(row.message_id, acc);
+        }
+        accumulateOpencodePart(acc, partData);
+      }
+    }
+  }
+
+  const messages: OpencodeRawMessage[] = [];
+  for (const row of msgRows) {
+    if (typeof row.id !== "string") continue;
+    const rowType = typeof row.type === "string" ? row.type.trim().toLowerCase() : "";
+    if (rowType === "synthetic" || rowType === "compaction") continue;
+
+    const data = parseJsonObject(row.data);
+    const role = normalizeRole(rowType || (data && getStr(data, "role")) || "unknown");
+    const existingAcc = partsByMessage.get(row.id);
+    const acc: OpencodePartAccumulator = existingAcc ?? {
+      texts: [],
+      thinkings: [],
+      toolUse: [],
+      toolResult: [],
+    };
+    if (data && !existingAcc) {
+      accumulateOpencodeMessageData(acc, data);
+    } else if (data && acc.texts.length === 0 && typeof data.text === "string" && data.text) {
+      acc.texts.push(data.text);
+    }
+
+    const timeRec = data ? getRec(data, "time") : undefined;
+    const created = timeRec?.created ?? row.time_created;
+    const msg = buildOpencodeRawMessage(row.id, role, acc, "", created);
+    if (msg) messages.push(msg);
+  }
+  return messages;
 }
 
 function readOpencodeDbMessages(dbPath: string, sessionId: string): OpencodeRawMessage[] | null {
@@ -1234,12 +1464,28 @@ function readOpencodeDbMessages(dbPath: string, sessionId: string): OpencodeRawM
       } catch {
         // ignore if pragma unsupported
       }
+      const tables = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .all() as Array<{ name: string }>;
+      const tableNames = new Set(tables.map((t) => t.name));
+
+      const v2Messages = readOpencodeV2DbMessages(db, tableNames, sessionId);
+      if (v2Messages !== null && v2Messages.length > 0) {
+        return v2Messages;
+      }
+
+      if (!tableNames.has("message")) {
+        return v2Messages;
+      }
+
       const msgRows = db
         .prepare("SELECT id, data FROM message WHERE session_id = ? ORDER BY rowid")
         .all(sessionId) as Array<{ id: unknown; data: unknown }>;
-      const partRows = db
-        .prepare("SELECT message_id, data FROM part WHERE session_id = ? ORDER BY rowid")
-        .all(sessionId) as Array<{ message_id: unknown; data: unknown }>;
+      const partRows = tableNames.has("part")
+        ? (db
+            .prepare("SELECT message_id, data FROM part WHERE session_id = ? ORDER BY rowid")
+            .all(sessionId) as Array<{ message_id: unknown; data: unknown }>)
+        : [];
 
       const partsByMessage = new Map<string, OpencodePartAccumulator>();
       for (const row of partRows) {
@@ -1262,27 +1508,9 @@ function readOpencodeDbMessages(dbPath: string, sessionId: string): OpencodeRawM
         const timeRec = data ? getRec(data, "time") : undefined;
         const created = timeRec ? timeRec.created : undefined;
         const acc = partsByMessage.get(row.id);
-        const text =
-          acc && acc.texts.length > 0
-            ? acc.texts.join("\n")
-            : data
-              ? contentToText(data.content)
-              : "";
-        const thinking = acc && acc.thinkings.length > 0 ? acc.thinkings.join("\n") : undefined;
-        const toolUse = acc && acc.toolUse.length > 0 ? acc.toolUse : undefined;
-        const toolResult = acc && acc.toolResult.length > 0 ? acc.toolResult : undefined;
-        if (!text.trim() && !thinking && !toolUse && !toolResult) continue;
-        const msg: OpencodeRawMessage = {
-          id: row.id,
-          role,
-          text,
-          ...(thinking ? { thinking } : {}),
-          ...(toolUse ? { toolUse } : {}),
-          ...(toolResult ? { toolResult } : {}),
-        };
-        const ts = epochToIso(created);
-        if (ts) msg.timestamp = ts;
-        messages.push(msg);
+        const fallbackText = data ? contentToText(data.content) : "";
+        const msg = buildOpencodeRawMessage(row.id, role, acc, fallbackText, created);
+        if (msg) messages.push(msg);
       }
       return messages;
     } catch (err) {
@@ -1378,24 +1606,16 @@ function readOpencodeStorageMessages(storageDir: string, sessionId: string): Ope
     for (const p of parts) {
       accumulateOpencodePart(acc, p.record);
     }
-    const text = acc.texts.length > 0 ? acc.texts.join("\n") : contentToText(entry.data.content);
-    const thinking = acc.thinkings.length > 0 ? acc.thinkings.join("\n") : undefined;
-    const toolUse = acc.toolUse.length > 0 ? acc.toolUse : undefined;
-    const toolResult = acc.toolResult.length > 0 ? acc.toolResult : undefined;
-    if (!text.trim() && !thinking && !toolUse && !toolResult) continue;
     const timeRec = getRec(entry.data, "time");
     const created = timeRec ? timeRec.created : undefined;
-    const msg: OpencodeRawMessage = {
-      id: entry.id,
-      role: normalizeRole(getStr(entry.data, "role") ?? "unknown"),
-      text,
-      ...(thinking ? { thinking } : {}),
-      ...(toolUse ? { toolUse } : {}),
-      ...(toolResult ? { toolResult } : {}),
-    };
-    const ts = epochToIso(created);
-    if (ts) msg.timestamp = ts;
-    messages.push(msg);
+    const msg = buildOpencodeRawMessage(
+      entry.id,
+      normalizeRole(getStr(entry.data, "role") ?? "unknown"),
+      acc,
+      contentToText(entry.data.content),
+      created
+    );
+    if (msg) messages.push(msg);
   }
   return messages;
 }
@@ -1509,8 +1729,17 @@ export function readHarnessTranscript(
         raw = readOpencodeDbMessages(location.transcriptPath, sessionId);
         transcriptPath = location.transcriptPath;
       }
-      if (!raw && location.storageDir) {
-        raw = readOpencodeStorageMessages(location.storageDir, sessionId);
+      if (!raw || raw.length === 0) {
+        const storageDir =
+          location.storageDir ??
+          path.join(opencodeDataDir(resolveHomeDir(options.homeDir)), "storage");
+        if (fs.existsSync(storageDir)) {
+          const storageRaw = readOpencodeStorageMessages(storageDir, sessionId);
+          if (storageRaw && storageRaw.length > 0) {
+            raw = storageRaw;
+            transcriptPath = undefined;
+          }
+        }
       }
       if (!raw) {
         return { ...base, error: "opencode transcript could not be read" };

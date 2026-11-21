@@ -6,8 +6,10 @@ import * as child_process from "node:child_process";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openProjectDb } from "../src/core/db.ts";
+import { buildOpenCodeCapabilityProfile } from "../src/core/opencode-profile.ts";
 import {
   buildHeadlessHarnessCommand,
+  buildResumeHarnessCommand,
   buildSessionDemotion,
   buildSpawnSpec,
   discoverProjectCliSessions,
@@ -581,15 +583,28 @@ describe("S3: extractHarnessSessionIdFromOutput - tool result echoes should not 
 });
 
 describe("T1.2: buildSpawnSpec CLI Fallback Hardening", () => {
-  it("defaults streaming to true, includes --pure on opencode, permission flags on agy/claude/codex, and omits model='default' on non-cursor harnesses", () => {
-    const oc = buildSpawnSpec({
+  it("defaults streaming to true, uses V2 --auto vs V1 --pure on opencode, permission flags on agy/claude/codex, and omits model='default' on non-cursor harnesses", () => {
+    const ocV2 = buildSpawnSpec({
       harness: "opencode",
       prompt: "run task",
       model: "default",
+      env: { ASD_OPENCODE_PROFILE: "v2" },
     });
-    assert.ok(oc.args.includes("--pure"), "opencode headless should include --pure");
-    assert.ok(!oc.args.includes("--model"), "model='default' must be omitted on opencode");
-    assert.equal(oc.closeStdinOnSpawn, true);
+    assert.ok(ocV2.args.includes("--auto"), "opencode V2 headless should include --auto");
+    assert.ok(!ocV2.args.includes("--pure"), "opencode V2 headless must omit --pure");
+    assert.ok(!ocV2.args.includes("--model"), "model='default' must be omitted on opencode");
+    assert.equal(ocV2.closeStdinOnSpawn, true);
+
+    const ocV1 = buildSpawnSpec({
+      harness: "opencode",
+      prompt: "run task",
+      model: "default",
+      env: { ASD_OPENCODE_PROFILE: "v1" },
+    });
+    assert.ok(ocV1.args.includes("--pure"), "opencode V1 headless should include --pure");
+    assert.ok(!ocV1.args.includes("--auto"), "opencode V1 headless must not include --auto");
+    assert.ok(!ocV1.args.includes("--model"), "model='default' must be omitted on opencode");
+    assert.equal(ocV1.closeStdinOnSpawn, true);
 
     const agy = buildSpawnSpec({
       harness: "antigravity",
@@ -620,5 +635,225 @@ describe("T1.2: buildSpawnSpec CLI Fallback Hardening", () => {
       model: "default",
     });
     assert.ok(cur.args.includes("--model") && cur.args.includes("default"), "cursor preserves model='default'");
+  });
+
+  it("applies OpenCodeCapabilityProfile (V2 --auto vs V1/unknown --pure) across buildHeadlessHarnessCommand, buildResumeHarnessCommand, and buildSpawnSpec", () => {
+    const v2Profile = buildOpenCodeCapabilityProfile({
+      rawOutput: "opencode v2.3.2",
+      version: "2.3.2",
+      major: 2,
+      pluginApi: "v2",
+      source: "cli-probe",
+    });
+    const v1Profile = buildOpenCodeCapabilityProfile({
+      rawOutput: "1.19.4",
+      version: "1.19.4",
+      major: 1,
+      pluginApi: "v1",
+      source: "cli-probe",
+    });
+    const unknownProfile = buildOpenCodeCapabilityProfile({
+      rawOutput: null,
+      version: null,
+      major: null,
+      pluginApi: "unknown",
+      source: "fallback",
+    });
+
+    const headlessV2 = buildHeadlessHarnessCommand({
+      harness: "opencode",
+      prompt: "do v2",
+      openCodeProfile: v2Profile,
+      pure: true, // even if caller asks for pure, V2 must emit --auto and never --pure
+    });
+    assert.ok(headlessV2.args.includes("--auto"));
+    assert.ok(!headlessV2.args.includes("--pure"));
+
+    const headlessV2NoAuto = buildHeadlessHarnessCommand({
+      harness: "opencode",
+      prompt: "do v2 manual",
+      openCodeProfile: v2Profile,
+      skipPermissions: false,
+    });
+    assert.ok(!headlessV2NoAuto.args.includes("--auto"));
+    assert.ok(!headlessV2NoAuto.args.includes("--pure"));
+
+    const headlessV1 = buildHeadlessHarnessCommand({
+      harness: "opencode",
+      prompt: "do v1",
+      openCodeProfile: v1Profile,
+    });
+    assert.ok(headlessV1.args.includes("--pure"));
+    assert.ok(!headlessV1.args.includes("--auto"));
+
+    const headlessUnknown = buildHeadlessHarnessCommand({
+      harness: "opencode",
+      prompt: "do unknown",
+      openCodeProfile: unknownProfile,
+    });
+    assert.ok(headlessUnknown.args.includes("--pure"));
+    assert.ok(!headlessUnknown.args.includes("--auto"));
+
+    const resumeV2 = buildResumeHarnessCommand({
+      harness: "opencode",
+      harnessSessionId: "ses_v2_abc",
+      prompt: "continue v2",
+      openCodeProfile: v2Profile,
+    });
+    assert.ok(resumeV2.args.includes("--session") && resumeV2.args.includes("ses_v2_abc"));
+    assert.ok(resumeV2.args.includes("--auto"));
+    assert.ok(!resumeV2.args.includes("--pure"));
+
+    const resumeV1 = buildResumeHarnessCommand({
+      harness: "opencode",
+      harnessSessionId: "ses_v1_abc",
+      prompt: "continue v1",
+      env: { ASD_OPENCODE_PROFILE: "v1" },
+    });
+    assert.ok(resumeV1.args.includes("--session") && resumeV1.args.includes("ses_v1_abc"));
+    assert.ok(resumeV1.args.includes("--pure"));
+    assert.ok(!resumeV1.args.includes("--auto"));
+
+    const spawnResumeV2 = buildSpawnSpec({
+      harness: "opencode",
+      prompt: "resume via spawnSpec",
+      resumeSessionId: "ses_v2_xyz",
+      env: { ASD_OPENCODE_PROFILE: "v2" },
+    });
+    assert.ok(spawnResumeV2.args.includes("--auto"));
+    assert.ok(!spawnResumeV2.args.includes("--pure"));
+  });
+});
+
+describe("T4.3: OpenCode V2 session_v2 discovery & deduplication", () => {
+  it("discovers sessions from V2-only session_v2 table and skips subagent rows", () => {
+    const homeDir = makeTempDir("asd-oc-v2-only-home-");
+    const projectRoot = makeTempDir("asd-oc-v2-only-proj-");
+    const otherRoot = makeTempDir("asd-oc-v2-only-other-");
+    try {
+      const ocDir = path.join(homeDir, ".local", "share", "opencode");
+      fs.mkdirSync(ocDir, { recursive: true });
+      const db = new DatabaseSync(path.join(ocDir, "opencode.db"));
+      db.exec(`
+        CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT);
+        CREATE TABLE session_v2 (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          parent_id TEXT,
+          directory TEXT NOT NULL,
+          title TEXT,
+          time_created INTEGER NOT NULL,
+          time_updated INTEGER NOT NULL
+        );
+      `);
+      const now = Date.now();
+      db.prepare("INSERT INTO project (id, worktree) VALUES (?, ?)").run("p1", projectRoot);
+      db.prepare(
+        "INSERT INTO session_v2 (id, project_id, parent_id, directory, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run("ses_v2_main_1", "p1", null, projectRoot, "V2 session title", now - 2000, now - 500);
+      db.prepare(
+        "INSERT INTO session_v2 (id, project_id, parent_id, directory, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run("ses_v2_sub_1", "p1", "ses_v2_main_1", projectRoot, "Subagent must skip", now - 1000, now);
+      db.prepare(
+        "INSERT INTO session_v2 (id, project_id, parent_id, directory, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run("ses_v2_other_1", "p2", null, otherRoot, "Other dir must skip", now - 1000, now);
+      db.close();
+
+      const discovered = discoverProjectCliSessions(projectRoot, {
+        homeDir,
+        harnesses: ["opencode"],
+        persist: false,
+      });
+      assert.equal(discovered.length, 1);
+      assert.equal(discovered[0]?.harness, "opencode");
+      assert.equal(discovered[0]?.harnessSessionId, "ses_v2_main_1");
+      assert.equal(discovered[0]?.summary, "V2 session title");
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(otherRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("queries both session_v2 and legacy session tables and deduplicates by id preferring newer time_updated or session_v2", () => {
+    const homeDir = makeTempDir("asd-oc-both-home-");
+    const projectRoot = makeTempDir("asd-oc-both-proj-");
+    try {
+      const ocDir = path.join(homeDir, ".local", "share", "opencode");
+      fs.mkdirSync(ocDir, { recursive: true });
+      const db = new DatabaseSync(path.join(ocDir, "opencode.db"));
+      db.exec(`
+        CREATE TABLE session (
+          id TEXT PRIMARY KEY,
+          directory TEXT NOT NULL,
+          title TEXT NOT NULL,
+          parent_id TEXT,
+          time_created INTEGER NOT NULL,
+          time_updated INTEGER NOT NULL
+        );
+        CREATE TABLE session_v2 (
+          id TEXT PRIMARY KEY,
+          directory TEXT NOT NULL,
+          title TEXT,
+          parent_id TEXT,
+          time_created INTEGER NOT NULL,
+          time_updated INTEGER NOT NULL
+        );
+      `);
+      const base = 1790000000000;
+      // 1. Legacy-only session
+      db.prepare(
+        "INSERT INTO session (id, directory, title, parent_id, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run("ses_legacy_only", projectRoot, "Legacy only session", null, base, base + 100);
+
+      // 2. V2-only session
+      db.prepare(
+        "INSERT INTO session_v2 (id, directory, title, parent_id, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run("ses_v2_only", projectRoot, "V2 only session", null, base, base + 200);
+
+      // 3. Overlapping id where session_v2 has newer time_updated
+      db.prepare(
+        "INSERT INTO session (id, directory, title, parent_id, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run("ses_overlap_v2_newer", projectRoot, "Old V1 title", null, base, base + 300);
+      db.prepare(
+        "INSERT INTO session_v2 (id, directory, title, parent_id, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run("ses_overlap_v2_newer", projectRoot, "New V2 title", null, base, base + 500);
+
+      // 4. Overlapping id with equal time_updated -> session_v2 preferred
+      db.prepare(
+        "INSERT INTO session (id, directory, title, parent_id, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run("ses_overlap_tie", projectRoot, "Tie V1 title", null, base, base + 400);
+      db.prepare(
+        "INSERT INTO session_v2 (id, directory, title, parent_id, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run("ses_overlap_tie", projectRoot, "Tie V2 title", null, base, base + 400);
+
+      // 5. Overlapping id where legacy session has strictly newer time_updated
+      db.prepare(
+        "INSERT INTO session (id, directory, title, parent_id, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run("ses_overlap_v1_newer", projectRoot, "Newer V1 title", null, base, base + 700);
+      db.prepare(
+        "INSERT INTO session_v2 (id, directory, title, parent_id, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run("ses_overlap_v1_newer", projectRoot, "Older V2 title", null, base, base + 600);
+
+      db.close();
+
+      const discovered = discoverProjectCliSessions(projectRoot, {
+        homeDir,
+        harnesses: ["opencode"],
+        persist: false,
+      });
+      assert.equal(discovered.length, 5, "Should deduplicate overlapping IDs across session and session_v2");
+      const byId = new Map(discovered.map((d) => [d.harnessSessionId, d]));
+      assert.equal(byId.get("ses_legacy_only")?.summary, "Legacy only session");
+      assert.equal(byId.get("ses_v2_only")?.summary, "V2 only session");
+      assert.equal(byId.get("ses_overlap_v2_newer")?.summary, "New V2 title");
+      assert.equal(byId.get("ses_overlap_v2_newer")?.updatedAt, base + 500);
+      assert.equal(byId.get("ses_overlap_tie")?.summary, "Tie V2 title");
+      assert.equal(byId.get("ses_overlap_v1_newer")?.summary, "Newer V1 title");
+      assert.equal(byId.get("ses_overlap_v1_newer")?.updatedAt, base + 700);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 });

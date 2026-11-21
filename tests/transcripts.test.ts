@@ -760,5 +760,260 @@ describe("Harness Transcripts (CR-10)", () => {
       assert.equal(res.messages[2]?.category, "tool_result");
       assert.equal(res.messages[2]?.toolResult?.[0]?.output, "Success. Updated 1 file.");
     });
+
+    test("OpenCode V2 session_v2 + session_message extracts 4-way turns and falls back to legacy V1 message/part", () => {
+      const home = makeHome();
+      const v2Sid = "ses_v2_4way_001";
+      const v1Sid = "ses_v1_legacy_001";
+      const dbPath = path.join(home, ".local", "share", "opencode", "opencode.db");
+      fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+      const db = new DatabaseSync(dbPath);
+      const dummyToken = ["sk", "v2testsecret1234567890"].join("-");
+      const t0 = 1792000000000;
+      try {
+        db.exec(`
+          CREATE TABLE session_v2 (
+            id TEXT PRIMARY KEY,
+            directory TEXT NOT NULL,
+            title TEXT,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL
+          );
+          CREATE TABLE session_message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            data TEXT NOT NULL
+          );
+          CREATE TABLE session_part (
+            message_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            call_id TEXT,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            PRIMARY KEY (message_id, ordinal)
+          );
+          CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, data TEXT NOT NULL);
+          CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, data TEXT NOT NULL);
+        `);
+
+        db.prepare(
+          "INSERT INTO session_v2 (id, directory, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?)"
+        ).run(v2Sid, "/workspace/proj", "V2 4-way test", t0, t0 + 5000);
+
+        // 1. User message with data.text & secret redaction
+        db.prepare(
+          "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).run(
+          "msg_v2_1",
+          v2Sid,
+          "user",
+          0,
+          t0,
+          t0,
+          JSON.stringify({ text: `Check config with key ${dummyToken}`, time: { created: t0 } })
+        );
+
+        // 2. Thinking-only assistant message using {"type":"thinking","thinking":"..."}
+        db.prepare(
+          "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).run(
+          "msg_v2_2",
+          v2Sid,
+          "assistant",
+          1,
+          t0 + 1000,
+          t0 + 1000,
+          JSON.stringify({
+            agent: "worker",
+            model: { providerID: "nvidia", id: "z-ai/glm-5.3-flash" },
+            content: [{ type: "thinking", thinking: "Inspecting project layout first" }],
+          })
+        );
+
+        // 3. Tool-only assistant message with live state.content array & error tool state
+        db.prepare(
+          "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).run(
+          "msg_v2_3",
+          v2Sid,
+          "assistant",
+          2,
+          t0 + 2000,
+          t0 + 2000,
+          JSON.stringify({
+            content: [
+              {
+                type: "tool",
+                id: "call_v2_read",
+                name: "read",
+                state: {
+                  status: "completed",
+                  input: { filePath: "src/core/transcripts.ts" },
+                  content: [{ type: "text", text: "export function readHarnessTranscript() {}" }],
+                },
+              },
+              {
+                type: "tool",
+                id: "call_v2_fail",
+                name: "bash",
+                state: {
+                  status: "error",
+                  input: { command: "exit 1" },
+                  error: { type: "tool.execution", message: "Command exited 1" },
+                },
+              },
+            ],
+          })
+        );
+
+        // 4. Combined reasoning + tool (top-level input/output) + text assistant message
+        db.prepare(
+          "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).run(
+          "msg_v2_4",
+          v2Sid,
+          "assistant",
+          3,
+          t0 + 3000,
+          t0 + 3000,
+          JSON.stringify({
+            content: [
+              { type: "reasoning", text: "Summarizing findings" },
+              {
+                type: "tool",
+                id: "call_v2_check",
+                name: "grep",
+                input: { pattern: "session_v2" },
+                output: "src/core/session-tracker.ts:1",
+                state: {},
+              },
+              { type: "text", text: "All V2 checks verified." },
+            ],
+          })
+        );
+
+        // 5. Internal synthetic message (must be skipped cleanly)
+        db.prepare(
+          "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).run(
+          "msg_v2_syn",
+          v2Sid,
+          "synthetic",
+          4,
+          t0 + 3500,
+          t0 + 3500,
+          JSON.stringify({ text: "continue" })
+        );
+
+        // 6. V2 message backed by session_part rows
+        const partSid = "ses_v2_parts_002";
+        db.prepare(
+          "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).run("msg_vp_1", partSid, "assistant", 0, t0 + 4000, t0 + 4000, JSON.stringify({}));
+        db.prepare(
+          "INSERT INTO session_part (message_id, session_id, ordinal, type, call_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        ).run(
+          "msg_vp_1",
+          partSid,
+          0,
+          "reasoning",
+          null,
+          t0 + 4000,
+          t0 + 4000,
+          JSON.stringify({ text: "Part table reasoning" })
+        );
+        db.prepare(
+          "INSERT INTO session_part (message_id, session_id, ordinal, type, call_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        ).run(
+          "msg_vp_1",
+          partSid,
+          1,
+          "tool",
+          "call_sp_1",
+          t0 + 4001,
+          t0 + 4001,
+          JSON.stringify({ name: "glob", state: { status: "completed", input: { pattern: "*.ts" }, output: "a.ts" } })
+        );
+        db.prepare(
+          "INSERT INTO session_part (message_id, session_id, ordinal, type, call_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        ).run(
+          "msg_vp_1",
+          partSid,
+          2,
+          "text",
+          null,
+          t0 + 4002,
+          t0 + 4002,
+          JSON.stringify({ text: "Part table reply" })
+        );
+
+        // 7. Legacy V1 session coexisting in the same DB
+        db.prepare("INSERT INTO message (id, session_id, data) VALUES (?, ?, ?)").run(
+          "m_v1_1",
+          v1Sid,
+          JSON.stringify({ id: "m_v1_1", sessionID: v1Sid, role: "user" })
+        );
+        db.prepare("INSERT INTO part (id, message_id, session_id, data) VALUES (?, ?, ?, ?)").run(
+          "p_v1_1",
+          "m_v1_1",
+          v1Sid,
+          JSON.stringify({ id: "p_v1_1", messageID: "m_v1_1", sessionID: v1Sid, type: "text", text: "Legacy V1 prompt" })
+        );
+      } finally {
+        db.close();
+      }
+
+      const res = readHarnessTranscript("opencode", v2Sid, { homeDir: home });
+      assert.equal(res.found, true);
+      assert.equal(res.messages.length, 4);
+
+      assert.equal(res.messages[0]?.role, "user");
+      assert.equal(res.messages[0]?.category, "user");
+      assert.ok(res.messages[0]?.text.includes("[REDACTED]"));
+      assert.ok(!res.messages[0]?.text.includes(dummyToken));
+      assert.equal(res.messages[0]?.timestamp, new Date(t0).toISOString());
+
+      assert.equal(res.messages[1]?.role, "assistant");
+      assert.equal(res.messages[1]?.category, "thinking");
+      assert.equal(res.messages[1]?.thinking, "Inspecting project layout first");
+
+      assert.equal(res.messages[2]?.role, "assistant");
+      assert.equal(res.messages[2]?.category, "tool_use");
+      assert.equal(res.messages[2]?.toolUse?.length, 2);
+      assert.equal(res.messages[2]?.toolUse?.[0]?.id, "call_v2_read");
+      assert.equal(res.messages[2]?.toolUse?.[0]?.name, "read");
+      assert.equal(res.messages[2]?.toolResult?.[0]?.output, "export function readHarnessTranscript() {}");
+      assert.equal(res.messages[2]?.toolResult?.[1]?.isError, true);
+      assert.equal(res.messages[2]?.toolResult?.[1]?.output, "Command exited 1");
+
+      assert.equal(res.messages[3]?.role, "assistant");
+      assert.equal(res.messages[3]?.category, "assistant");
+      assert.equal(res.messages[3]?.thinking, "Summarizing findings");
+      assert.equal(res.messages[3]?.toolUse?.[0]?.name, "grep");
+      assert.equal(res.messages[3]?.toolResult?.[0]?.output, "src/core/session-tracker.ts:1");
+      assert.equal(res.messages[3]?.text, "All V2 checks verified.");
+
+      const partRes = readHarnessTranscript("opencode", "ses_v2_parts_002", { homeDir: home });
+      assert.equal(partRes.found, true);
+      assert.equal(partRes.messages.length, 1);
+      assert.equal(partRes.messages[0]?.thinking, "Part table reasoning");
+      assert.equal(partRes.messages[0]?.toolUse?.[0]?.id, "call_sp_1");
+      assert.equal(partRes.messages[0]?.toolUse?.[0]?.name, "glob");
+      assert.equal(partRes.messages[0]?.toolResult?.[0]?.output, "a.ts");
+      assert.equal(partRes.messages[0]?.text, "Part table reply");
+
+      const legacyRes = readHarnessTranscript("opencode", v1Sid, { homeDir: home });
+      assert.equal(legacyRes.found, true);
+      assert.equal(legacyRes.messages.length, 1);
+      assert.equal(legacyRes.messages[0]?.role, "user");
+      assert.equal(legacyRes.messages[0]?.text, "Legacy V1 prompt");
+    });
   });
 });
