@@ -508,6 +508,41 @@ export interface HarnessAdapter {
 }
 
 // ============================================================================
+// OpenCode Version & Capability Profile Types
+// ============================================================================
+
+export type OpenCodePluginApiVersion = "v1" | "v2" | "unknown";
+
+export type OpenCodeEffectiveProfile = "v1" | "v2";
+
+export interface OpenCodeVersionInfo {
+  rawOutput: string | null;
+  version: string | null;
+  major: number | null;
+  pluginApi: OpenCodePluginApiVersion;
+  source: "env-override" | "cli-probe" | "fallback";
+  degradedWarning?: string;
+}
+
+export interface OpenCodeCapabilityProfile {
+  version: OpenCodeVersionInfo;
+  pluginApi: OpenCodePluginApiVersion;
+  effectiveProfile: OpenCodeEffectiveProfile;
+  degraded: boolean;
+  warning?: string;
+  supportsNativeBackground: boolean;
+  supportsAcp: boolean;
+  acpArgs: string[];
+  headlessRunFlags: string[];
+  supportsModelsCmd: boolean;
+  pluginDirName: "plugin" | "plugins";
+  pluginRelativePath: string;
+  serverEventPath: string;
+  serverAbortPathTemplate: string;
+  usesV1SessionCallback: boolean;
+}
+
+// ============================================================================
 // Harness Plugin Contracts & Core Injection Registry (HC-1)
 // ============================================================================
 
