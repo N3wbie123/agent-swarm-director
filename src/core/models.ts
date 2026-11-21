@@ -11,6 +11,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { parseJsonc } from "./jsonc.ts";
+import { resolveOpenCodeCapabilityProfile } from "./opencode-profile.ts";
 import { atomicWriteFileSync } from "./render.ts";
 import { inferModelFamily, resolveBinaryOnPath } from "./router.ts";
 import {
@@ -516,9 +517,13 @@ export async function discoverHarnessModels(options?: {
           });
 
       const hasOpencode = runCliProbes && Boolean(resolveBinaryOnPath("opencode"));
+      const opencodeModelsArgs =
+        hasOpencode && resolveOpenCodeCapabilityProfile().effectiveProfile === "v2"
+          ? ["--standalone", "models"]
+          : ["models"];
       const opencodeProbe = !hasOpencode
         ? Promise.resolve()
-        : execCliOutputAsync("opencode", ["models"], cliTimeoutMs, homeDir).then((res) => {
+        : execCliOutputAsync("opencode", opencodeModelsArgs, cliTimeoutMs, homeDir).then((res) => {
             if (!res.stdout) return;
             const lines = res.stdout
               .split(/\r?\n/)

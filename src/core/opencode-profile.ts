@@ -178,19 +178,80 @@ function resolveBinaryOnPath(
   return null;
 }
 
-function tryExtractNpmCmdScript(cmdFilePath: string): string | null {
+function tryExtractNpmCmdTarget(
+  cmdFilePath: string
+): { kind: "script" | "exe"; targetPath: string } | null {
   try {
     const shimContent = fs.readFileSync(cmdFilePath, "utf8");
     const shimDir = path.dirname(cmdFilePath);
-    const match = shimContent.match(/"%(?:~)?dp0%\\([^"]+\.(?:c?m?js))"\s+%\*/i);
-    if (match?.[1]) {
-      const scriptPath = path.resolve(shimDir, match[1]);
-      if (fs.existsSync(scriptPath)) {
-        return scriptPath;
+    const scriptMatch = shimContent.match(/"%(?:~)?dp0%\\([^"]+\.(?:c?m?js))"\s+%\*/i);
+    if (scriptMatch?.[1]) {
+      const targetPath = path.resolve(shimDir, scriptMatch[1]);
+      if (fs.existsSync(targetPath)) {
+        return { kind: "script", targetPath };
+      }
+    }
+    const exeMatch = shimContent.match(/"%(?:~)?dp0%\\([^"]+\.exe)"\s+%\*/i);
+    if (exeMatch?.[1]) {
+      const targetPath = path.resolve(shimDir, exeMatch[1]);
+      if (fs.existsSync(targetPath)) {
+        return { kind: "exe", targetPath };
       }
     }
   } catch {
     // Fall back to cmd.exe execution
+  }
+  return null;
+}
+
+function tryReadInstalledOpenCodePackageVersion(
+  resolvedBinaryPath: string | null
+): OpenCodeVersionInfo | null {
+  if (!resolvedBinaryPath) return null;
+  let candidatePath = resolvedBinaryPath;
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolvedBinaryPath)) {
+    const unwrapped = tryExtractNpmCmdTarget(resolvedBinaryPath);
+    if (unwrapped) {
+      candidatePath = unwrapped.targetPath;
+    }
+  } else {
+    try {
+      candidatePath = fs.realpathSync(resolvedBinaryPath);
+    } catch {
+      // keep resolvedBinaryPath
+    }
+  }
+
+  const candidateDir = path.dirname(candidatePath);
+  const pkgCandidates = [
+    path.resolve(candidateDir, "..", "package.json"),
+    path.resolve(candidateDir, "package.json"),
+  ];
+  for (const pkgPath of pkgCandidates) {
+    try {
+      if (!fs.existsSync(pkgPath)) continue;
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8")) as {
+        name?: unknown;
+        version?: unknown;
+      };
+      if (
+        (pkg.name === "@opencode/cli" || pkg.name === "opencode-ai") &&
+        typeof pkg.version === "string"
+      ) {
+        const parsed = parseOpenCodeVersionOutput(pkg.version);
+        if (parsed.pluginApi === "v1" || parsed.pluginApi === "v2") {
+          return {
+            rawOutput: `opencode v${parsed.version}`,
+            version: parsed.version,
+            major: parsed.major,
+            pluginApi: parsed.pluginApi,
+            source: "cli-probe",
+          };
+        }
+      }
+    } catch {
+      // Fall back to CLI spawn
+    }
   }
   return null;
 }
@@ -243,9 +304,12 @@ function createDefaultCommandRunner(
           ]);
         }
         if (/\.(cmd|bat)$/i.test(resolved)) {
-          const scriptPath = tryExtractNpmCmdScript(resolved);
-          if (scriptPath) {
-            return run(process.execPath, [scriptPath, ...args]);
+          const target = tryExtractNpmCmdTarget(resolved);
+          if (target?.kind === "script") {
+            return run(process.execPath, [target.targetPath, ...args]);
+          }
+          if (target?.kind === "exe") {
+            return run(target.targetPath, args);
           }
           const comspec = env.ComSpec || process.env.ComSpec || "cmd.exe";
           return run(comspec, ["/d", "/c", resolved, ...args]);
@@ -266,12 +330,6 @@ function createDefaultCommandRunner(
 
 function buildFallbackWarning(reason: string): string {
   return `OpenCode version could not be detected (${reason}); falling back safely to V1 compatibility profile.`;
-}
-
-function buildCacheKey(env: Record<string, string | undefined>): string {
-  const pathEnv = getPathEnv(env);
-  const resolved = resolveBinaryOnPath("opencode", env) ?? "";
-  return `${process.platform}\0${resolved}\0${pathEnv}`;
 }
 
 /**
@@ -301,11 +359,25 @@ export function detectOpenCodeVersion(
   }
 
   const useCache = !options?.commandRunner && options?.bypassCache !== true;
-  const cacheKey = !options?.commandRunner ? buildCacheKey(env) : "";
+  const resolvedBinary = !options?.commandRunner ? resolveBinaryOnPath("opencode", env) : null;
+  const cacheKey = !options?.commandRunner
+    ? `${process.platform}\0${resolvedBinary ?? ""}\0${getPathEnv(env)}`
+    : "";
   if (useCache) {
     const cached = versionCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       return { ...cached.value };
+    }
+  }
+
+  if (!options?.commandRunner) {
+    const fastPkgVersion = tryReadInstalledOpenCodePackageVersion(resolvedBinary);
+    if (fastPkgVersion) {
+      versionCache.set(cacheKey, {
+        expiresAt: Date.now() + OPENCODE_VERSION_CACHE_TTL_MS,
+        value: { ...fastPkgVersion },
+      });
+      return fastPkgVersion;
     }
   }
 

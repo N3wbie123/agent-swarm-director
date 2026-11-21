@@ -5,7 +5,7 @@
 > **Date**: 2026-11-21
 > **Baseline commit**: `2dceeae` (main)
 > **Purpose**: Define ASD's support policy for the coexisting OpenCode V1/V2 releases, inventory V1-only code, and lay out the V2 migration and V1 freeze/removal plan.
-> **Status**: In progress (Session `asd-20261121-212400-ocv2`, amended via Debate `D-mwqdzqsd-NGID`). Local OpenCode upgraded from V1 `1.19.4` to V2 `opencode v2.3.2` (`@opencode/cli@2.3.2`); external verified backup stored at `~/.asd/backups/opencode-v1-pre-upgrade-20261121-213700/` (20 top-level config files + V1 `opencode.exe` SHA-256 matched). All existing `~/.config/opencode/` user configs loaded cleanly via V2 auto-translation with zero deletions or edits required. **Transition-window notice**: Local OpenCode V2 currently runs without ASD PreToolUse/Stop policy guards until Phase 2 (`T4.1` / `T6.1`) lands.
+> **Status**: **Phases 0–4 Complete** (Session `asd-20261121-212400-ocv2`, amended via Debate `D-mwqdzqsd-NGID`). Implemented across `src/core/opencode-profile.ts`, `src/adapters/opencode.ts` (V2 first-class default), `src/adapters/opencode-v1.ts` (frozen V1 legacy), `src/core/{acp-client,policy,drivers,session-tracker,transcripts,spawner}.ts`, `src/adapters/installer.ts`, `src/adapters/installer/skill-renderer.ts`, `src/cli/index.ts`, and `src/orchestrator/dispatch-handler.ts`. Verified live on `opencode v2.3.2` (`@opencode/cli@2.3.2`) with external pre-upgrade backup preserved at `~/.asd/backups/opencode-v1-pre-upgrade-20261121-213700/`. **Phase 5 (V1 removal)** remains deferred until the removal trigger in Section 4.2 is reached.
 
 ---
 

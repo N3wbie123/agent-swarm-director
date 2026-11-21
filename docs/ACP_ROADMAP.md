@@ -13,7 +13,7 @@
 | :--- | :--- | :--- |
 | **ACP Implementation Strategy** | **Pure Native Implementation (Zero-Dependency, keeping `dependencies: {}`)** | `@agentclientprotocol/sdk` depends on runtime `zod`, which breaks `tsc --noEmit` in zero-install `git pull` (`asd update`) environments and adds hook cold-start latency; therefore implemented directly in `src/core/acp-types.ts` + `src/core/acp-client.ts` |
 | **Legacy CLI Dispatch Retention** | **Hybrid (`ACP Primary + Hardened Streaming CLI Fallback`)** | OpenCode, Antigravity, and Cursor use native ACP immediately, while Claude Code and Codex without external bridges installed (plus custom `CommandRunner` mock tests) run seamlessly via the hardened streaming CLI fallback |
-| **OpenCode Main Session Freeze Resolution** | **`asd dispatch --async` + `asd-guard.js` (`client.session.prompt`) Auto-Callback** | Because OpenCode lacks background shell tasks, a detached background worker process (`--async`) returns within 100ms and the OpenCode plugin actively injects the completion report into the main session once finished |
+| **OpenCode Non-Blocking Execution (V2 vs Legacy V1)** | **OpenCode V2: Native background tasks + `plugins/asd-guard/index.js`; Legacy V1: `asd dispatch --async` + `asd-guard.js` (`client.session.prompt`)** | OpenCode V2 natively backgrounds subagents and shell commands; generic `--async` / `asd wait` remains available across all harnesses, while the frozen V1 completion-callback path is isolated in `src/adapters/opencode-v1.ts` |
 | **GUI Driver (`runDriverTurn`) Scope** | **Kept As-Is (Managed as Carryover)** | `runDriverTurn` in `src/core/drivers.ts` was left unchanged during the initial Core overhaul to preserve backward compatibility with external GUI apps (`ASD-Nexus` / `asd-gui`) and is tracked via the checklist in Section 4 of this document |
 
 ---
@@ -32,7 +32,7 @@ Running `asd doctor` and `asd sync` automatically checks the ACP readiness of ea
 
 | Harness | Default Execution Path | ACP Command | Behavior When Missing & Setup Guidance |
 | :--- | :--- | :--- | :--- |
-| **OpenCode** | Native ACP | `opencode acp --pure` | Works via ACP immediately when the base CLI is installed |
+| **OpenCode** | Native ACP | `opencode acp` *(V2)* / `opencode acp --pure` *(Legacy V1)* | Works via ACP immediately when the base CLI is installed (profile auto-detected via `opencode --version`) |
 | **Antigravity** | Native ACP | `agy acp --dangerously-skip-permissions` | Works via ACP immediately when the base CLI is installed |
 | **Cursor CLI** | Native ACP | `cursor-agent acp` / `agent acp` | Works via ACP immediately, including automatic `.ps1` wrapper resolution |
 | **Claude Code** | Official External Bridge (Optional) | `claude-agent-acp` | Automatically falls back to streaming CLI (`claude -p --output-format stream-json`) when not installed. To enable ACP: `npm i -g @agentclientprotocol/claude-agent-acp` |
@@ -45,15 +45,14 @@ Running `asd doctor` and `asd sync` automatically checks the ACP readiness of ea
 
 ### 2.3 Hardened Streaming CLI Fallback (`src/core/session-tracker.ts`, `src/core/spawner.ts`)
 - **Output Buffering / Stall Elimination**: Enables real-time NDJSON streaming (`stream-json` / `--json`) across all harnesses during CLI fallback and defaults to `closeStdinOnSpawn: true` for headless execution.
-- **Permission Prompt Hang Prevention**: Supplies `--dangerously-skip-permissions` for Antigravity/Claude, `--full-auto` for Codex, and `--pure` for OpenCode by default during non-interactive headless spawns, and automatically normalizes `model: "default"` on non-Cursor harnesses.
+- **Permission Prompt Hang Prevention**: Supplies `--dangerously-skip-permissions` for Antigravity/Claude, `--full-auto` for Codex, and `--auto` (OpenCode V2) / `--pure` (Legacy OpenCode V1) by default during non-interactive headless spawns, and automatically normalizes `model: "default"` on non-Cursor harnesses.
 - **Sliding Timeout & Cause Separation**: Extends the overall timeout whenever real-time stream chunks arrive (`allowSlidingTimeout`) and distinguishes genuine unresponsive stalls (`timeoutReason: "idle"`) from hard upper-bound expirations (`"wall_clock"`). On a transient `"idle"` timeout, performs an immediate single in-place resume (`session/load` or CLI resume) in the same worktree using the captured `sessionId`.
 
-### 2.4 OpenCode Async Dispatch & Automatic Completion Reporting (`--async` + `asd-guard.js`)
-1. When the OpenCode main agent runs `asd dispatch --turn <N> --mode parallel_spawn --async`, ASD spawns a detached background worker, records `"running"` status in `.asd/sessions/<sessionId>/async-dispatch.json`, and **exits immediately within 100ms**.
-2. Because the main session is not blocked, the user can continue chatting freely with the main agent or query `asd status` while tasks execute.
-3. Once the background worker finishes subagent execution and the `verify` gate, it updates `async-dispatch.json` to `"done"` or `"failed"`.
-4. The `~/.config/opencode/plugin/asd-guard.js` plugin detects this transition and, when the main session is idle (`session.idle`), invokes `client.session.prompt({ path: { id: sessionID }, body: { noReply: false, parts: [{ type: "text", text: report }] } })` exactly once (`notified: true`) so the main agent automatically proceeds to the next Wave or final summary.
-5. For scripts and terminal environments requiring manual waiting, `asd wait [--session <id>] [--timeout <ms>]` and `--transport <auto|acp|cli>` flags are also provided.
+### 2.4 Generic Async Dispatch (`--async` + `asd wait`) & Legacy OpenCode V1 Callback (`asd-guard.js`)
+1. Running `asd dispatch --turn <N> --mode parallel_spawn --async` on any harness spawns a detached background worker, records `"running"` status in `.asd/sessions/<sessionId>/async-dispatch.json`, and **exits immediately within 100ms**.
+2. Scripts and terminals can query `asd status` or block via `asd wait [--session <id>] [--timeout <ms>]` (with optional `--transport <auto|acp|cli>`).
+3. **OpenCode V2 (`2.x`)**: Uses native background subagents/shell commands and installs the zero-dependency V2 policy guard at `~/.config/opencode/plugins/asd-guard/index.js` (`src/adapters/opencode.ts`), so `--async` is optional rather than required.
+4. **Legacy OpenCode V1 (`1.x`, Frozen Compatibility Mode)**: Because OpenCode V1 lacked native background tasks, the frozen `~/.config/opencode/plugin/asd-guard.js` plugin (`src/adapters/opencode-v1.ts`) watches `async-dispatch.json` and invokes `client.session.prompt(...)` once on `session.idle` (`notified: true`). See [OpenCode V1/V2 Migration Plan](./OPENCODE_V1_V2_MIGRATION_PLAN.md) for the freeze & EOL removal policy.
 
 ---
 
@@ -63,7 +62,9 @@ Running `asd doctor` and `asd sync` automatically checks the ACP readiness of ea
 - `src/core/acp-client.ts`: `AcpStdioClient`, `probeAcpCapability`, `evaluateAcpPermissionRequest`, `executeAcpSubagentTurn`
 - `src/mcp/server.ts`: `handleDispatch` hybrid execution, in-place `session/load` resume, and `--async` background worker detachment
 - `src/core/debate.ts` / `src/core/subagent-control.ts`: Blind debate broker and subagent control hybrid execution plus `waitForAsyncDispatch`
-- `src/adapters/opencode.ts`: `generateOpencodeGuardPlugin` (`client.session.prompt` async completion callback)
+- `src/core/opencode-profile.ts`: Pure OpenCode V1/V2 version probe and capability profile (HC-1 compliant)
+- `src/adapters/opencode.ts`: Canonical OpenCode V2 adapter & zero-dep `plugins/asd-guard/index.js` policy guard
+- `src/adapters/opencode-v1.ts`: Frozen Legacy OpenCode V1 `plugin/asd-guard.js` generator & completion callback
 - `src/adapters/installer.ts` / `src/cli/index.ts`: `asd doctor`, `asd sync`, `asd dispatch --async --transport`, `asd wait`
 
 ---

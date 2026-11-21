@@ -5,7 +5,7 @@
 > **작성일**: 2026-11-21
 > **기준 커밋**: `2dceeae` (main)
 > **목적**: OpenCode V1/V2 공존 상황에서 ASD의 지원 정책, V1 전용 코드 인벤토리, V2 이주 및 V1 동결·제거 계획을 정의한다.
-> **성격**: 진행 중 (세션 `asd-20261121-212400-ocv2`, Debate `D-mwqdzqsd-NGID` 반영). 로컬 OpenCode를 V1 `1.19.4`에서 V2 `opencode v2.3.2`(`@opencode/cli@2.3.2`)로 안전 교체 완료. 외부 검증 백업 경로: `~/.asd/backups/opencode-v1-pre-upgrade-20261121-213700/` (최상위 설정 20개 + V1 `opencode.exe` SHA-256 일치). 기존 `~/.config/opencode/` 사용자 설정은 V2 자동 변환으로 정상 로드되어 삭제·수정 불필요. **과도기 주의**: Phase 2(`T4.1`/`T6.1`) 완료 전까지 로컬 OpenCode V2에는 ASD PreToolUse/Stop 정책 가드가 미적용 상태임.
+> **성격**: **Phase 0~4 구현 완료** (세션 `asd-20261121-212400-ocv2`, Debate `D-mwqdzqsd-NGID` 반영). `src/core/opencode-profile.ts`, `src/adapters/opencode.ts`(V2 정식 기본), `src/adapters/opencode-v1.ts`(V1 동결 격리), `src/core/{acp-client,policy,drivers,session-tracker,transcripts,spawner}.ts`, `src/adapters/installer.ts`, `src/adapters/installer/skill-renderer.ts`, `src/cli/index.ts`, `src/orchestrator/dispatch-handler.ts`에 반영 완료. 로컬 `opencode v2.3.2`(`@opencode/cli@2.3.2`) 실환경 검증 완료(외부 백업 보존: `~/.asd/backups/opencode-v1-pre-upgrade-20261121-213700/`). **Phase 5(V1 제거)**는 4.2절 제거 트리거 도달 시점까지 보류됨.
 
 ---
 

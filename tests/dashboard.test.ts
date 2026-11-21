@@ -378,8 +378,8 @@ test("Dashboard HTML & Security: closes #modelsModalBackdrop, escapes XSS entiti
     assert.equal(validCsrfRes.statusCode, 200);
   } finally {
     await handle.close();
-    fs.rmSync(homeDir, { recursive: true, force: true });
-    fs.rmSync(projDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    fs.rmSync(projDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
 
@@ -488,8 +488,8 @@ test("Dashboard Routing Save: preserves lightSubagents, surfaces save/reset/poll
     assert.match(staleCsrfRes.body, /csrf/i);
   } finally {
     await handle.close();
-    fs.rmSync(homeDir, { recursive: true, force: true });
-    fs.rmSync(projDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    fs.rmSync(projDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
 
@@ -625,8 +625,8 @@ test("Dashboard Debates UI: renders debate details collapsed by default and togg
     assert.match(getEl("inspector").innerHTML, /Cat: <strong>visual-ui<\/strong> \| Diff: <strong>high<\/strong>/);
   } finally {
     await handle.close();
-    fs.rmSync(homeDir, { recursive: true, force: true });
-    fs.rmSync(projDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    fs.rmSync(projDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
 
@@ -728,7 +728,7 @@ test("Dashboard i18n: defaults SSR to English, auto-detects Korean browser local
     assert.equal(reloadLang("ko", "en-US"), "ko");
   } finally {
     await handle.close();
-    fs.rmSync(homeDir, { recursive: true, force: true });
-    fs.rmSync(projDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    fs.rmSync(projDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });

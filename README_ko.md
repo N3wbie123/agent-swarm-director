@@ -21,7 +21,7 @@
 
 - **외부 런타임 의존성 0개 (`dependencies: {}`)** — Node.js `>=22.13.0` 네이티브 TypeScript 실행과 `node:sqlite`만으로 구동되어 `asd update` 시 별도 패키지 설치가 필요 없고 훅 콜드스타트가 수 ms 이내입니다.
 - **하이브리드 ACP 우선 서브에이전트 엔진 (v2.7.0)** — 순수 stdio JSON-RPC 2.0 기반 **ACP v1**(v2 초안 호환 포함)으로 서브에이전트를 자동 실행·종료하며, `session/request_permission` ↔ `policy.ts` 양방향 실시간 보안 판정, `session/new` 카탈로그 기반 모델 ID 자동 매핑(`resolveBestAcpModelId`), 일시적 멈춤 시 동일 워크트리 `session/load` 제자리 재개, 브리지 미설치 시 강화된 스트리밍 CLI 자동 폴백을 지원합니다.
-- **OpenCode 메인 세션 멈춤 없는 비동기 Dispatch (`--async`)** — 백그라운드 워커를 100ms 내 분리 실행해 OpenCode 메인 채팅이 멈추지 않으며, Wave 완료 시 `asd-guard.js` 플러그인이 유휴 상태의 메인 세션에 `client.session.prompt`로 완료 보고를 자동 주입합니다.
+- **OpenCode V2 정식 지원 및 공용 비동기 Dispatch (`--async`)** — OpenCode V2(`opencode v2.x`)와 동결된 레거시 V1(`1.x`)을 자동 감지하여 무의존성 V2 정책 가드(`~/.config/opencode/plugins/asd-guard/index.js`), 네이티브 `opencode acp` / `--auto` / `session_v2` 트랜스크립트와 V2 네이티브 백그라운드 실행을 지원하며, 모든 하네스에서 공용 `--async` + `asd wait`도 유지합니다 ([OpenCode V1/V2 지원 정책](./docs/OPENCODE_V1_V2_MIGRATION_PLAN_ko.md)).
 - **3트랙 실행 체계 (`DIRECT` / `LIGHT` / `HEAVY`)** — 1~3개 파일의 순차 작업은 메인 세션에서 직접 처리(`DIRECT`)하고, 단일 하네스 내부 전문 위임은 파일 겹침 검증과 함께 수행(`LIGHT`), 대규모 병렬 작업은 격리된 Git 워크트리와 뮤텍스 직렬화 병합(`HEAVY`)으로 안전하게 동시 실행합니다.
 - **블라인드 교차 모델 적대적 토론 (`asd debate`)** — 서로 다른 모델 패밀리(`claude`, `gpt`, `gemini`, `glm`, `deepseek`)가 코드 슬라이스·Diff를 바탕으로 1라운드 블라인드 비평 후 2라운드 심판 판결을 통해 필수 제약 조건을 도출합니다.
 - **하네스 맞춤형 글로벌 동기화 (`asd sync`)** — 대상 하네스에 필요한 호출 구문과 `routing.jsonc` 모델 티어만 조건부 렌더링한 스킬, 5대 전문 에이전트(`planner`, `architect`, `worker`, `scout`, `critic`), 공식 CLI 안내를 포함한 `PreToolUse` 보안 훅, 부족한 외부 카탈로그 MCP 도구만 사용자 홈 설정에 깔끔하게 동기화합니다.
@@ -36,7 +36,7 @@
 
 | 하네스 | 약칭 | CLI 실행 파일 | 기본 서브에이전트 통신 경로 | 선택적 ACP 브리지 설치 명령 |
 | :--- | :---: | :--- | :--- | :--- |
-| **OpenCode** | `@oc` | `opencode` | **네이티브 ACP** (`opencode acp --pure`) | 기본 내장 (추가 설치 불필요) |
+| **OpenCode** | `@oc` | `opencode` | **네이티브 ACP** (V2: `opencode acp` / 레거시 V1: `--pure`) | 기본 내장 (추가 설치 불필요) |
 | **Antigravity** | `@ag` | `agy` | **네이티브 ACP** (`agy acp`) | 기본 내장 (추가 설치 불필요) |
 | **Cursor CLI** | `@cr` | `cursor-agent` / `agent` | **네이티브 ACP** (`cursor-agent acp`) | 기본 내장 (`.ps1` / `.cmd` 자동 해석) |
 | **Claude Code** | `@cc` | `claude` | **ACP 브리지** → *미설치 시 스트리밍 CLI 폴백* | `npm i -g @agentclientprotocol/claude-agent-acp` |
@@ -67,7 +67,7 @@ asd doctor
 asd status                                                # 실시간 TODO 진행 보드 및 세션 상태 확인
 asd plan get                                              # 현재 .asd/PLAN.md 및 SQLite 태스크 조회
 asd dispatch --turn 1 --mode parallel_spawn               # Turn 1 병렬 실행 (ACP 우선 + CLI 폴백)
-asd dispatch --turn 1 --mode parallel_spawn --async       # 비동기 백그라운드 실행 (OpenCode HEAVY 필수)
+asd dispatch --turn 1 --mode parallel_spawn --async       # 선택적 분리 백그라운드 실행 (레거시 OpenCode V1에서만 필수)
 asd wait --timeout 600000                                 # 비동기 Wave 완료 시까지 대기 (수동 확인 시)
 asd verify --task T1.1 --summary "ACP 모델 매핑 추가"     # 파일 경계·시크릿·테스트 검증 후 깔끔한 커밋 생성
 asd debate --topic "스토리지 설계" --proposal "WAL 도입"  # 교차 모델 블라인드 비평 및 최종 판결
@@ -106,7 +106,13 @@ asd migrate --clean-legacy   # 선택: 이관 완료 후 구버전 core.db 정�
 | :--- | :--- | :--- | :--- |
 | **`DIRECT`** *(메인 세션)* | 메인 세션이 직접 수정 수행(`claim_only`), 대량 탐색 시에만 `asd-scout` 선택 호출. 서브에이전트 스폰 오버헤드 없음. | 인플레이스 수정 + `asd verify` 게이트(3-Strike 에스컬레이션 힌트) 및 깔끔한 커밋 생성. | 1~3개 파일 순차 수정, 빠른 패치, 컨텍스트 연속성이 중요한 작업 |
 | **`LIGHT`** *(단일 하네스)* | 현재 하네스 내부의 네이티브 `asd-<role>` 서브에이전트 위임(`claim_only`). 동일 턴 다중 워커는 순차 실행 또는 `targetFiles` 완전 분리 검증. 외부 CLI 스폰 없음. | 인플레이스 수정. 테스트 실패 시 수정 파일을 보존해 즉시 디버깅 가능(경계·시크릿 위반 시 스코프 롤백). | 역할 분리 위임, 단일 하네스 쿼터 활용 |
-| **`HEAVY`** *(다중 하네스)* | `routing.jsonc`에 따라 외부 하네스를 ACP / 스트리밍 CLI로 병렬 스폰(`parallel_spawn`, OpenCode는 `--async`). | 태스크별 독립 Git 워크트리(`.asd/wt/<turn>-<taskId>`) + `node_modules` 정션 연결 후 프로세스 뮤텍스 기반 `--no-ff` 병합. | 모듈 간 대규모 병렬 개발, 고위험 리팩터링, 교차 모델 검증 |
+| **`HEAVY`** *(다중 하네스)* | `routing.jsonc`에 따라 외부 하네스를 ACP / 스트리밍 CLI로 병렬 스폰(`parallel_spawn`; OpenCode V2는 네이티브 백그라운드 기본, 선택적 `--async` 지원). | 태스크별 독립 Git 워크트리(`.asd/wt/<turn>-<taskId>`) + `node_modules` 정션 연결 후 프로세스 뮤텍스 기반 `--no-ff` 병합. | 모듈 간 대규모 병렬 개발, 고위험 리팩터링, 교차 모델 검증 |
+
+<details>
+<summary><strong>🕰️ 레거시 OpenCode V1 지원 정책 (호환 모드 동결)</strong></summary>
+
+OpenCode **V2(`2.x`)**가 정식 지원 대상(`plugins/asd-guard/index.js`, `opencode acp`, 네이티브 백그라운드)입니다. OpenCode **V1(`1.x`)**은 `src/adapters/opencode-v1.ts`에 격리·동결(보안/치명 버그만 수정)되어 `asd sync` 시 `plugin/asd-guard.js`와 레거시 V1 `--async` 스킬을 유지하며, `asd doctor`가 버전-플러그인 불일치(drift)를 점검합니다. V1 경로는 공식 V1 EOL 또는 V1 사용률 한 자릿수 도달 시 최소 1개 마이너 릴리스 사전 공지 후 제거됩니다. 자세한 내용은 **[OpenCode V1/V2 지원 전략 및 이주 계획](./docs/OPENCODE_V1_V2_MIGRATION_PLAN_ko.md)**을 참고하세요.
+</details>
 
 ---
 
@@ -137,7 +143,8 @@ asd migrate --clean-legacy   # 선택: 이관 완료 후 구버전 core.db 정�
 
 ## 문서 가이드
 
-- ⚡ **[ACP 아키텍처 및 추후 GUI 로드맵 (`docs/ACP_ROADMAP_ko.md`)](./docs/ACP_ROADMAP_ko.md)** — 무의존성 ACP v1/v2 구조, OpenCode `--async` 완료 콜백, 브리지 안내 및 추후 GUI(`runDriverTurn`) 이월 체크리스트
+- ⚡ **[ACP 아키텍처 및 추후 GUI 로드맵 (`docs/ACP_ROADMAP_ko.md`)](./docs/ACP_ROADMAP_ko.md)** — 무의존성 ACP v1/v2 구조, OpenCode V2 네이티브 ACP 및 레거시 V1 `--async` 완료 콜백, 브리지 안내, GUI(`runDriverTurn`) 체크리스트
+- 🔄 **[OpenCode V1/V2 지원 정책 및 이주 계획 (`docs/OPENCODE_V1_V2_MIGRATION_PLAN_ko.md`)](./docs/OPENCODE_V1_V2_MIGRATION_PLAN_ko.md)** — V2 정식 지원 구조, 동결된 V1 격리 범위, EOL/사용률 기반 V1 제거 트리거
 - 🧭 **[모델 라우팅 가이드 (`ROUTING_GUIDE_ko.md`)](./ROUTING_GUIDE_ko.md)** — `~/.asd/routing.jsonc`의 `lightSubagents`, `agents`, `categories`, 폴백 체인, `thinkingEffort` 설정법
 - 🏛️ **[프로젝트 아키텍처 및 코드 레퍼런스 (`PROJECT_STATUS_ko.md`)](./PROJECT_STATUS_ko.md)** — 디렉토리 구조, 단일 SQLite DB 스키마, 모듈·함수별 상세 해설
 - 🔌 **[외부 SDK 및 DB 레퍼런스 (`EXTERNAL_SDK_REFERENCE_ko.md`)](./EXTERNAL_SDK_REFERENCE_ko.md)** — **ASD-Nexus** 등 외부 클라이언트 연동을 위한 Node.js SDK 및 DB 명세

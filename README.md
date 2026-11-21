@@ -21,7 +21,7 @@
 
 - **Zero Runtime Dependencies (`dependencies: {}`)** — Runs directly on Node.js `>=22.13.0` native TypeScript strip-types and `node:sqlite`. Zero `npm install` friction on `asd update`, zero supply-chain bloat, and sub-10ms hook startup.
 - **Hybrid ACP-First Subagent Engine (v2.7.0)** — Spawns subagents over pure stdio JSON-RPC 2.0 **ACP v1** (with v2 draft compatibility), enforcing `allowedFiles` and protected-path rules live via bidirectional `session/request_permission` callbacks, auto-mapping `routing.jsonc` model names onto each harness's `session/new` catalog, resuming stalled turns in-place via `session/load`, and falling back seamlessly to hardened streaming CLIs when external bridges are absent.
-- **Non-Blocking OpenCode Async Dispatch (`--async`)** — Detaches wave workers in `<100ms` so OpenCode's main chat never freezes, while the global `asd-guard.js` plugin automatically pushes completion reports back into the idle OpenCode session via `client.session.prompt`.
+- **First-Class OpenCode V2 Support & Generic Async Dispatch (`--async`)** — Automatically detects OpenCode V2 (`opencode v2.x`) vs frozen Legacy V1 (`1.x`), installs a zero-dependency V2 policy guard (`~/.config/opencode/plugins/asd-guard/index.js`), uses native `opencode acp` / `--auto` / `session_v2` transcripts, and leverages OpenCode V2's native background execution (while keeping harness-agnostic `--async` + `asd wait` available for any harness; see [OpenCode V1/V2 Support Policy](./docs/OPENCODE_V1_V2_MIGRATION_PLAN.md)).
 - **3-Track Execution (`DIRECT` / `LIGHT` / `HEAVY`)** — Execute small 1–3 file sequential edits directly in the main session (`DIRECT`), delegate focused work to internal subagents with overlap checks (`LIGHT`), or fan out across multiple external harnesses in isolated Git worktrees with mutex-serialized `--no-ff` merges (`HEAVY`).
 - **Blind Cross-Model Adversarial Debate (`asd debate`)** — Run parallel Round 1 critiques across distinct model families (`claude`, `gpt`, `gemini`, `glm`, `deepseek`) with code-slice/diff injection, followed by Round 2 binding arbitration.
 - **Harness-Targeted Global Sync (`asd sync`)** — Installs harness-conditioned skills (injecting only target harness commands and dynamic `routing.jsonc` model tiers), 5 specialist personas (`planner`, `architect`, `worker`, `scout`, `critic`), actionable `PreToolUse` safety hooks, and missing external catalog MCP servers strictly into user home configs without polluting project repositories.
@@ -36,7 +36,7 @@
 
 | Harness | Tag | CLI Binary | Primary Subagent Transport | Optional ACP Bridge Setup |
 | :--- | :---: | :--- | :--- | :--- |
-| **OpenCode** | `@oc` | `opencode` | **Native ACP** (`opencode acp --pure`) | Built-in (ready out of the box) |
+| **OpenCode** | `@oc` | `opencode` | **Native ACP** (`opencode acp` on V2; `--pure` on Legacy V1) | Built-in (ready out of the box) |
 | **Antigravity** | `@ag` | `agy` | **Native ACP** (`agy acp`) | Built-in (ready out of the box) |
 | **Cursor CLI** | `@cr` | `cursor-agent` / `agent` | **Native ACP** (`cursor-agent acp`) | Built-in (`.ps1` / `.cmd` auto-resolved) |
 | **Claude Code** | `@cc` | `claude` | **ACP Bridge** → *Streaming CLI fallback* | `npm i -g @agentclientprotocol/claude-agent-acp` |
@@ -67,7 +67,7 @@ asd doctor
 asd status                                                # Live TODO progress board & active session state
 asd plan get                                              # Inspect current .asd/PLAN.md & SQLite tasks
 asd dispatch --turn 1 --mode parallel_spawn               # Execute Turn 1 across routed harnesses (ACP-first)
-asd dispatch --turn 1 --mode parallel_spawn --async       # Non-blocking background wave (required in OpenCode HEAVY)
+asd dispatch --turn 1 --mode parallel_spawn --async       # Optional detached background wave (required only in Legacy OpenCode V1)
 asd wait --timeout 600000                                 # Wait for a detached '--async' wave if needed
 asd verify --task T1.1 --summary "Add ACP model mapper"   # Boundary + secret + test gate & clean commit
 asd debate --topic "Storage" --proposal "Use SQLite WAL"  # Cross-model blind critique & binding verdict
@@ -106,7 +106,13 @@ After running `asd sync`, use these commands directly inside **Claude Code**, **
 | :--- | :--- | :--- | :--- |
 | **`DIRECT`** *(Main Session)* | Main session executes edits directly (`claim_only`), optionally calling `asd-scout` for broad read-only search. Zero subagent spawn overhead. | In-place edits gated by `asd verify` with 3-Strike escalation hints and clean task-ID-free commits. | 1–3 file sequential changes, quick fixes, tight context continuity. |
 | **`LIGHT`** *(Single-Harness)* | Native internal `asd-<role>` subagents inside your current harness (`claim_only`). Same-turn multiple workers run sequentially or require disjoint `targetFiles`. Zero external CLI spawning. | In-place edits; preserves working-tree files on test failure for quick fixes, rolls back scoped files on boundary/secret violations, and writes clean commits. | Role-specialized single-harness tasks, bug fixes, preserving multi-harness quotas. |
-| **`HEAVY`** *(Multi-Harness)* | Spawns external harnesses concurrently via ACP / streaming CLI per `routing.jsonc` (`parallel_spawn`, `--async` in OpenCode). | Dedicated Git worktree per task (`.asd/wt/<turn>-<taskId>`) with `node_modules` junction + cross-process mutex `--no-ff` merge. | Disjoint parallel modules, high-risk refactors, cross-model blind review. |
+| **`HEAVY`** *(Multi-Harness)* | Spawns external harnesses concurrently via ACP / streaming CLI per `routing.jsonc` (`parallel_spawn`; OpenCode V2 uses native background tasks, optional `--async` available). | Dedicated Git worktree per task (`.asd/wt/<turn>-<taskId>`) with `node_modules` junction + cross-process mutex `--no-ff` merge. | Disjoint parallel modules, high-risk refactors, cross-model blind review. |
+
+<details>
+<summary><strong>🕰️ Legacy OpenCode V1 Support Policy (Frozen Compatibility Mode)</strong></summary>
+
+OpenCode **V2 (`2.x`)** is the primary supported target (`plugins/asd-guard/index.js`, `opencode acp`, native background tasks). OpenCode **V1 (`1.x`)** is frozen in `src/adapters/opencode-v1.ts` (security/critical fixes only): `asd sync` installs `plugin/asd-guard.js`, renders Legacy V1 `--async` skill instructions, and `asd doctor` flags version-vs-plugin drift. The V1 path will be removed upon official OpenCode V1 EOL or when V1 usage falls to single digits (announced ≥1 minor release in advance). See **[OpenCode V1/V2 Migration & Support Policy](./docs/OPENCODE_V1_V2_MIGRATION_PLAN.md)**.
+</details>
 
 ---
 
@@ -137,7 +143,8 @@ After running `asd sync`, use these commands directly inside **Claude Code**, **
 
 ## Documentation
 
-- ⚡ **[ACP Architecture & GUI Roadmap (`docs/ACP_ROADMAP.md`)](./docs/ACP_ROADMAP.md)** — Pure ACP v1/v2 design, OpenCode `--async` callback flow, bridge setup, and deferred GUI (`runDriverTurn`) checklist.
+- ⚡ **[ACP Architecture & GUI Roadmap (`docs/ACP_ROADMAP.md`)](./docs/ACP_ROADMAP.md)** — Pure ACP v1/v2 design, OpenCode V2 native ACP & Legacy V1 `--async` callback flow, bridge setup, and GUI (`runDriverTurn`) checklist.
+- 🔄 **[OpenCode V1/V2 Support Policy & Migration Plan (`docs/OPENCODE_V1_V2_MIGRATION_PLAN.md`)](./docs/OPENCODE_V1_V2_MIGRATION_PLAN.md)** — V2 first-class architecture, frozen V1 compatibility scope, and V1 EOL/single-digit removal trigger.
 - 🧭 **[Model Routing Guide (`ROUTING_GUIDE.md`)](./ROUTING_GUIDE.md)** — Configuring `lightSubagents`, `agents`, `categories`, fallbacks, and `thinkingEffort` in `~/.asd/routing.jsonc`.
 - 🏛️ **[Architecture & Code Reference (`PROJECT_STATUS.md`)](./PROJECT_STATUS.md)** — Repository layout, SQLite SSOT schema, and module-by-module reference.
 - 🔌 **[External SDK & DB Reference (`EXTERNAL_SDK_REFERENCE.md`)](./EXTERNAL_SDK_REFERENCE.md)** — Node.js SDK contracts and database schema for **ASD-Nexus** and external tools.
