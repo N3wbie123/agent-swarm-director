@@ -104,26 +104,36 @@ It depends on the V1 plugin API (`tool.execute.before`, `session.idle`, `client.
 
 **Principle**: Keep the engine generic; limit V1-specific code to the completion-callback layer.
 
-### 3.3 Shared OpenCode Adapter Surface (Needs V2 Verification)
+### 3.3 Shared OpenCode Adapter Surface (Phase 0 Verified on `opencode v2.3.2`)
 
 | # | Feature | Location | V2 status |
 |---|---|---|---|
-| 1 | Headless run: `opencode run --format json [--pure] [--model]` | `src/core/session-tracker.ts:179-183`, `src/core/spawner.ts:366,425` | Needs verification |
-| 2 | Headless resume: `opencode run --session <sid>` | `src/core/session-tracker.ts:250-261` | Needs verification |
-| 3 | Interactive resume: `opencode --session <sid>` | `src/core/session-tracker.ts:335-339` | Needs verification |
-| 4 | ACP: `opencode acp --pure` | `src/core/acp-client.ts:249-258` | Needs verification |
-| 5 | Model discovery: `opencode models` | `src/core/models.ts:518-533` | Needs verification |
-| 6 | Config scan: `opencode.json/jsonc`, `agent/*.md` | `src/core/models.ts:367-441`, `src/adapters/installer.ts:1199-1258` | Needs verification |
-| 7 | `oh-my-openagent.json` detection/cleanup | `src/adapters/installer.ts:1261-1271`, `:2094-2119` | Needs verification |
-| 8 | Session DB/transcripts: `opencode.db`, storage JSON fallback | `src/core/session-tracker.ts:1402-1406`, `src/core/transcripts.ts:1071-1169`, `:1459-1516` | Needs verification |
-| 9 | `ses_` session ID attribution correction | `src/core/session-tracker.ts:1516-1526` | Needs verification |
-| 10 | daemon-sse: `opencode serve` SSE parser + `/session/:id/abort` | `src/core/spawner.ts:829-846`, `src/adapters/opencode.ts:16-58`, `src/core/drivers.ts:611-650`, `src/core/types.ts:517` | V2 server API changed. Needs verification |
-| 11 | Model defaults/format | `src/core/router.ts:224,667,710`, `src/core/drivers.ts:517-518`, `src/core/debate.ts:918`, `src/core/models.ts:799-800` | Needs verification |
-| 12 | Policy tool names: `write/edit/patch/multiedit`, `bash` | `src/core/policy.ts:74-78` | V2 tool names need verification |
-| 13 | Install targets: `command/`, `agent/`, `AGENTS.md`, `opencode.json` | `src/adapters/installer.ts:1165-1191`, `src/adapters/opencode.ts:403-418` | Needs verification |
-| 14 | Agent frontmatter: `mode: subagent`, read-only `tools:` | `src/adapters/installer/agent-renderer.ts:162-170` | V2 auto-translation needs verification |
-| 15 | ACP readiness probe | `src/adapters/installer.ts:2438-2458` | Needs verification |
-| 16 | Dashboard model picker/labels | `src/cli/dashboard.ts` | Shared UI. Needs verification |
+| 1 | Headless run: `opencode run --format json [--pure] [--model]` | `src/core/session-tracker.ts:179-183`, `src/core/spawner.ts:366,425` | **Replacement required**: `--format json`, `--model` supported; `--pure` removed in V2 (use `--auto` on V2) |
+| 2 | Headless resume: `opencode run --session <sid>` | `src/core/session-tracker.ts:250-261` | **Supported**: `opencode run --session <sid>` (`-s`) preserved |
+| 3 | Interactive resume: `opencode --session <sid>` | `src/core/session-tracker.ts:335-339` | **Supported**: `opencode --session <sid>` (`-s`) preserved |
+| 4 | ACP: `opencode acp --pure` | `src/core/acp-client.ts:249-258` | **Replacement required**: `--pure` fails (exit 1: `Unrecognized flag: --pure`); `opencode acp` works natively (`protocolVersion: 1`, `loadSession: true`) |
+| 5 | Model discovery: `opencode models` | `src/core/models.ts:518-533` | **Supported**: outputs `provider/model` lines including custom `opencode.jsonc` providers |
+| 6 | Config scan: `opencode.json/jsonc`, `agent/*.md` | `src/core/models.ts:367-441`, `src/adapters/installer.ts:1199-1258` | **Supported (with caveats)**: V2 reads `opencode.json(c)` and auto-normalizes V1 `mcp`/`plugin`/`agent`/`provider`; ignores `mcpServers` (uses `mcp.servers`), strips `_asdVersion`, moves TUI prefs to `cli.json` |
+| 7 | `oh-my-openagent.json` detection/cleanup | `src/adapters/installer.ts:1261-1271`, `:2094-2119` | **Supported (bug fix needed)**: layout unchanged; fix `installer.ts:2104` to use `parseJsonc` on uninstall |
+| 8 | Session DB/transcripts: `opencode.db`, storage JSON fallback | `src/core/session-tracker.ts:1402-1406`, `src/core/transcripts.ts:1071-1169`, `:1459-1516` | **Replacement required**: `opencode.db` adds V2 tables (`session_v2`, `session_message` with inline `data.content[]`, `session_part`) alongside legacy V1 tables (`session`, `message`, `part`) |
+| 9 | `ses_` session ID attribution correction | `src/core/session-tracker.ts:1516-1526` | **Supported**: V2 `session_v2.id` retains `ses_*` format |
+| 10 | daemon-sse: `opencode serve` SSE parser + `/session/:id/abort` | `src/core/spawner.ts:829-846`, `src/adapters/opencode.ts:16-58`, `src/core/drivers.ts:611-650`, `src/core/types.ts:517` | **Replacement required**: V2 OpenAPI (`/openapi.json`, 142 routes) moved SSE to `/api/event` and abort to `/api/session/{sessionID}/interrupt` |
+| 11 | Model defaults/format | `src/core/router.ts:224,667,710`, `src/core/drivers.ts:517-518`, `src/core/debate.ts:918`, `src/core/models.ts:799-800` | **Supported**: `provider/model` (optional `#variant`) preserved |
+| 12 | Policy tool names: `write/edit/patch/multiedit`, `bash` | `src/core/policy.ts:74-78` | **Replacement required**: V2 `ctx.tool.list()` confirmed write tools `write`/`edit`/`patch` and shell tool renamed `bash` → `shell` |
+| 13 | Install targets: `command/`, `agent/`, `AGENTS.md`, `opencode.json` | `src/adapters/installer.ts:1165-1191`, `src/adapters/opencode.ts:403-418` | **Replacement required (plugin dir)**: `command/`, `agent/`, `AGENTS.md`, `opencode.json(c)` remain compatible; V2 plugins auto-load from `plugins/<name>/index.js` without editing `opencode.json(c)` and ignore single-file `plugin/asd-guard.js` |
+| 14 | Agent frontmatter: `mode: subagent`, read-only `tools:` | `src/adapters/installer/agent-renderer.ts:162-170` | **Supported**: `opencode debug agents` confirmed V2 auto-translates read-only `tools: { write/edit/patch: false }` into `{ action: "edit", resource: "*", effect: "deny" }` |
+| 15 | ACP readiness probe | `src/adapters/installer.ts:2438-2458` | **Replacement required**: probe must use `["acp"]` on V2 and `["acp", "--pure"]` on V1 |
+| 16 | Dashboard model picker/labels | `src/cli/dashboard.ts` | **Supported**: shared UI consumes `provider/model` catalog unchanged |
+
+#### Phase 0 Verified V2 Plugin & Runtime Contract (`opencode v2.3.2`)
+- **Version string format**: V1 outputs bare semver (`1.19.4`); V2 outputs `opencode v2.3.2` (exit code `0`).
+- **Zero-dependency V2 plugin**: `@opencode/plugin@2.3.2` `Plugin.define(p)` is an identity function; a plain ESM export `export default { id: "asd-policy-guard", async setup(ctx) { ... } }` placed at `~/.config/opencode/plugins/asd-guard/index.js` auto-loads in V2 with zero npm runtime dependencies (`package.json` `dependencies: {}` preserved) and without editing `opencode.json(c)`.
+- **Bun `process.execPath` pitfall confirmed in V2**: Inside V2 plugins on Windows, `process.execPath` still points to `...\@opencode\cli\bin\opencode.exe`; baking the Node.js binary path at sync time remains mandatory.
+- **V2 Hook API**:
+  - PreToolUse: `await ctx.tool.hook("execute.before", (event) => { ... throw new Error(reason); })` (`event = { tool, sessionID, agent, messageID, id, input }`; root dir via `ctx.location?.directory || process.cwd()`).
+  - Stop: `ctx.event.subscribe({ signal: controller.signal })` observing `event.type === "session.idle"` with cleanup `() => controller.abort()`.
+  - Stale V1 `plugin/asd-guard.js`: ignored without crashing by V2, but should be removed on V2 sync to eliminate `asd doctor` drift.
+- **Post-T2.1 Re-Plan Gate**: 5 core modules require V2 updates (`acp-client.ts`, `policy.ts`, `drivers.ts`, `session-tracker.ts`, `transcripts.ts`); split Turn 4 core work into `T4.2` (`acp-client`, `policy`, `drivers`) and `T4.3` (`session-tracker`, `transcripts`).
 
 ### 3.4 Missing Entirely (New Work for V2)
 

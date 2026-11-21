@@ -104,26 +104,36 @@ V1 플러그인 API(`tool.execute.before`, `session.idle`, `client.session.promp
 
 **원칙**: 엔진은 공용으로 유지하고, V1 전용은 "완료 콜백" 계층에만 한정한다.
 
-### 3.3 OpenCode 공용 어댑터 표면 (V2 호환 검증 필요)
+### 3.3 OpenCode 공용 어댑터 표면 (Phase 0 `opencode v2.3.2` 실측 검증 완료)
 
 | # | 기능 | 위치 | V2 상태 |
 |---|---|---|---|
-| 1 | Headless run: `opencode run --format json [--pure] [--model]` | `src/core/session-tracker.ts:179-183`, `src/core/spawner.ts:366,425` | 검증 필요 |
-| 2 | Headless resume: `opencode run --session <sid>` | `src/core/session-tracker.ts:250-261` | 검증 필요 |
-| 3 | 대화형 resume: `opencode --session <sid>` | `src/core/session-tracker.ts:335-339` | 검증 필요 |
-| 4 | ACP: `opencode acp --pure` | `src/core/acp-client.ts:249-258` | 검증 필요 |
-| 5 | 모델 탐색: `opencode models` | `src/core/models.ts:518-533` | 검증 필요 |
-| 6 | 설정 스캔: `opencode.json/jsonc`, `agent/*.md` | `src/core/models.ts:367-441`, `src/adapters/installer.ts:1199-1258` | 검증 필요 |
-| 7 | `oh-my-openagent.json` 감지·정리 | `src/adapters/installer.ts:1261-1271`, `:2094-2119` | 검증 필요 |
-| 8 | 세션 DB/트랜스크립트: `opencode.db`, storage JSON 폴백 | `src/core/session-tracker.ts:1402-1406`, `src/core/transcripts.ts:1071-1169`, `:1459-1516` | 검증 필요 |
-| 9 | `ses_` 세션 ID 귀속 보정 | `src/core/session-tracker.ts:1516-1526` | 검증 필요 |
-| 10 | daemon-sse: `opencode serve` SSE 파서 + `/session/:id/abort` | `src/core/spawner.ts:829-846`, `src/adapters/opencode.ts:16-58`, `src/core/drivers.ts:611-650`, `src/core/types.ts:517` | V2 서버 API 변경. 검증 필요 |
-| 11 | 모델 기본값/표기 | `src/core/router.ts:224,667,710`, `src/core/drivers.ts:517-518`, `src/core/debate.ts:918`, `src/core/models.ts:799-800` | 검증 필요 |
-| 12 | 정책 도구명: `write/edit/patch/multiedit`, `bash` | `src/core/policy.ts:74-78` | V2 도구명 검증 필요 |
-| 13 | 설치 대상: `command/`, `agent/`, `AGENTS.md`, `opencode.json` | `src/adapters/installer.ts:1165-1191`, `src/adapters/opencode.ts:403-418` | 검증 필요 |
-| 14 | 에이전트 frontmatter: `mode: subagent`, read-only `tools:` | `src/adapters/installer/agent-renderer.ts:162-170` | V2 자동 변환 여부 검증 필요 |
-| 15 | ACP 준비 상태 프로브 | `src/adapters/installer.ts:2438-2458` | 검증 필요 |
-| 16 | 대시보드 모델 피커/라벨 | `src/cli/dashboard.ts` | 공용 UI. 검증 필요 |
+| 1 | Headless run: `opencode run --format json [--pure] [--model]` | `src/core/session-tracker.ts:179-183`, `src/core/spawner.ts:366,425` | **대체 필요**: `--format json`, `--model` 지원; `--pure` 제거됨 (V2에서는 `--auto` 사용) |
+| 2 | Headless resume: `opencode run --session <sid>` | `src/core/session-tracker.ts:250-261` | **지원**: `opencode run --session <sid>` (`-s`) 유지 |
+| 3 | 대화형 resume: `opencode --session <sid>` | `src/core/session-tracker.ts:335-339` | **지원**: `opencode --session <sid>` (`-s`) 유지 |
+| 4 | ACP: `opencode acp --pure` | `src/core/acp-client.ts:249-258` | **대체 필요**: `--pure` 실패(종료코드 1: `Unrecognized flag: --pure`); `opencode acp` 네이티브 정상 동작(`protocolVersion: 1`, `loadSession: true`) |
+| 5 | 모델 탐색: `opencode models` | `src/core/models.ts:518-533` | **지원**: `opencode.jsonc` 커스텀 프로바이더 포함 `provider/model` 목록 정상 출력 |
+| 6 | 설정 스캔: `opencode.json/jsonc`, `agent/*.md` | `src/core/models.ts:367-441`, `src/adapters/installer.ts:1199-1258` | **지원 (주의점 있음)**: V2가 `opencode.json(c)`를 읽고 V1 `mcp`/`plugin`/`agent`/`provider`를 자동 정규화; `mcpServers` 무시(`mcp.servers` 사용), `_asdVersion` 무시, TUI 설정은 `cli.json`으로 분리 |
+| 7 | `oh-my-openagent.json` 감지·정리 | `src/adapters/installer.ts:1261-1271`, `:2094-2119` | **지원 (버그 수정 필요)**: 구조 동일; uninstall 시 `installer.ts:2104`를 `parseJsonc`로 수정 필요 |
+| 8 | 세션 DB/트랜스크립트: `opencode.db`, storage JSON 폴백 | `src/core/session-tracker.ts:1402-1406`, `src/core/transcripts.ts:1071-1169`, `:1459-1516` | **대체 필요**: `opencode.db`에 V1 테이블(`session`, `message`, `part`) 외 V2 테이블(`session_v2`, `session_message` 내부 `data.content[]`, `session_part`) 추가됨 |
+| 9 | `ses_` 세션 ID 귀속 보정 | `src/core/session-tracker.ts:1516-1526` | **지원**: V2 `session_v2.id`도 `ses_*` 형식 유지 |
+| 10 | daemon-sse: `opencode serve` SSE 파서 + `/session/:id/abort` | `src/core/spawner.ts:829-846`, `src/adapters/opencode.ts:16-58`, `src/core/drivers.ts:611-650`, `src/core/types.ts:517` | **대체 필요**: V2 OpenAPI(`/openapi.json`, 142개 경로)에서 SSE는 `/api/event`, abort는 `/api/session/{sessionID}/interrupt`로 변경 |
+| 11 | 모델 기본값/표기 | `src/core/router.ts:224,667,710`, `src/core/drivers.ts:517-518`, `src/core/debate.ts:918`, `src/core/models.ts:799-800` | **지원**: `provider/model` (선택 `#variant`) 형식 유지 |
+| 12 | 정책 도구명: `write/edit/patch/multiedit`, `bash` | `src/core/policy.ts:74-78` | **대체 필요**: V2 `ctx.tool.list()` 실측 결과 쓰기 도구는 `write`/`edit`/`patch`, 셸 도구명이 `bash` → `shell`로 변경 |
+| 13 | 설치 대상: `command/`, `agent/`, `AGENTS.md`, `opencode.json` | `src/adapters/installer.ts:1165-1191`, `src/adapters/opencode.ts:403-418` | **대체 필요 (플러그인 경로)**: `command/`, `agent/`, `AGENTS.md`, `opencode.json(c)` 호환 유지; V2 플러그인은 `plugins/<name>/index.js`로 `opencode.json(c)` 수정 없이 자동 로드되며 단일 파일 `plugin/asd-guard.js`는 무시됨 |
+| 14 | 에이전트 frontmatter: `mode: subagent`, read-only `tools:` | `src/adapters/installer/agent-renderer.ts:162-170` | **지원**: `opencode debug agents`에서 `tools: { write/edit/patch: false }`가 `{ action: "edit", resource: "*", effect: "deny" }`로 자동 변환됨 확인 |
+| 15 | ACP 준비 상태 프로브 | `src/adapters/installer.ts:2438-2458` | **대체 필요**: V2는 `["acp"]`, V1은 `["acp", "--pure"]`로 분기 필요 |
+| 16 | 대시보드 모델 피커/라벨 | `src/cli/dashboard.ts` | **지원**: 공용 UI가 `provider/model` 카탈로그를 그대로 소비 |
+
+#### Phase 0 실측 V2 플러그인 및 런타임 계약 (`opencode v2.3.2`)
+- **버전 문자열 형식**: V1은 bare semver(`1.19.4`), V2는 `opencode v2.3.2` 출력(종료코드 `0`).
+- **Zero-Dep V2 플러그인**: `@opencode/plugin@2.3.2`의 `Plugin.define(p)`는 항등 함수이며, `~/.config/opencode/plugins/asd-guard/index.js`에 순수 ESM 객체(`export default { id: "asd-policy-guard", async setup(ctx) { ... } }`)를 배치하면 외부 npm 의존성(`dependencies: {}` 유지) 및 `opencode.json(c)` 수정 없이 자동 로드됨을 실증 완료.
+- **V2에서도 Bun `process.execPath` 이슈 동일 확인**: Windows V2 플러그인 내부에서 `process.execPath`가 `...\@opencode\cli\bin\opencode.exe`를 가리키므로 sync 시 Node 바이너리 경로 baking이 필수.
+- **V2 훅 API**:
+  - PreToolUse: `await ctx.tool.hook("execute.before", (event) => { ... throw new Error(reason); })` (`event = { tool, sessionID, agent, messageID, id, input }`, 루트 디렉토리 `ctx.location?.directory || process.cwd()`).
+  - Stop: `ctx.event.subscribe({ signal: controller.signal })`로 `event.type === "session.idle"` 수신, cleanup으로 `() => controller.abort()` 반환.
+  - 잔여 V1 `plugin/asd-guard.js`: V2에서 충돌 없이 무시되나 `asd doctor` drift 방지를 위해 V2 sync 시 정리.
+- **Post-T2.1 재계획 게이트**: 코어 수정 대상이 5개 모듈(`acp-client.ts`, `policy.ts`, `drivers.ts`, `session-tracker.ts`, `transcripts.ts`)로 확인되어 Turn 4 코어 작업을 `T4.2`(`acp-client`, `policy`, `drivers`)와 `T4.3`(`session-tracker`, `transcripts`)로 분할 적용.
 
 ### 3.4 현재 아예 없는 것 (V2 이주 시 신규 개발)
 
