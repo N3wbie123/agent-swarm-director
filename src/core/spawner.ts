@@ -20,6 +20,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { resolveAsdPaths } from "./config.ts";
+import { resolveOpenCodeCapabilityProfile } from "./opencode-profile.ts";
 import { redactSecrets } from "./redact.ts";
 import {
   extractHarnessSessionIdFromOutput,
@@ -29,6 +30,7 @@ import { appendCursorStreamFallback } from "./transcripts.ts";
 import type {
   AgentRole,
   HarnessId,
+  OpenCodeCapabilityProfile,
   SubagentDispatchMode,
   SubagentSessionMeta,
   TaskTelemetry,
@@ -824,14 +826,29 @@ export interface AbortSessionOptions {
   abortController?: AbortController;
   serverUrl?: string;
   sessionId?: string;
+  openCodeProfile?: OpenCodeCapabilityProfile;
+  env?: Record<string, string | undefined>;
 }
 
 export function abortSession(options: AbortSessionOptions): void {
   if (options.harness === "opencode" && (options.mode === "daemon-sse" || options.isSharedDaemon === true)) {
     options.abortController?.abort();
     if (options.serverUrl && options.sessionId) {
+      const profile =
+        options.openCodeProfile ?? resolveOpenCodeCapabilityProfile({ env: options.env });
+      const base = options.serverUrl.replace(/\/+$/, "");
+      const template =
+        profile.serverAbortPathTemplate ||
+        (profile.effectiveProfile === "v2"
+          ? "/api/session/{sessionId}/interrupt"
+          : "/session/{sessionId}/abort");
+      const normalizedTemplate = template.startsWith("/") ? template : `/${template}`;
+      const abortPath = normalizedTemplate.replace(
+        "{sessionId}",
+        encodeURIComponent(options.sessionId)
+      );
       try {
-        void fetch(`${options.serverUrl.replace(/\/+$/, "")}/session/${options.sessionId}/abort`, {
+        void fetch(`${base}${abortPath}`, {
           method: "POST",
         }).catch(() => {});
       } catch {

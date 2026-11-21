@@ -15,6 +15,7 @@ import { syncAgentModelsIfNeeded } from "../adapters/installer.ts";
 import { loadRoutingConfig } from "../core/config.ts";
 import type { SqliteDriver, TaskRow } from "../core/db.ts";
 import { buildDefaultHarnessCommand, spawnHybridSubagent } from "../core/debate.ts";
+import { resolveOpenCodeCapabilityProfile } from "../core/opencode-profile.ts";
 import {
   checkProtectedPath,
   isPathAllowed,
@@ -835,6 +836,8 @@ export async function executeDispatch(
       durationMs: 0,
     }));
     const initialBoard = renderProgressBoard(session, allTasks);
+    const usesV1SessionCallback =
+      resolveOpenCodeCapabilityProfile().usesV1SessionCallback;
     let asyncJob: AsyncDispatchJobMeta = {
       jobId,
       sessionId,
@@ -842,8 +845,14 @@ export async function executeDispatch(
       status: "running",
       workerPid: process.pid,
       startedAt,
-      ...(input.openCodeSessionId ? { openCodeSessionId: input.openCodeSessionId } : {}),
-      notified: false,
+      ...(usesV1SessionCallback
+        ? {
+            ...(input.openCodeSessionId
+              ? { openCodeSessionId: input.openCodeSessionId }
+              : {}),
+            notified: false,
+          }
+        : {}),
       progressBoard: initialBoard,
       results: pendingResults,
     };

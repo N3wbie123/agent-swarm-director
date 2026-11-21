@@ -12,9 +12,11 @@ import * as path from "node:path";
 import {
   spawnSubagent,
   killProcessTree,
+  abortSession,
   extractTelemetryFromOutput,
 } from "../src/core/spawner.ts";
 import type { CommandRunner } from "../src/core/spawner.ts";
+import { buildOpenCodeCapabilityProfile } from "../src/core/opencode-profile.ts";
 import type { SubagentSessionMeta } from "../src/core/types.ts";
 
 const tmpRoots: string[] = [];
@@ -431,5 +433,79 @@ describe("spawner.ts", () => {
       outputTokens: 120,
       costUsd: 0.015,
     });
+  });
+
+  test("abortSession routes daemon-sse OpenCode abort to /api/session/:id/interrupt (V2) vs /session/:id/abort (V1)", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method?: string }> = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), method: init?.method });
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const v2Controller = new AbortController();
+      abortSession({
+        harness: "opencode",
+        mode: "daemon-sse",
+        abortController: v2Controller,
+        serverUrl: "http://127.0.0.1:4096/",
+        sessionId: "ses_v2_123",
+        env: { ASD_OPENCODE_PROFILE: "v2" },
+      });
+      assert.equal(v2Controller.signal.aborted, true);
+
+      const v1Controller = new AbortController();
+      abortSession({
+        harness: "opencode",
+        isSharedDaemon: true,
+        abortController: v1Controller,
+        serverUrl: "http://127.0.0.1:4096",
+        sessionId: "ses_v1_456",
+        env: { ASD_OPENCODE_PROFILE: "v1" },
+      });
+      assert.equal(v1Controller.signal.aborted, true);
+
+      const explicitV2 = buildOpenCodeCapabilityProfile({
+        rawOutput: "opencode v2.3.2",
+        version: "2.3.2",
+        major: 2,
+        pluginApi: "v2",
+        source: "cli-probe",
+      });
+      abortSession({
+        harness: "opencode",
+        mode: "daemon-sse",
+        serverUrl: "http://127.0.0.1:4097",
+        sessionId: "ses/special",
+        openCodeProfile: explicitV2,
+      });
+
+      const explicitV1 = buildOpenCodeCapabilityProfile({
+        rawOutput: "1.19.4",
+        version: "1.19.4",
+        major: 1,
+        pluginApi: "v1",
+        source: "cli-probe",
+      });
+      abortSession({
+        harness: "opencode",
+        mode: "daemon-sse",
+        serverUrl: "http://127.0.0.1:4097",
+        sessionId: "ses_v1_profile",
+        openCodeProfile: explicitV1,
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      assert.deepEqual(calls, [
+        { url: "http://127.0.0.1:4096/api/session/ses_v2_123/interrupt", method: "POST" },
+        { url: "http://127.0.0.1:4096/session/ses_v1_456/abort", method: "POST" },
+        { url: "http://127.0.0.1:4097/api/session/ses%2Fspecial/interrupt", method: "POST" },
+        { url: "http://127.0.0.1:4097/session/ses_v1_profile/abort", method: "POST" },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

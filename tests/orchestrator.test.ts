@@ -32,7 +32,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AsdOrchestrator, PLAN_SCHEMA_DEFINITION, handlePlan, handleDispatch, handleDebate, handleVerify, parseSubagentReport } from "../src/orchestrator/index.ts";
-import { waitForAsyncDispatch } from "../src/core/subagent-control.ts";
+import { readAsyncDispatchJob, waitForAsyncDispatch } from "../src/core/subagent-control.ts";
 import { main as cliMain } from "../src/cli/index.ts";
 import { openProjectDb, type SqliteDriver } from "../src/core/db.ts";
 import { ensureGitUserIdentity, prepareBaseline, runGit } from "../src/core/workspace.ts";
@@ -1754,7 +1754,9 @@ rl.on("line", (line) => {
     );
 
     const prevIdle = process.env.ASD_SPAWN_IDLE_TIMEOUT_MS;
+    const prevProfile = process.env.ASD_OPENCODE_PROFILE;
     process.env.ASD_SPAWN_IDLE_TIMEOUT_MS = "250";
+    process.env.ASD_OPENCODE_PROFILE = "v1";
     const server = new AsdOrchestrator({
       projectRoot,
       autoSync: false,
@@ -1789,6 +1791,7 @@ rl.on("line", (line) => {
       assert.equal(asyncStart.async, true);
       assert.equal(asyncStart.asyncJob?.status, "running");
       assert.equal(asyncStart.asyncJob?.openCodeSessionId, "ses_oc_main_1");
+      assert.equal(asyncStart.asyncJob?.notified, false);
 
       const finishedJob = await waitForAsyncDispatch(projectRoot, plan.sessionId, {
         timeoutMs: 15000,
@@ -1806,8 +1809,133 @@ rl.on("line", (line) => {
       server.close();
       if (prevIdle === undefined) delete process.env.ASD_SPAWN_IDLE_TIMEOUT_MS;
       else process.env.ASD_SPAWN_IDLE_TIMEOUT_MS = prevIdle;
+      if (prevProfile === undefined) delete process.env.ASD_OPENCODE_PROFILE;
+      else process.env.ASD_OPENCODE_PROFILE = prevProfile;
       fs.rmSync(projectRoot, { recursive: true, force: true });
       fs.rmSync(mockDir, { recursive: true, force: true });
+    }
+  });
+
+  test("async dispatch preserves generic async-dispatch.json across V1/V2 and gates openCodeSessionId/notified on V1", async () => {
+    const prevProfile = process.env.ASD_OPENCODE_PROFILE;
+    const makeRunner = (): CommandRunner => ({
+      async run(_cmd, _args, opts) {
+        opts.onSpawn?.(7777);
+        if (opts.cwd) {
+          fs.mkdirSync(path.join(opts.cwd, "src"), { recursive: true });
+          fs.writeFileSync(path.join(opts.cwd, "src/async-target.ts"), "export const ok = true;\n", "utf8");
+        }
+        opts.onStdout(
+          '```asd-report\n{"summary":"Mock async task done","key_decisions":["Kept generic async"],"risks":[]}\n```\n'
+        );
+        return { exitCode: 0, pid: 7777 };
+      },
+    });
+
+    try {
+      // 1. V2 profile: generic async-dispatch.json works, V1 callback fields omitted
+      process.env.ASD_OPENCODE_PROFILE = "v2";
+      const v2Root = makeProjectRoot();
+      const v2Server = new AsdOrchestrator({
+        projectRoot: v2Root,
+        commandRunner: makeRunner(),
+        autoSync: false,
+      });
+      openServers.push(v2Server);
+
+      const v2Plan = await v2Server.handlePlan({
+        action: "create",
+        sessionId: "async-gate-v2",
+        mainHarness: "opencode",
+        tasks: [
+          {
+            taskId: "T1.1",
+            turn: 1,
+            title: "Async task under V2 profile",
+            track: "LIGHT",
+            role: "worker",
+            targetFiles: ["src/async-target.ts"],
+            verifyCmd: 'node -e "process.exit(0)"',
+          },
+        ],
+      });
+
+      const v2Start = await v2Server.handleDispatch({
+        sessionId: v2Plan.sessionId,
+        turn: 1,
+        mode: "parallel_spawn",
+        harness: "opencode",
+        async: true,
+        openCodeSessionId: "ses_oc_v2_ignored",
+      });
+      assert.equal(v2Start.async, true);
+      assert.ok(v2Start.asyncJob);
+      assert.equal(v2Start.asyncJob?.sessionId, v2Plan.sessionId);
+      assert.equal(v2Start.asyncJob?.turn, 1);
+      assert.equal(v2Start.asyncJob?.status, "running");
+      assert.equal("openCodeSessionId" in v2Start.asyncJob!, false);
+      assert.equal("notified" in v2Start.asyncJob!, false);
+
+      const v2Done = await waitForAsyncDispatch(v2Root, v2Plan.sessionId, {
+        timeoutMs: 10000,
+        pollIntervalMs: 50,
+      });
+      assert.equal(v2Done.status, "done");
+      assert.equal(v2Done.results?.[0]?.status, "done");
+      const v2Disk = readAsyncDispatchJob(v2Root, v2Plan.sessionId);
+      assert.ok(v2Disk);
+      assert.equal("openCodeSessionId" in v2Disk!, false);
+      assert.equal("notified" in v2Disk!, false);
+
+      // 2. V1 profile: preserves openCodeSessionId and notified: false
+      process.env.ASD_OPENCODE_PROFILE = "v1";
+      const v1Root = makeProjectRoot();
+      const v1Server = new AsdOrchestrator({
+        projectRoot: v1Root,
+        commandRunner: makeRunner(),
+        autoSync: false,
+      });
+      openServers.push(v1Server);
+
+      const v1Plan = await v1Server.handlePlan({
+        action: "create",
+        sessionId: "async-gate-v1",
+        mainHarness: "opencode",
+        tasks: [
+          {
+            taskId: "T1.1",
+            turn: 1,
+            title: "Async task under V1 profile",
+            track: "LIGHT",
+            role: "worker",
+            targetFiles: ["src/async-target.ts"],
+            verifyCmd: 'node -e "process.exit(0)"',
+          },
+        ],
+      });
+
+      const v1Start = await v1Server.handleDispatch({
+        sessionId: v1Plan.sessionId,
+        turn: 1,
+        mode: "parallel_spawn",
+        harness: "opencode",
+        async: true,
+        openCodeSessionId: "ses_oc_v1_active",
+      });
+      assert.equal(v1Start.async, true);
+      assert.equal(v1Start.asyncJob?.openCodeSessionId, "ses_oc_v1_active");
+      assert.equal(v1Start.asyncJob?.notified, false);
+
+      const v1Done = await waitForAsyncDispatch(v1Root, v1Plan.sessionId, {
+        timeoutMs: 10000,
+        pollIntervalMs: 50,
+      });
+      assert.equal(v1Done.status, "done");
+      assert.equal(v1Done.openCodeSessionId, "ses_oc_v1_active");
+      assert.equal(v1Done.notified, false);
+    } finally {
+      if (prevProfile === undefined) delete process.env.ASD_OPENCODE_PROFILE;
+      else process.env.ASD_OPENCODE_PROFILE = prevProfile;
     }
   });
 

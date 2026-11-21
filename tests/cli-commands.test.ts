@@ -22,7 +22,11 @@ import {
 } from "../src/cli/index.ts";
 import { checkForRemoteUpdate, isUpdateCheckDisabled } from "../src/core/config.ts";
 import { openProjectDb } from "../src/core/db.ts";
-import { writeAsyncDispatchJob } from "../src/core/subagent-control.ts";
+import {
+  readAsyncDispatchJob,
+  waitForAsyncDispatch,
+  writeAsyncDispatchJob,
+} from "../src/core/subagent-control.ts";
 import { runGit } from "../src/core/workspace.ts";
 
 const cliPath = path.resolve(import.meta.dirname, "../src/cli/index.ts");
@@ -473,6 +477,105 @@ describe("CLI Parser, Hook Latency, Clean Safety, Handoff, Migrate & Update Chec
       const roadmapText = fs.readFileSync(roadmapPath, "utf8");
       assert.ok(roadmapText.includes("runDriverTurn"));
       assert.ok(roadmapText.includes("ASD-Nexus"));
+
+      // Verify --open-code-session alias parses identically and CLI dispatch gates V1 callback fields by profile
+      const aliasArgs = parseCliArgs(["dispatch", "--async", "--open-code-session=ses_oc_alias"]);
+      assert.equal(aliasArgs.parseError, undefined);
+      assert.equal(aliasArgs.options.openCodeSession, "ses_oc_alias");
+
+      const prevProfile = process.env.ASD_OPENCODE_PROFILE;
+      try {
+        const cliDb = openProjectDb(tmpProj, tmpHome);
+        cliDb.createOrGetSession({
+          sessionId: "sess-cli-async-gate",
+          projectRoot: tmpProj,
+          mainHarness: "opencode",
+        });
+        cliDb.upsertTasks("sess-cli-async-gate", [
+          {
+            taskId: "T1.1",
+            turn: 1,
+            title: "Upstream blocker",
+            track: "HEAVY",
+            role: "worker",
+            targetFiles: ["a.ts"],
+          },
+          {
+            taskId: "T1.2",
+            turn: 1,
+            title: "Dependent task",
+            track: "HEAVY",
+            role: "worker",
+            targetFiles: ["b.ts"],
+            dependsOn: ["T1.1"],
+          },
+        ]);
+        cliDb.close();
+
+        process.env.ASD_OPENCODE_PROFILE = "v2";
+        const v2DispatchExit = await main([
+          "dispatch",
+          "--session",
+          "sess-cli-async-gate",
+          "--turn",
+          "1",
+          "--mode",
+          "parallel_spawn",
+          "--task",
+          "T1.2",
+          "--async",
+          "--opencode-session",
+          "ses_oc_cli_v2",
+          "--project-root",
+          tmpProj,
+          "--home",
+          tmpHome,
+          "--json",
+        ]);
+        assert.equal(v2DispatchExit, 0);
+        const v2Finished = await waitForAsyncDispatch(tmpProj, "sess-cli-async-gate", {
+          homeDir: tmpHome,
+          timeoutMs: 10000,
+          pollIntervalMs: 50,
+        });
+        assert.equal(v2Finished.status, "done");
+        assert.equal("openCodeSessionId" in v2Finished, false);
+        assert.equal("notified" in v2Finished, false);
+
+        process.env.ASD_OPENCODE_PROFILE = "v1";
+        const v1DispatchExit = await main([
+          "dispatch",
+          "--session",
+          "sess-cli-async-gate",
+          "--turn",
+          "1",
+          "--mode",
+          "parallel_spawn",
+          "--task",
+          "T1.2",
+          "--async",
+          "--opencode-session",
+          "ses_oc_cli_v1",
+          "--project-root",
+          tmpProj,
+          "--home",
+          tmpHome,
+          "--json",
+        ]);
+        assert.equal(v1DispatchExit, 0);
+        const v1Finished = await waitForAsyncDispatch(tmpProj, "sess-cli-async-gate", {
+          homeDir: tmpHome,
+          timeoutMs: 10000,
+          pollIntervalMs: 50,
+        });
+        assert.equal(v1Finished.status, "done");
+        const v1Disk = readAsyncDispatchJob(tmpProj, "sess-cli-async-gate", tmpHome);
+        assert.equal(v1Disk?.openCodeSessionId, "ses_oc_cli_v1");
+        assert.equal(v1Disk?.notified, false);
+      } finally {
+        if (prevProfile === undefined) delete process.env.ASD_OPENCODE_PROFILE;
+        else process.env.ASD_OPENCODE_PROFILE = prevProfile;
+      }
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
       fs.rmSync(tmpProj, { recursive: true, force: true });

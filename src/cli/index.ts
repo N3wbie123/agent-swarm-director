@@ -65,6 +65,7 @@ import {
   type StopHookPayload,
 } from "../core/policy.ts";
 import { redactSecrets } from "../core/redact.ts";
+import { resolveOpenCodeCapabilityProfile } from "../core/opencode-profile.ts";
 import { getForegroundSessionId, renderProgressBoard } from "../core/render.ts";
 import {
   ASD_VERSION,
@@ -2066,14 +2067,25 @@ export async function main(
             const taskIdsFromOpt = options.task
               ? options.task.split(",").map((s) => s.trim()).filter(Boolean)
               : undefined;
+            const rawV1SessionId =
+              options.openCodeSession ||
+              (typeof jsonPayload.openCodeSessionId === "string"
+                ? jsonPayload.openCodeSessionId
+                : undefined);
+            const forwardV1SessionId =
+              rawV1SessionId && resolveOpenCodeCapabilityProfile().usesV1SessionCallback
+                ? rawV1SessionId
+                : undefined;
+            const { openCodeSessionId: _ignoredV1SessionId, ...restJsonPayload } =
+              jsonPayload;
             const input = {
               sessionId: (options.session || (jsonPayload.sessionId as string) || ""),
-              ...jsonPayload,
+              ...restJsonPayload,
               ...(options.turn !== undefined ? { turn: options.turn } : {}),
               ...(options.mode ? { mode: options.mode } : {}),
               ...(options.harness ? { harness: options.harness } : {}),
               ...(options.transport ? { transport: options.transport } : {}),
-              ...(options.openCodeSession ? { openCodeSessionId: options.openCodeSession } : {}),
+              ...(forwardV1SessionId ? { openCodeSessionId: forwardV1SessionId } : {}),
               ...(flags.async ? { async: true } : {}),
               ...(taskIdsFromOpt ? { taskIds: taskIdsFromOpt } : {}),
             };

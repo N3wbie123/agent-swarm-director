@@ -26,10 +26,15 @@ import {
   OPENCODE_V1_PLUGIN_RELATIVE_PATH,
   generateOpencodeV1GuardPlugin,
 } from "../src/adapters/opencode-v1.ts";
+import {
+  buildOpenCodeCapabilityProfile,
+  resolveOpenCodeCapabilityProfile,
+} from "../src/core/opencode-profile.ts";
 
 const V1_ISOLATED_SYMBOLS = [
   "AsdPolicyGuardPlugin",
   "scanAndNotifyCompletedJobs",
+  "formatAsyncCompletionReport",
   "client.session.prompt",
   "tool.execute.before",
 ] as const;
@@ -318,5 +323,30 @@ process.exit(0);
     } finally {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
+  });
+
+  test("capability profile gates usesV1SessionCallback to V1/fallback only (disabled on V2)", () => {
+    const v1Profile = resolveOpenCodeCapabilityProfile({
+      env: { ASD_OPENCODE_PROFILE: "v1" },
+    });
+    assert.equal(v1Profile.effectiveProfile, "v1");
+    assert.equal(v1Profile.usesV1SessionCallback, true);
+
+    const v2Profile = resolveOpenCodeCapabilityProfile({
+      env: { ASD_OPENCODE_PROFILE: "v2" },
+    });
+    assert.equal(v2Profile.effectiveProfile, "v2");
+    assert.equal(v2Profile.usesV1SessionCallback, false);
+
+    const unknownProfile = buildOpenCodeCapabilityProfile({
+      rawOutput: null,
+      version: null,
+      major: null,
+      pluginApi: "unknown",
+      source: "fallback",
+      degradedWarning: "fallback test",
+    });
+    assert.equal(unknownProfile.effectiveProfile, "v1");
+    assert.equal(unknownProfile.usesV1SessionCallback, true);
   });
 });
