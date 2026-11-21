@@ -50,6 +50,7 @@ import type {
   AcpTurnExecutionResult,
   JsonRpcId,
 } from "./acp-types.ts";
+import { resolveOpenCodeCapabilityProfile } from "./opencode-profile.ts";
 import {
   checkProtectedPath,
   evaluatePreToolUse,
@@ -68,6 +69,7 @@ import {
   type AcpHarnessReadiness,
   type AgentRole,
   type HarnessId,
+  type OpenCodeCapabilityProfile,
   type TaskTelemetry,
 } from "./types.ts";
 
@@ -243,17 +245,29 @@ export const CODEX_ACP_INSTALL_HINT =
 export function probeAcpCapability(
   harness: HarnessId,
   env: Record<string, string | undefined> = process.env,
-  options?: { interactivePermissions?: boolean }
+  options?: {
+    interactivePermissions?: boolean;
+    openCodeProfile?: OpenCodeCapabilityProfile;
+  }
 ): AcpHarnessReadiness {
   switch (harness) {
     case "opencode": {
       const resolved = resolveBinaryOnPath("opencode", env);
+      const profile =
+        options?.openCodeProfile ??
+        (resolved ? resolveOpenCodeCapabilityProfile({ env }) : undefined);
+      const args =
+        profile?.acpArgs && profile.acpArgs.length > 0
+          ? [...profile.acpArgs]
+          : profile?.effectiveProfile === "v2"
+            ? ["acp"]
+            : ["acp", "--pure"];
       return {
         harness,
         supported: Boolean(resolved),
         mode: "native",
         command: "opencode",
-        args: ["acp", "--pure"],
+        args,
         resolvedPath: resolved,
       };
     }
@@ -1515,6 +1529,7 @@ export interface ExecuteAcpSubagentTurnOptions {
   logPath: string;
   resumeSessionId?: string | null;
   commandOverride?: { command: string; args: string[] };
+  openCodeProfile?: OpenCodeCapabilityProfile;
   env?: Record<string, string | undefined>;
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -1563,7 +1578,13 @@ export async function executeAcpSubagentTurn(
         command: options.commandOverride.command,
         args: options.commandOverride.args,
       }
-    : probeAcpCapability(options.harness, options.env ?? process.env);
+    : probeAcpCapability(
+        options.harness,
+        options.env ?? process.env,
+        options.openCodeProfile
+          ? { openCodeProfile: options.openCodeProfile }
+          : undefined
+      );
 
   if (!readiness.supported) {
     const msg = `[ACP_UNAVAILABLE] ACP server not available for harness '${options.harness}'\n`;

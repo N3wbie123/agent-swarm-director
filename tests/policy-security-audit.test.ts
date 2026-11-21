@@ -783,4 +783,127 @@ describe("T2.2 evasion gap closures", () => {
       assert.equal(res.allowed, false, `Expected AI attribution commit to be blocked: ${aiCommitCmd}`);
     }
   });
+
+  test("OpenCode V2 'shell' and V1 'bash' block .asd/ and .git/ mutations while allowing benign commands", () => {
+    const rootDir = makeTempDir();
+    const metaPath = path.join(rootDir, "meta.json");
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify({
+        subSessionId: "sub-oc-v2",
+        sessionId: "asd-20261121-000000-oc2",
+        taskId: "T4.2",
+        role: "worker",
+        harness: "opencode",
+        model: "z-ai/glm-5.3-flash",
+        track: "LIGHT",
+        allowedFiles: ["src/allowed.ts"],
+        startedAt: Date.now(),
+        status: "running",
+      }),
+      "utf8"
+    );
+
+    const mainEnv = { ASD_PROJECT_ROOT: rootDir };
+    const subEnv = {
+      ASD_SESSION_ROLE: "subagent",
+      ASD_SUBAGENT_META: metaPath,
+      ASD_PROJECT_ROOT: rootDir,
+    };
+
+    const dangerousCommands = [
+      "echo hacked > .asd/PLAN.md",
+      "Set-Content -Path .asd/PLAN.md -Value x",
+      "rm -rf .asd",
+      "echo '[user]' >> .git/config",
+      "cat .git/config",
+      "cat .env",
+    ];
+
+    for (const toolName of ["shell", "bash"]) {
+      for (const cmd of dangerousCommands) {
+        const mainRes = evaluatePreToolUse(
+          { harness: "opencode", tool_name: toolName, tool_input: { command: cmd } },
+          undefined,
+          mainEnv
+        );
+        assert.equal(
+          mainRes.allowed,
+          false,
+          `Expected main-session opencode '${toolName}' to block: ${cmd}`
+        );
+
+        const subRes = evaluatePreToolUse(
+          { harness: "opencode", tool_name: toolName, tool_input: { command: cmd } },
+          undefined,
+          subEnv
+        );
+        assert.equal(
+          subRes.allowed,
+          false,
+          `Expected subagent opencode '${toolName}' to block: ${cmd}`
+        );
+      }
+
+      for (const benignCmd of ["git status", "cat .env.example", "node --version"]) {
+        const mainOk = evaluatePreToolUse(
+          { harness: "opencode", tool_name: toolName, tool_input: { command: benignCmd } },
+          undefined,
+          mainEnv
+        );
+        assert.equal(
+          mainOk.allowed,
+          true,
+          `Expected main-session opencode '${toolName}' to allow: ${benignCmd}`
+        );
+
+        const subOk = evaluatePreToolUse(
+          { harness: "opencode", tool_name: toolName, tool_input: { command: benignCmd } },
+          undefined,
+          subEnv
+        );
+        assert.equal(
+          subOk.allowed,
+          true,
+          `Expected subagent opencode '${toolName}' to allow: ${benignCmd}`
+        );
+      }
+    }
+
+    // OpenCode V1/V2 write tools (write/edit/patch/multiedit) enforce allowedFiles & protected paths
+    for (const writeTool of ["write", "edit", "patch", "multiedit"]) {
+      const allowInScope = evaluatePreToolUse(
+        {
+          harness: "opencode",
+          tool_name: writeTool,
+          tool_input: { filePath: "src/allowed.ts" },
+        },
+        undefined,
+        subEnv
+      );
+      assert.equal(allowInScope.allowed, true, `Expected ${writeTool} inside allowedFiles to pass`);
+
+      const blockAsd = evaluatePreToolUse(
+        {
+          harness: "opencode",
+          tool_name: writeTool,
+          tool_input: { filePath: ".asd/PLAN.md" },
+        },
+        undefined,
+        subEnv
+      );
+      assert.equal(blockAsd.allowed, false, `Expected ${writeTool} targeting .asd/PLAN.md to block`);
+
+      const blockOutOfScope = evaluatePreToolUse(
+        {
+          harness: "opencode",
+          tool_name: writeTool,
+          tool_input: { path: "src/forbidden.ts" },
+        },
+        undefined,
+        subEnv
+      );
+      assert.equal(blockOutOfScope.allowed, false, `Expected ${writeTool} outside allowedFiles to block`);
+    }
+  });
 });

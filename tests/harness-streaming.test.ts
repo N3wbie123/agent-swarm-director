@@ -8,10 +8,19 @@ import {
   abortOpencodeSession,
   shutdownOpencodeDaemon,
 } from "../src/adapters/opencode.ts";
+import { openProjectDb } from "../src/core/db.ts";
 import {
+  abortOpenCodeServerSession,
   createStreamParser,
   parseDriverStreamLine,
+  resolveOpenCodeServerEndpoints,
+  runDriverTurn,
+  runOpenCodeSseWithCliFallback,
 } from "../src/core/drivers.ts";
+import {
+  buildOpenCodeCapabilityProfile,
+  resetOpenCodeVersionCache,
+} from "../src/core/opencode-profile.ts";
 import {
   buildSpawnSpec,
 } from "../src/core/session-tracker.ts";
@@ -243,6 +252,257 @@ describe("T3.1: Opencode Daemon Lifecycle & Transcripts Busy Retry (Risk 4)", ()
       assert.equal(result.messages[0]?.text, "hello test");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("T4.2: OpenCode V2 SSE Framing, Endpoints & Streaming CLI Fallback", () => {
+  it("parses V2 BusEvent SSE frames (message.part.updated, message.part.delta, GlobalEvent shell tool) while ignoring SSE heartbeats", () => {
+    const parser = createStreamParser({ harness: "opencode" });
+    const v2Sse = [
+      ": keepalive\n",
+      "id: evt-1\n",
+      "event: server.connected\n",
+      'data: {"type":"server.connected","properties":{}}\n\n',
+      "event: message.part.delta\n",
+      'data: {"type":"message.part.delta","properties":{"sessionID":"ses_v2_sse","field":"reasoning","delta":"inspecting code"}}\n\n',
+      "event: message.part.delta\n",
+      'data: {"type":"message.part.delta","properties":{"sessionID":"ses_v2_sse","field":"text","delta":"Hello V2"}}\n\n',
+      "event: message.part.updated\n",
+      'data: {"directory":"/repo","payload":{"type":"message.part.updated","properties":{"part":{"type":"tool","tool":"shell","callID":"call_v2_1","sessionID":"ses_v2_sse","state":{"status":"completed","input":{"command":"git status"},"output":"clean"}}}}}\n\n',
+    ].join("");
+
+    const events = parser.pushChunk(v2Sse);
+    assert.equal(events.length, 4);
+
+    assert.equal(events[0]?.type, "thinking");
+    assert.equal(events[0]?.thinking, "inspecting code");
+    assert.equal(events[0]?.harnessSessionId, "ses_v2_sse");
+
+    assert.equal(events[1]?.type, "text");
+    assert.equal(events[1]?.text, "Hello V2");
+    assert.equal(events[1]?.harnessSessionId, "ses_v2_sse");
+
+    assert.equal(events[2]?.type, "tool_use");
+    assert.equal(events[2]?.toolName, "shell");
+    assert.equal(events[2]?.toolId, "call_v2_1");
+    assert.equal(events[2]?.harnessSessionId, "ses_v2_sse");
+
+    assert.equal(events[3]?.type, "tool_result");
+    assert.equal(events[3]?.toolName, "shell");
+    assert.equal(events[3]?.toolOutput, "clean");
+    assert.equal(events[3]?.harnessSessionId, "ses_v2_sse");
+  });
+
+  it("resolveOpenCodeServerEndpoints and abortOpenCodeServerSession route V2 to /api/event + /api/session/{id}/interrupt and V1 to /event + /session/{id}/abort", async () => {
+    resetOpenCodeVersionCache();
+    try {
+      const v2Endpoints = resolveOpenCodeServerEndpoints("http://127.0.0.1:4096/", {
+        env: { ASD_OPENCODE_PROFILE: "v2" },
+      });
+      assert.equal(v2Endpoints.eventPath, "/api/event");
+      assert.equal(v2Endpoints.eventUrl, "http://127.0.0.1:4096/api/event");
+      assert.equal(
+        v2Endpoints.buildAbortUrl("ses_v2_1"),
+        "http://127.0.0.1:4096/api/session/ses_v2_1/interrupt"
+      );
+
+      const v1Endpoints = resolveOpenCodeServerEndpoints("http://127.0.0.1:4096/", {
+        env: { ASD_OPENCODE_PROFILE: "v1" },
+      });
+      assert.equal(v1Endpoints.eventPath, "/event");
+      assert.equal(v1Endpoints.eventUrl, "http://127.0.0.1:4096/event");
+      assert.equal(
+        v1Endpoints.buildAbortUrl("ses_v1_1"),
+        "http://127.0.0.1:4096/session/ses_v1_1/abort"
+      );
+
+      const calls: Array<{ url: string; method?: string }> = [];
+      const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ url: String(input), method: init?.method });
+        return new Response(null, { status: 200 });
+      }) as typeof fetch;
+
+      const v2Ctrl = new AbortController();
+      const v2Ok = await abortOpenCodeServerSession({
+        serverUrl: "http://127.0.0.1:4096",
+        sessionId: "ses_v2_1",
+        env: { ASD_OPENCODE_PROFILE: "v2" },
+        abortController: v2Ctrl,
+        fetchImpl: mockFetch,
+      });
+      assert.equal(v2Ok, true);
+      assert.equal(v2Ctrl.signal.aborted, true);
+
+      const v1Profile = buildOpenCodeCapabilityProfile({
+        rawOutput: "1.19.4",
+        version: "1.19.4",
+        major: 1,
+        pluginApi: "v1",
+        source: "cli-probe",
+      });
+      const v1Ok = await abortOpenCodeServerSession({
+        serverUrl: "http://127.0.0.1:4096",
+        sessionId: "ses_v1_1",
+        profile: v1Profile,
+        fetchImpl: mockFetch,
+      });
+      assert.equal(v1Ok, true);
+
+      assert.deepEqual(calls, [
+        { url: "http://127.0.0.1:4096/api/session/ses_v2_1/interrupt", method: "POST" },
+        { url: "http://127.0.0.1:4096/session/ses_v1_1/abort", method: "POST" },
+      ]);
+    } finally {
+      resetOpenCodeVersionCache();
+    }
+  });
+
+  it("runOpenCodeSseWithCliFallback streams V2 /api/event on success and falls back cleanly on server failure", async () => {
+    const encoder = new TextEncoder();
+    const seenUrls: string[] = [];
+
+    const sseSuccessFetch = (async (input: RequestInfo | URL) => {
+      seenUrls.push(String(input));
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'event: message.part.updated\ndata: {"type":"message.part.updated","properties":{"part":{"type":"text","text":"streamed via /api/event"}}}\n\n'
+            )
+          );
+          controller.close();
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as typeof fetch;
+
+    let fallbackCalled = false;
+    const okRes = await runOpenCodeSseWithCliFallback({
+      serverUrl: "http://127.0.0.1:4096",
+      env: { ASD_OPENCODE_PROFILE: "v2" },
+      fetchImpl: sseSuccessFetch,
+      fallbackToCli: async () => {
+        fallbackCalled = true;
+        return "cli";
+      },
+    });
+    assert.equal(okRes.mode, "daemon-sse");
+    assert.equal(fallbackCalled, false);
+    assert.deepEqual(seenUrls, ["http://127.0.0.1:4096/api/event"]);
+    if (okRes.mode === "daemon-sse") {
+      assert.equal(okRes.result.events[0]?.text, "streamed via /api/event");
+    }
+
+    const sseFailFetch = (async () => new Response("Not Found", { status: 404 })) as typeof fetch;
+    const failRes = await runOpenCodeSseWithCliFallback({
+      serverUrl: "http://127.0.0.1:4096",
+      env: { ASD_OPENCODE_PROFILE: "v2" },
+      fetchImpl: sseFailFetch,
+      fallbackToCli: async ({ profile, sseResult }) => ({
+        profile: profile.effectiveProfile,
+        flags: profile.headlessRunFlags,
+        status: sseResult.status,
+      }),
+    });
+    assert.equal(failRes.mode, "cli-fallback");
+    if (failRes.mode === "cli-fallback") {
+      assert.deepEqual(failRes.result, {
+        profile: "v2",
+        flags: ["--auto"],
+        status: 404,
+      });
+    }
+  });
+
+  it("runDriverTurn falls back from failed OpenCode server SSE to streaming CLI using V2 --auto (omitting --pure) and V1 --pure", async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asd-oc-driver-fallback-"));
+    try {
+      const db = openProjectDb(tmpRoot, tmpRoot);
+      const sessionId = "asd-20261121-220000-ocv2";
+      db.createOrGetSession({
+        sessionId,
+        projectRoot: tmpRoot,
+        mainHarness: "opencode",
+        mainModel: "z-ai/glm-5.3-flash",
+      });
+
+      const requestedUrls: string[] = [];
+      const cliInvocations: Array<{ cmd: string; args: string[] }> = [];
+      const failingFetch = (async (input: RequestInfo | URL) => {
+        requestedUrls.push(String(input));
+        return new Response("Unavailable", { status: 503 });
+      }) as typeof fetch;
+
+      // V2 fallback: hits /api/event, fails over to CLI with --auto and WITHOUT --pure
+      const v2Events: string[] = [];
+      const v2Turn = await runDriverTurn({
+        projectRoot: tmpRoot,
+        db,
+        sessionId,
+        prompt: "Run V2 fallback",
+        openCodeServerUrl: "http://127.0.0.1:4096",
+        fetchImpl: failingFetch,
+        env: { ASD_OPENCODE_PROFILE: "v2" },
+        onEvent: (ev) => {
+          if (ev.type === "text" && ev.text) v2Events.push(ev.text);
+        },
+        commandRunner: {
+          async run(cmd, args, opts) {
+            cliInvocations.push({ cmd, args });
+            opts.onStdout(
+              JSON.stringify({
+                part: { type: "text", text: "v2 cli fallback ok", sessionID: "ses_oc_v2_cli" },
+              }) + "\n"
+            );
+            return { exitCode: 0, pid: 71001 };
+          },
+        },
+      });
+
+      assert.equal(v2Turn.exitCode, 0);
+      assert.equal(v2Turn.harnessSessionId, "ses_oc_v2_cli");
+      assert.deepEqual(requestedUrls, ["http://127.0.0.1:4096/api/event"]);
+      assert.equal(cliInvocations.length, 1);
+      assert.equal(cliInvocations[0]?.cmd, "opencode");
+      assert.ok(cliInvocations[0]?.args.includes("--auto"), "V2 CLI fallback must include --auto");
+      assert.ok(!cliInvocations[0]?.args.includes("--pure"), "V2 CLI fallback must omit --pure");
+      assert.deepEqual(v2Events, ["v2 cli fallback ok"]);
+
+      // V1 fallback: hits /event, fails over to CLI with --pure
+      const v1Turn = await runDriverTurn({
+        projectRoot: tmpRoot,
+        db,
+        sessionId,
+        prompt: "Run V1 fallback",
+        openCodeServerUrl: "http://127.0.0.1:4096",
+        fetchImpl: failingFetch,
+        env: { ASD_OPENCODE_PROFILE: "v1" },
+        commandRunner: {
+          async run(cmd, args, opts) {
+            cliInvocations.push({ cmd, args });
+            opts.onStdout(
+              JSON.stringify({
+                part: { type: "text", text: "v1 cli fallback ok", sessionID: "ses_oc_v2_cli" },
+              }) + "\n"
+            );
+            return { exitCode: 0, pid: 71002 };
+          },
+        },
+      });
+
+      assert.equal(v1Turn.exitCode, 0);
+      assert.deepEqual(requestedUrls, [
+        "http://127.0.0.1:4096/api/event",
+        "http://127.0.0.1:4096/event",
+      ]);
+      assert.equal(cliInvocations.length, 2);
+      assert.ok(cliInvocations[1]?.args.includes("--pure"), "V1 CLI fallback must include --pure");
+      assert.ok(!cliInvocations[1]?.args.includes("--auto"), "V1 CLI fallback must not include --auto");
+
+      db.close();
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
 });

@@ -19,6 +19,7 @@ import {
   type SqliteDriver,
 } from "./db.ts";
 import { resolveAsdPaths } from "./config.ts";
+import { resolveOpenCodeCapabilityProfile } from "./opencode-profile.ts";
 import { redactSecrets } from "./redact.ts";
 import { atomicWriteFileSync, renderProgressBoard } from "./render.ts";
 import {
@@ -34,6 +35,7 @@ import type {
   HarnessId,
   MainSessionDriverMeta,
   MainSessionMeta,
+  OpenCodeCapabilityProfile,
   SessionPhase,
 } from "./types.ts";
 
@@ -600,12 +602,247 @@ export interface StreamParserOptions {
   harness: HarnessId;
   sessionId?: string;
   subSessionId?: string;
+  sse?: boolean;
   now?: () => number;
 }
 
 export interface TypedStatefulStreamParser {
   pushChunk(chunk: string | Buffer): DriverStreamEvent[];
   flush(): DriverStreamEvent[];
+}
+
+export interface OpenCodeServerEndpoints {
+  profile: OpenCodeCapabilityProfile;
+  baseUrl: string;
+  eventPath: string;
+  eventUrl: string;
+  abortPathTemplate: string;
+  buildAbortPath: (sessionId: string) => string;
+  buildAbortUrl: (sessionId: string) => string;
+}
+
+export interface OpenCodeSseStreamResult {
+  ok: boolean;
+  status?: number;
+  url: string;
+  events: DriverStreamEvent[];
+  error?: string;
+}
+
+function normalizeServerPath(rawPath: string, fallbackPath: string): string {
+  const chosen = rawPath.trim() || fallbackPath;
+  return chosen.startsWith("/") ? chosen : `/${chosen}`;
+}
+
+/**
+ * Resolves OpenCode `serve` SSE and abort/interrupt endpoints from the active
+ * V1/V2 capability profile (`/api/event` & `/api/session/{sessionId}/interrupt` on V2,
+ * `/event` & `/session/{sessionId}/abort` on V1).
+ */
+export function resolveOpenCodeServerEndpoints(
+  serverUrl: string,
+  options?: {
+    env?: Record<string, string | undefined>;
+    profile?: OpenCodeCapabilityProfile;
+  }
+): OpenCodeServerEndpoints {
+  const profile =
+    options?.profile ?? resolveOpenCodeCapabilityProfile({ env: options?.env });
+  const baseUrl = serverUrl.replace(/\/+$/, "");
+  const isV2 = profile.effectiveProfile === "v2";
+  const eventPath = normalizeServerPath(
+    profile.serverEventPath,
+    isV2 ? "/api/event" : "/event"
+  );
+  const abortPathTemplate = normalizeServerPath(
+    profile.serverAbortPathTemplate,
+    isV2 ? "/api/session/{sessionId}/interrupt" : "/session/{sessionId}/abort"
+  );
+  const buildAbortPath = (sessionId: string): string =>
+    abortPathTemplate.replace("{sessionId}", encodeURIComponent(sessionId));
+
+  return {
+    profile,
+    baseUrl,
+    eventPath,
+    eventUrl: `${baseUrl}${eventPath}`,
+    abortPathTemplate,
+    buildAbortPath,
+    buildAbortUrl: (sessionId: string) => `${baseUrl}${buildAbortPath(sessionId)}`,
+  };
+}
+
+/**
+ * Sends a best-effort abort/interrupt request to a running OpenCode server using the
+ * profile-resolved endpoint (`/api/session/{sessionId}/interrupt` on V2 vs
+ * `/session/{sessionId}/abort` on V1) and aborts any local SSE AbortController.
+ */
+export async function abortOpenCodeServerSession(options: {
+  serverUrl: string;
+  sessionId: string;
+  env?: Record<string, string | undefined>;
+  profile?: OpenCodeCapabilityProfile;
+  abortController?: AbortController;
+  fetchImpl?: typeof fetch;
+}): Promise<boolean> {
+  options.abortController?.abort();
+  if (!options.serverUrl || !options.sessionId) {
+    return false;
+  }
+  const endpoints = resolveOpenCodeServerEndpoints(options.serverUrl, {
+    env: options.env,
+    profile: options.profile,
+  });
+  const fetchFn = options.fetchImpl ?? globalThis.fetch;
+  try {
+    const res = await fetchFn(endpoints.buildAbortUrl(options.sessionId), {
+      method: "POST",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Subscribes to an OpenCode `serve` SSE stream (`/api/event` on V2, `/event` on V1)
+ * and feeds chunks through `createStreamParser({ harness: "opencode" })`.
+ * Returns `{ ok: false }` cleanly on HTTP/network failure so callers can fall back to CLI.
+ */
+export async function streamOpenCodeServerEvents(options: {
+  serverUrl: string;
+  env?: Record<string, string | undefined>;
+  profile?: OpenCodeCapabilityProfile;
+  signal?: AbortSignal;
+  fetchImpl?: typeof fetch;
+  onEvent?: (event: DriverStreamEvent) => void;
+  onRawChunk?: (chunk: string) => void;
+}): Promise<OpenCodeSseStreamResult> {
+  const endpoints = resolveOpenCodeServerEndpoints(options.serverUrl, {
+    env: options.env,
+    profile: options.profile,
+  });
+  const fetchFn = options.fetchImpl ?? globalThis.fetch;
+  const parser = createStreamParser({ harness: "opencode", sse: true });
+  const events: DriverStreamEvent[] = [];
+
+  try {
+    const res = await fetchFn(endpoints.eventUrl, {
+      method: "GET",
+      headers: { Accept: "text/event-stream" },
+      signal: options.signal,
+    });
+    if (!res.ok || !res.body) {
+      return {
+        ok: false,
+        status: res.status,
+        url: endpoints.eventUrl,
+        events,
+        error: `OpenCode SSE endpoint returned HTTP ${res.status}`,
+      };
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value, { stream: true });
+      if (!text) continue;
+      options.onRawChunk?.(text);
+      for (const ev of parser.pushChunk(text)) {
+        events.push(ev);
+        options.onEvent?.(ev);
+      }
+    }
+    const tail = decoder.decode();
+    if (tail) {
+      options.onRawChunk?.(tail);
+      for (const ev of parser.pushChunk(tail)) {
+        events.push(ev);
+        options.onEvent?.(ev);
+      }
+    }
+    for (const ev of parser.flush()) {
+      events.push(ev);
+      options.onEvent?.(ev);
+    }
+
+    return {
+      ok: true,
+      status: res.status,
+      url: endpoints.eventUrl,
+      events,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      url: endpoints.eventUrl,
+      events,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Attempts OpenCode server SSE streaming and falls back cleanly to streaming CLI
+ * execution when the server API fails or is unreachable.
+ */
+export async function runOpenCodeSseWithCliFallback<T>(options: {
+  serverUrl: string;
+  env?: Record<string, string | undefined>;
+  profile?: OpenCodeCapabilityProfile;
+  signal?: AbortSignal;
+  fetchImpl?: typeof fetch;
+  onEvent?: (event: DriverStreamEvent) => void;
+  onRawChunk?: (chunk: string) => void;
+  fallbackToCli: (context: {
+    profile: OpenCodeCapabilityProfile;
+    sseResult: OpenCodeSseStreamResult;
+  }) => Promise<T>;
+}): Promise<
+  | { mode: "daemon-sse"; result: OpenCodeSseStreamResult }
+  | { mode: "cli-fallback"; result: T }
+> {
+  const profile =
+    options.profile ?? resolveOpenCodeCapabilityProfile({ env: options.env });
+  const sseResult = await streamOpenCodeServerEvents({
+    serverUrl: options.serverUrl,
+    env: options.env,
+    profile,
+    signal: options.signal,
+    fetchImpl: options.fetchImpl,
+    onEvent: options.onEvent,
+    onRawChunk: options.onRawChunk,
+  });
+  if (sseResult.ok) {
+    return { mode: "daemon-sse", result: sseResult };
+  }
+  const fallbackRes = await options.fallbackToCli({ profile, sseResult });
+  return { mode: "cli-fallback", result: fallbackRes };
+}
+
+function applyOpenCodeHeadlessFlags(
+  args: readonly string[],
+  profile: OpenCodeCapabilityProfile
+): string[] {
+  const next =
+    profile.effectiveProfile === "v2"
+      ? args.filter((arg) => arg !== "--pure")
+      : [...args];
+  const flagsToAdd = profile.headlessRunFlags.filter(
+    (flag) => flag && !next.includes(flag)
+  );
+  if (flagsToAdd.length === 0) {
+    return next;
+  }
+  const modelIdx = next.indexOf("--model");
+  if (modelIdx !== -1) {
+    next.splice(modelIdx, 0, ...flagsToAdd);
+  } else {
+    next.push(...flagsToAdd);
+  }
+  return next;
 }
 
 /**
@@ -619,6 +856,7 @@ export function createStreamParser(ctx: StreamParserOptions): TypedStatefulStrea
 
   let lineBuffer = "";
   let sseEvent = "";
+  let inSseStream = ctx.sse === true;
 
   // Tool block assembly state for content_block_start / content_block_delta
   const activeToolBlocks = new Map<
@@ -636,11 +874,26 @@ export function createStreamParser(ctx: StreamParserOptions): TypedStatefulStrea
 
     // 1. Check for SSE framing (opencode serve)
     if (trimmed.startsWith("event:")) {
+      inSseStream = true;
       sseEvent = trimmed.slice(6).trim();
       void sseEvent;
       return [];
     }
+    if (
+      (inSseStream &&
+        (trimmed.startsWith(":") ||
+          trimmed.startsWith("id:") ||
+          trimmed.startsWith("retry:"))) ||
+      (harness === "opencode" &&
+        (trimmed.startsWith(":") ||
+          /^id:\s*\S+$/.test(trimmed) ||
+          /^retry:\s*\d+$/.test(trimmed)))
+    ) {
+      inSseStream = true;
+      return [];
+    }
     if (trimmed.startsWith("data:")) {
+      inSseStream = true;
       const payload = trimmed.slice(5).trim();
       if (!payload || payload === "[DONE]") {
         sseEvent = "";
@@ -1106,20 +1359,90 @@ export function parseDriverStreamLine(
     }
   }
 
-  // 3. OpenCode `--format json` events (`part` wrapper or direct `type`)
-  const ocPart = obj.part && typeof obj.part === "object" ? (obj.part as Record<string, unknown>) : obj;
-  const ocType = typeof ocPart.type === "string" ? ocPart.type : lineType;
+  // 3. OpenCode `--format json` and `opencode serve` SSE events (`part`, `properties.part`, or `payload`)
+  const ocEnvelope =
+    harness === "opencode" &&
+    obj.payload &&
+    typeof obj.payload === "object" &&
+    !Array.isArray(obj.payload)
+      ? (obj.payload as Record<string, unknown>)
+      : obj;
+  const ocProps =
+    harness === "opencode" &&
+    ocEnvelope.properties &&
+    typeof ocEnvelope.properties === "object" &&
+    !Array.isArray(ocEnvelope.properties)
+      ? (ocEnvelope.properties as Record<string, unknown>)
+      : undefined;
+  const ocEnvType = typeof ocEnvelope.type === "string" ? ocEnvelope.type : lineType;
+  const ocPropsInfo =
+    ocProps?.info && typeof ocProps.info === "object" && !Array.isArray(ocProps.info)
+      ? (ocProps.info as Record<string, unknown>)
+      : undefined;
+  const rawOcPart =
+    ocEnvelope.part && typeof ocEnvelope.part === "object"
+      ? (ocEnvelope.part as Record<string, unknown>)
+      : ocProps?.part && typeof ocProps.part === "object"
+        ? (ocProps.part as Record<string, unknown>)
+        : undefined;
+  const ocSidCandidate =
+    harness === "opencode"
+      ? (ocEnvelope.sessionID ??
+        ocEnvelope.session_id ??
+        ocProps?.sessionID ??
+        ocProps?.session_id ??
+        ocPropsInfo?.id ??
+        rawOcPart?.sessionID ??
+        rawOcPart?.session_id)
+      : undefined;
+  const ocSessionId =
+    typeof ocSidCandidate === "string" && ocSidCandidate.trim()
+      ? ocSidCandidate.trim()
+      : undefined;
+  const ocSidFields = ocSessionId ? { harnessSessionId: ocSessionId } : {};
+
+  if (harness === "opencode") {
+    if (ocEnvType === "server.connected" || ocEnvType === "server.heartbeat") {
+      return [];
+    }
+    if (
+      ocEnvType === "message.part.delta" &&
+      ocProps &&
+      typeof ocProps.delta === "string" &&
+      ocProps.delta
+    ) {
+      const field = typeof ocProps.field === "string" ? ocProps.field : "text";
+      if (field === "reasoning" || field === "thinking") {
+        events.push({ type: "thinking", harness, thinking: ocProps.delta, ...ocSidFields, timestamp: now });
+      } else {
+        events.push({ type: "text", harness, text: ocProps.delta, ...ocSidFields, timestamp: now });
+      }
+      return events;
+    }
+  }
+
+  const ocPart = rawOcPart ?? ocEnvelope;
+  const ocType = typeof ocPart.type === "string" ? ocPart.type : ocEnvType;
+  const ocDeltaText =
+    harness === "opencode" &&
+    ocEnvType === "message.part.updated" &&
+    typeof ocProps?.delta === "string" &&
+    ocProps.delta
+      ? ocProps.delta
+      : undefined;
+
   if (ocType === "reasoning" || ocType === "thinking") {
     const th =
-      typeof ocPart.thinking === "string"
+      ocDeltaText ??
+      (typeof ocPart.thinking === "string"
         ? ocPart.thinking
         : typeof ocPart.reasoning === "string"
           ? ocPart.reasoning
           : typeof ocPart.text === "string"
             ? ocPart.text
-            : "";
+            : "");
     if (th.trim()) {
-      events.push({ type: "thinking", harness, thinking: th.trim(), timestamp: now });
+      events.push({ type: "thinking", harness, thinking: th.trim(), ...ocSidFields, timestamp: now });
       return events;
     }
   }
@@ -1150,6 +1473,7 @@ export function parseDriverStreamLine(
       ...(inVal !== undefined
         ? { toolInput: typeof inVal === "string" ? inVal : JSON.stringify(inVal) }
         : {}),
+      ...ocSidFields,
       timestamp: now,
     });
     if (outVal !== undefined && outVal !== null) {
@@ -1160,9 +1484,14 @@ export function parseDriverStreamLine(
         ...(toolId ? { toolId } : {}),
         toolOutput: typeof outVal === "string" ? outVal : JSON.stringify(outVal),
         ...(state.status === "error" ? { isError: true } : {}),
+        ...ocSidFields,
         timestamp: now,
       });
     }
+    return events;
+  }
+  if (harness === "opencode" && ocDeltaText && ocType === "text") {
+    events.push({ type: "text", harness, text: ocDeltaText, ...ocSidFields, timestamp: now });
     return events;
   }
 
@@ -1309,7 +1638,24 @@ export function parseDriverStreamLine(
           ? obj.content
           : "";
   if (fallbackText.trim()) {
-    events.push({ type: "text", harness, text: fallbackText, timestamp: now });
+    events.push({ type: "text", harness, text: fallbackText, ...ocSidFields, timestamp: now });
+    return events;
+  }
+
+  if (
+    harness === "opencode" &&
+    ocSessionId &&
+    (ocEnvType === "session.created" ||
+      ocEnvType === "session.updated" ||
+      ocEnvType === "session.status" ||
+      ocEnvType === "session.idle")
+  ) {
+    events.push({
+      type: "status",
+      harness,
+      harnessSessionId: ocSessionId,
+      timestamp: now,
+    });
     return events;
   }
 
@@ -1490,6 +1836,9 @@ export interface RunDriverTurnInput {
     params: AcpRequestPermissionParams
   ) => Promise<AcpRequestPermissionResult>;
   acpCommandOverride?: { command: string; args: string[] };
+  openCodeProfile?: OpenCodeCapabilityProfile;
+  openCodeServerUrl?: string;
+  fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
 }
 
@@ -1603,6 +1952,11 @@ export async function runDriverTurn(
       NODE_NO_WARNINGS: "1",
     };
 
+    const openCodeProfile =
+      harnessId === "opencode"
+        ? (input.openCodeProfile ?? resolveOpenCodeCapabilityProfile({ env: baseEnv }))
+        : undefined;
+
     const readiness =
       effectiveTransport !== "cli"
         ? input.acpCommandOverride
@@ -1613,6 +1967,7 @@ export async function runDriverTurn(
             }
           : probeAcpCapability(harnessId, baseEnv, {
               interactivePermissions: !effectiveAutoApprove,
+              ...(openCodeProfile ? { openCodeProfile } : {}),
             })
         : { supported: false as const, command: "", args: [] as string[] };
 
@@ -1666,7 +2021,118 @@ export async function runDriverTurn(
       writeMeta();
     };
 
-    if (effectiveTransport !== "cli" && readiness.supported) {
+    let skipAcpAfterServerFailure = false;
+    if (
+      harnessId === "opencode" &&
+      input.openCodeServerUrl &&
+      effectiveTransport !== "acp"
+    ) {
+      const sseController = new AbortController();
+      const onExternalSseAbort = (): void => {
+        sseController.abort();
+        if (currentSid) {
+          void abortOpenCodeServerSession({
+            serverUrl: input.openCodeServerUrl!,
+            sessionId: currentSid,
+            env: baseEnv,
+            profile: openCodeProfile,
+            fetchImpl: input.fetchImpl,
+          });
+        }
+      };
+      if (input.signal) {
+        input.signal.addEventListener("abort", onExternalSseAbort, { once: true });
+        if (input.signal.aborted) {
+          onExternalSseAbort();
+        }
+      }
+
+      const sseRes = await streamOpenCodeServerEvents({
+        serverUrl: input.openCodeServerUrl,
+        env: baseEnv,
+        profile: openCodeProfile,
+        signal: sseController.signal,
+        fetchImpl: input.fetchImpl,
+        onRawChunk: (chunk) => input.onOutput?.(chunk),
+        onEvent: (ev) => {
+          if (ev.harnessSessionId) {
+            recordDetectedSid(ev.harnessSessionId);
+          }
+          input.onEvent?.(ev);
+        },
+      });
+
+      if (input.signal) {
+        input.signal.removeEventListener("abort", onExternalSseAbort);
+      }
+
+      if (sseRes.ok && !input.signal?.aborted) {
+        if (shouldInject) {
+          input.db.markDriverBriefingInjected(driver.driver_id);
+        }
+        const finishedAt = Date.now();
+        const durationMs = finishedAt - startedAt;
+        meta = {
+          ...meta,
+          exitCode: 0,
+          timedOut: false,
+          harnessSessionId: currentSid,
+          status: "done",
+          transport: "daemon-sse",
+          eventUrl: sseRes.url,
+          startedAt,
+          finishedAt,
+          durationMs,
+        };
+        writeMeta();
+        pruneDriverRuns(runsBaseDir, 50);
+        return {
+          runId,
+          driverId: driver.driver_id,
+          exitCode: 0,
+          timedOut: false,
+          harnessSessionId: currentSid,
+          durationMs,
+          metaPath,
+        };
+      }
+
+      if (input.signal?.aborted) {
+        const finishedAt = Date.now();
+        const durationMs = finishedAt - startedAt;
+        meta = {
+          ...meta,
+          exitCode: -1,
+          timedOut: false,
+          harnessSessionId: currentSid,
+          status: "failed",
+          transport: "daemon-sse",
+          eventUrl: sseRes.url,
+          startedAt,
+          finishedAt,
+          durationMs,
+        };
+        writeMeta();
+        pruneDriverRuns(runsBaseDir, 50);
+        return {
+          runId,
+          driverId: driver.driver_id,
+          exitCode: -1,
+          timedOut: false,
+          harnessSessionId: currentSid,
+          durationMs,
+          metaPath,
+        };
+      }
+
+      skipAcpAfterServerFailure = true;
+    }
+
+    if (
+      !skipAcpAfterServerFailure &&
+      effectiveTransport !== "cli" &&
+      readiness.supported
+    ) {
       const poolKey = buildDriverPoolKey(
         projectRoot,
         input.sessionId,
@@ -2000,7 +2466,9 @@ export async function runDriverTurn(
 
     // CLI path (explicit transport: "cli", commandRunner override, or "auto" fallback)
     const useStreamJson =
-      input.streamJson ?? Boolean(input.onEvent && !input.commandRunner);
+      input.streamJson ??
+      (Boolean(input.openCodeServerUrl) ||
+        Boolean(input.onEvent && !input.commandRunner));
 
     const spawnSpec = buildSpawnSpec({
       harness: harnessId,
@@ -2010,9 +2478,15 @@ export async function runDriverTurn(
         : effectiveModel,
       streaming: useStreamJson,
       resumeSessionId: driver.harness_session_id ?? undefined,
+      ...(harnessId === "opencode" && openCodeProfile
+        ? { pure: openCodeProfile.effectiveProfile !== "v2" }
+        : {}),
     });
     const command = spawnSpec.command;
-    const args = spawnSpec.args;
+    const args =
+      harnessId === "opencode" && openCodeProfile
+        ? applyOpenCodeHeadlessFlags(spawnSpec.args, openCodeProfile)
+        : spawnSpec.args;
 
     const streamParser = createStreamParser({
       harness: harnessId,

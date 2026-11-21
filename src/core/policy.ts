@@ -73,8 +73,18 @@ export const DEFAULT_HARNESS_TOOL_MANIFEST: HarnessToolManifest = {
     },
     opencode: {
       WriteTools: ["write", "edit", "patch", "multiedit"],
-      BashTools: ["bash"],
-      FilePathKeys: ["filePath", "file_path", "path", "target"],
+      BashTools: ["bash", "shell"],
+      FilePathKeys: [
+        "tool_input.filePath",
+        "tool_input.file_path",
+        "tool_input.path",
+        "tool_input.target",
+        "filePath",
+        "file_path",
+        "path",
+        "target",
+        "target_file",
+      ],
     },
     codex: {
       WriteTools: ["apply_patch", "write_file", "edit_file"],

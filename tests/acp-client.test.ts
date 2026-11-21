@@ -18,6 +18,10 @@ import {
   resolveAcpLaunchCommand,
   resolveBestAcpModelId,
 } from "../src/core/acp-client.ts";
+import {
+  buildOpenCodeCapabilityProfile,
+  resetOpenCodeVersionCache,
+} from "../src/core/opencode-profile.ts";
 import type { AcpNormalizedEvent } from "../src/core/acp-types.ts";
 
 function makeTempDir(prefix: string): string {
@@ -85,6 +89,86 @@ describe("ACP Capability Probing & Launch Resolution", () => {
       assert.equal(cxReady.supported, true);
       assert.equal(cxReady.mode, "bridge");
     } finally {
+      resetOpenCodeVersionCache();
+      fs.rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  test("probeAcpCapability('opencode') respects V2/V1/unknown capability profiles and ASD_OPENCODE_PROFILE", () => {
+    const binDir = makeTempDir("asd-acp-oc-profile-");
+    const ext = process.platform === "win32" ? ".cmd" : "";
+    const binPath = path.join(binDir, `opencode${ext}`);
+    const writeStub = (output: string): void => {
+      const content =
+        process.platform === "win32"
+          ? `@echo off\r\necho ${output}\r\n`
+          : `#!/bin/sh\necho "${output}"\n`;
+      fs.writeFileSync(binPath, content, { mode: 0o755 });
+    };
+
+    try {
+      resetOpenCodeVersionCache();
+      writeStub("ok");
+
+      const baseEnv: Record<string, string | undefined> = {
+        PATH: binDir,
+        Path: binDir,
+        ...(process.env.ComSpec ? { ComSpec: process.env.ComSpec } : {}),
+      };
+
+      // 1. Unknown / unparseable version falls back safely to V1 ["acp", "--pure"]
+      const unknownProbe = probeAcpCapability("opencode", baseEnv);
+      assert.equal(unknownProbe.supported, true);
+      assert.deepEqual(unknownProbe.args, ["acp", "--pure"]);
+
+      // 2. ASD_OPENCODE_PROFILE=v2 omits removed --pure flag -> ["acp"]
+      const v2EnvProbe = probeAcpCapability("opencode", {
+        ...baseEnv,
+        ASD_OPENCODE_PROFILE: "v2",
+      });
+      assert.equal(v2EnvProbe.supported, true);
+      assert.deepEqual(v2EnvProbe.args, ["acp"]);
+
+      // 3. ASD_OPENCODE_PROFILE=v1 preserves ["acp", "--pure"]
+      const v1EnvProbe = probeAcpCapability("opencode", {
+        ...baseEnv,
+        ASD_OPENCODE_PROFILE: "v1",
+      });
+      assert.equal(v1EnvProbe.supported, true);
+      assert.deepEqual(v1EnvProbe.args, ["acp", "--pure"]);
+
+      // 4. Explicit openCodeProfile override (V2 & V1)
+      const v2Profile = buildOpenCodeCapabilityProfile({
+        rawOutput: "opencode v2.3.2",
+        version: "2.3.2",
+        major: 2,
+        pluginApi: "v2",
+        source: "cli-probe",
+      });
+      const v1Profile = buildOpenCodeCapabilityProfile({
+        rawOutput: "1.19.4",
+        version: "1.19.4",
+        major: 1,
+        pluginApi: "v1",
+        source: "cli-probe",
+      });
+      assert.deepEqual(
+        probeAcpCapability("opencode", baseEnv, { openCodeProfile: v2Profile }).args,
+        ["acp"]
+      );
+      assert.deepEqual(
+        probeAcpCapability("opencode", baseEnv, { openCodeProfile: v1Profile }).args,
+        ["acp", "--pure"]
+      );
+
+      // 5. Real semver CLI output `opencode v2.3.2` resolves V2 ["acp"]
+      resetOpenCodeVersionCache();
+      writeStub("opencode v2.3.2");
+      const probedV2 = probeAcpCapability("opencode", baseEnv);
+      assert.equal(probedV2.supported, true);
+      assert.deepEqual(probedV2.args, ["acp"]);
+    } finally {
+      resetOpenCodeVersionCache();
       fs.rmSync(binDir, { recursive: true, force: true });
     }
   });
