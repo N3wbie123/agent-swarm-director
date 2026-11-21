@@ -7,7 +7,10 @@
  * 3. Harness-conditional blocks (`<!-- @harness:<id> -->...<!-- @end -->`):
  *    - When `harnessId` is provided: keeps only blocks matching `harnessId` (supports comma-separated IDs)
  *      and removes non-matching blocks cleanly without leaving stray blank lines or comment tags.
- *    - When `harnessId` is omitted: strips conditional tags cleanly while keeping all blocks.
+ *    - For `harnessId === "opencode"`: supports `opencode` (both profiles), `opencode-v2` (V2 only,
+ *      default when `openCodeProfile` is omitted), and `opencode-v1` (V1 only).
+ *    - When `harnessId` is omitted: keeps all general harness blocks and `opencode-v2`, while excluding
+ *      `opencode-v1` so omitted-harness rendering never emits contradictory V1+V2 instructions.
  * 4. Dynamic `{{LIGHT_<ROLE>_MODEL}}` placeholder substitution from `routing.jsonc` via
  *    `resolveLightSubagentModel`.
  */
@@ -18,24 +21,42 @@ import { resolveLightSubagentModel } from "../../core/router.ts";
 import {
   ASD_VERSION,
   type HarnessId,
+  type OpenCodeEffectiveProfile,
   type RoutingConfig,
 } from "../../core/types.ts";
 
 export interface RenderSkillOptions {
   harnessId?: HarnessId;
   routingConfig?: RoutingConfig | null;
+  openCodeProfile?: OpenCodeEffectiveProfile;
 }
 
 function getAsdRoot(): string {
   return path.resolve(import.meta.dirname, "..", "..", "..");
 }
 
-function matchesHarnessTag(tagList: string, harnessId?: HarnessId): boolean {
-  if (!harnessId) return true;
+function matchesHarnessTag(
+  tagList: string,
+  harnessId?: HarnessId,
+  openCodeProfile?: OpenCodeEffectiveProfile
+): boolean {
   const targets = tagList
     .split(",")
     .map((id) => id.trim().toLowerCase())
     .filter(Boolean);
+  if (targets.length === 0) return false;
+  if (!harnessId) {
+    return targets.some((id) => id !== "opencode-v1");
+  }
+  if (harnessId === "opencode") {
+    const ocVariant: OpenCodeEffectiveProfile = openCodeProfile ?? "v2";
+    return targets.some(
+      (id) =>
+        id === "opencode" ||
+        (ocVariant === "v2" && id === "opencode-v2") ||
+        (ocVariant === "v1" && id === "opencode-v1")
+    );
+  }
   return targets.includes(harnessId.toLowerCase());
 }
 
@@ -45,7 +66,8 @@ function matchesHarnessTag(tagList: string, harnessId?: HarnessId): boolean {
  */
 export function resolveHarnessConditionalBlocks(
   content: string,
-  harnessId?: HarnessId
+  harnessId?: HarnessId,
+  openCodeProfile?: OpenCodeEffectiveProfile
 ): string {
   let rendered = content.replace(/\r\n/g, "\n");
 
@@ -53,21 +75,21 @@ export function resolveHarnessConditionalBlocks(
   rendered = rendered.replace(
     /^[ \t]*<!--\s*@harness:([a-z0-9_,-]+)\s*-->[ \t]*\n([\s\S]*?)^[ \t]*<!--\s*@end\s*-->[ \t]*(?:\n|$)/gm,
     (_match, tagList: string, body: string) =>
-      matchesHarnessTag(tagList, harnessId) ? body : ""
+      matchesHarnessTag(tagList, harnessId, openCodeProfile) ? body : ""
   );
 
   // 2. Single-line blocks occupying an entire line (preserving optional leading indent and newline)
   rendered = rendered.replace(
     /^([ \t]*)<!--\s*@harness:([a-z0-9_,-]+)\s*-->([^\n]*?)<!--\s*@end\s*-->[ \t]*(\n|$)/gm,
     (_match, indent: string, tagList: string, body: string, eol: string) =>
-      matchesHarnessTag(tagList, harnessId) ? `${indent}${body}${eol}` : ""
+      matchesHarnessTag(tagList, harnessId, openCodeProfile) ? `${indent}${body}${eol}` : ""
   );
 
   // 3. Inline conditional blocks embedded inside a line
   rendered = rendered.replace(
     /<!--\s*@harness:([a-z0-9_,-]+)\s*-->([\s\S]*?)<!--\s*@end\s*-->/g,
     (_match, tagList: string, body: string) =>
-      matchesHarnessTag(tagList, harnessId) ? body : ""
+      matchesHarnessTag(tagList, harnessId, openCodeProfile) ? body : ""
   );
 
   // Collapse any 3+ consecutive newlines caused by stripped blocks
@@ -106,7 +128,8 @@ export function renderSkillTemplate(
     .replace(/\bASD v\d+\.\d+(?:\.\d+)?\b/g, `ASD v${ASD_VERSION}`);
   const harnessResolved = resolveHarnessConditionalBlocks(
     versionStamped,
-    opts?.harnessId
+    opts?.harnessId,
+    opts?.openCodeProfile
   );
   return substituteLightModelPlaceholders(harnessResolved, opts);
 }

@@ -177,6 +177,16 @@ describe("ASD CLI (src/cli/index.ts)", () => {
       assert.ok(data.durationMs < 250);
       assert.equal(data.gitRepo.isRepo, true);
       assert.ok(data.harnesses);
+      assert.ok(
+        data.harnesses.opencode.activeProfile === "v1" ||
+          data.harnesses.opencode.activeProfile === "v2"
+      );
+      assert.equal(typeof data.harnesses.opencode.version, "string");
+      assert.ok(
+        data.checks.some(
+          (c: { name: string; ok: boolean }) => c.name === "opencode_profile" && c.ok === true
+        )
+      );
     });
   });
 
@@ -187,9 +197,11 @@ describe("ASD CLI (src/cli/index.ts)", () => {
     test("sync installs all harnesses, idempotent skip on 2nd run, uninstall cleanly restores", () => {
       const isolatedHome = createTempDir("asd-cli-sync-roundtrip-");
       try {
+        const v2Env = { ASD_OPENCODE_PROFILE: "v2" };
         // 1. Initial sync
         const syncRes1 = runCli(["sync", "--no-model-probe", "--home", isolatedHome], {
           cwd: tmpProject,
+          env: v2Env,
         });
         assert.equal(syncRes1.exitCode, 0, `sync1 failed: ${syncRes1.stderr}`);
         assert.ok(syncRes1.stdout.includes("Status: updated"));
@@ -205,6 +217,17 @@ describe("ASD CLI (src/cli/index.ts)", () => {
             path.join(isolatedHome, ".config", "opencode", "opencode.json")
           )
         );
+        assert.ok(
+          fs.existsSync(
+            path.join(isolatedHome, ".config", "opencode", "plugins", "asd-guard", "index.js")
+          )
+        );
+        assert.equal(
+          fs.existsSync(
+            path.join(isolatedHome, ".config", "opencode", "plugin", "asd-guard.js")
+          ),
+          false
+        );
         assert.ok(fs.existsSync(path.join(isolatedHome, ".codex", "config.toml")));
         assert.ok(
           fs.existsSync(path.join(isolatedHome, ".gemini", "config", "hooks.json"))
@@ -218,6 +241,7 @@ describe("ASD CLI (src/cli/index.ts)", () => {
         // 2. Idempotent sync (skipped)
         const syncRes2 = runCli(["sync", "--no-model-probe", "--home", isolatedHome], {
           cwd: tmpProject,
+          env: v2Env,
         });
         assert.equal(syncRes2.exitCode, 0);
         assert.ok(syncRes2.stdout.includes("Status: skipped"));
@@ -232,6 +256,12 @@ describe("ASD CLI (src/cli/index.ts)", () => {
 
         // Verify ASD managed files removed
         assert.equal(fs.existsSync(path.join(isolatedHome, ".claude", "settings.json")), false);
+        assert.equal(
+          fs.existsSync(
+            path.join(isolatedHome, ".config", "opencode", "plugins", "asd-guard", "index.js")
+          ),
+          false
+        );
         assert.equal(
           fs.existsSync(path.join(isolatedHome, ".gemini", "config", "hooks.json")),
           false

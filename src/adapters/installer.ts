@@ -38,6 +38,10 @@ import {
   type RoutingModelRemap,
   type RoutingModelWarning,
 } from "../core/models.ts";
+import {
+  buildOpenCodeCapabilityProfile,
+  resolveOpenCodeCapabilityProfile,
+} from "../core/opencode-profile.ts";
 import { evaluatePreToolUse } from "../core/policy.ts";
 import { resolveLightSubagentRoute } from "../core/router.ts";
 import {
@@ -47,6 +51,8 @@ import {
   type AcpHarnessReadiness,
   type HarnessAdapter,
   type HarnessId,
+  type OpenCodeCapabilityProfile,
+  type OpenCodeEffectiveProfile,
   type RoutingConfig,
 } from "../core/types.ts";
 import { antigravityAdapter } from "./antigravity.ts";
@@ -59,9 +65,17 @@ import {
 import { codexAdapter } from "./codex.ts";
 import { cursorAdapter } from "./cursor.ts";
 import {
+  OPENCODE_V2_PLUGIN_MARKER,
+  OPENCODE_V2_PLUGIN_RELATIVE_PATH,
+  OpencodeAdapter,
   generateOpencodeGuardPlugin,
+  generateOpencodePluginForProfile,
   opencodeAdapter,
 } from "./opencode.ts";
+import {
+  OPENCODE_V1_PLUGIN_MARKER,
+  OPENCODE_V1_PLUGIN_RELATIVE_PATH,
+} from "./opencode-v1.ts";
 import {
   cleanupLegacyAgentFiles,
   generateAgentContent,
@@ -123,6 +137,7 @@ export interface SyncHarnessOptions {
   skipModelDiscovery?: boolean;
   modelCatalogOverride?: HarnessModelCatalog;
   env?: Record<string, string | undefined>;
+  openCodeProfile?: OpenCodeCapabilityProfile;
 }
 
 export interface HarnessSyncStatus {
@@ -165,12 +180,21 @@ export interface DoctorProbeOptions {
   homeDir?: string;
   projectRoot?: string;
   env?: Record<string, string | undefined>;
+  openCodeProfile?: OpenCodeCapabilityProfile;
 }
 
 export interface DoctorCheck {
   name: string;
   ok: boolean;
   message?: string;
+}
+
+export interface OpenCodeDoctorGuardStatus {
+  hasV2Guard: boolean;
+  hasV1Guard: boolean;
+  activeGuardPath: string | null;
+  driftDetected: boolean;
+  driftWarning?: string;
 }
 
 export interface DoctorProbeResult {
@@ -192,6 +216,10 @@ export interface DoctorProbeResult {
         stop: "native-hook" | "plugin-hook";
       };
       acp?: AcpHarnessReadiness;
+      version?: string;
+      activeProfile?: OpenCodeEffectiveProfile;
+      degraded?: boolean;
+      guardStatus?: OpenCodeDoctorGuardStatus;
     }
   >;
   acpBridgeHints?: string[];
@@ -204,6 +232,8 @@ export interface AutoSyncOptions {
   projectRoot?: string;
   force?: boolean;
   skipModelDiscovery?: boolean;
+  env?: Record<string, string | undefined>;
+  openCodeProfile?: OpenCodeCapabilityProfile;
 }
 
 export interface AutoSyncResult {
@@ -288,11 +318,13 @@ function resolveMultipleBinariesOnPath(
 }
 
 function probeAllHarnessesAcp(
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  openCodeProfile?: OpenCodeCapabilityProfile
 ): {
   acpReadiness: Record<HarnessId, AcpHarnessReadiness>;
   acpBridgeHints: string[];
   installedClis: Record<HarnessId, { binary: string; resolvedPath: string | null }>;
+  openCodeProfile?: OpenCodeCapabilityProfile;
 } {
   const bins = resolveMultipleBinariesOnPath(
     [
@@ -317,6 +349,20 @@ function probeAllHarnessesAcp(
   const agentPath = bins["agent"] ?? null;
   const cursorBin = cursorAgentPath ? "cursor-agent" : "agent";
   const cursorPath = cursorAgentPath ?? agentPath;
+
+  const ocOverrideRaw = env.ASD_OPENCODE_PROFILE?.trim().toLowerCase();
+  const hasOcOverride = ocOverrideRaw === "v1" || ocOverrideRaw === "v2";
+  const resolvedOcProfile =
+    openCodeProfile ??
+    (opencodePath || hasOcOverride
+      ? resolveOpenCodeCapabilityProfile({ env })
+      : undefined);
+  const opencodeAcpArgs =
+    resolvedOcProfile?.acpArgs && resolvedOcProfile.acpArgs.length > 0
+      ? [...resolvedOcProfile.acpArgs]
+      : resolvedOcProfile?.effectiveProfile === "v2"
+        ? ["acp"]
+        : ["acp", "--pure"];
 
   const installedClis: Record<HarnessId, { binary: string; resolvedPath: string | null }> = {
     "claude-code": { binary: "claude", resolvedPath: claudePath },
@@ -363,7 +409,7 @@ function probeAllHarnessesAcp(
       supported: Boolean(opencodePath),
       mode: "native",
       command: "opencode",
-      args: ["acp", "--pure"],
+      args: opencodeAcpArgs,
       resolvedPath: opencodePath,
     },
     codex: codexBridge
@@ -422,7 +468,12 @@ function probeAllHarnessesAcp(
     );
   }
 
-  return { acpReadiness, acpBridgeHints, installedClis };
+  return {
+    acpReadiness,
+    acpBridgeHints,
+    installedClis,
+    ...(resolvedOcProfile ? { openCodeProfile: resolvedOcProfile } : {}),
+  };
 }
 
 export interface AntigravityHookSpec {
@@ -468,6 +519,16 @@ export function buildAntigravityHookSpec(
 
 function ensureDir(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function removeDirIfEmpty(dirPath: string): void {
+  try {
+    if (fs.existsSync(dirPath) && fs.readdirSync(dirPath).length === 0) {
+      fs.rmdirSync(dirPath);
+    }
+  } catch {
+    // Ignore directory removal error
+  }
 }
 
 function safeWriteJson(filePath: string, data: unknown): void {
@@ -525,6 +586,7 @@ function hasAsdManagedMarkers(filePath: string): boolean {
     if (content.includes("BEGIN MANAGED BY ASD-V2")) return true;
     if (content.includes("# >>> BEGIN MANAGED BY ASD-V2")) return true;
     if (content.includes('"_asdVersion"')) return true;
+    if (content.includes("ASD Multi-Agent Roster")) return true;
     return false;
   } catch {
     return false;
@@ -560,7 +622,11 @@ function smartRestoreUserBackup(filePath: string): "restored" | "kept-live" | "n
   return "restored";
 }
 
-function computeUserConfigHashes(homeDir: string, harnessId: HarnessId): Record<string, string> {
+function computeUserConfigHashes(
+  homeDir: string,
+  harnessId: HarnessId,
+  openCodeProfile?: OpenCodeCapabilityProfile
+): Record<string, string> {
   const hashes: Record<string, string> = {};
   const adapter = {
     "claude-code": claudeCodeAdapter,
@@ -570,7 +636,10 @@ function computeUserConfigHashes(homeDir: string, harnessId: HarnessId): Record<
     cursor: cursorAdapter,
   }[harnessId];
   if (!adapter) return hashes;
-  const targets = adapter.globalConfigTargets(homeDir);
+  const targets =
+    harnessId === "opencode"
+      ? (adapter as OpencodeAdapter).globalConfigTargets(homeDir, openCodeProfile)
+      : adapter.globalConfigTargets(homeDir);
   for (const targetPath of targets) {
     if (fs.existsSync(targetPath)) {
       const content = fs.readFileSync(targetPath, "utf8");
@@ -781,16 +850,23 @@ function bootstrapGlobalPresets(
 function computeConfigHash(
   homeDir: string,
   projectRoot?: string,
-  asdCliPath?: string
+  asdCliPath?: string,
+  openCodeProfile?: OpenCodeCapabilityProfile
 ): string {
   const { routingPath, mcpPath } = bootstrapGlobalPresets(homeDir);
+  const effectiveOcProfile: OpenCodeEffectiveProfile = openCodeProfile?.effectiveProfile ?? "v2";
 
   const hash = crypto.createHash("sha256");
   hash.update(ASD_VERSION);
+  hash.update(`opencode-profile:${effectiveOcProfile}`);
   if (asdCliPath) {
     hash.update(asdCliPath.replaceAll("\\", "/"));
     hash.update(`ag-hook-v2:${buildAntigravityHookSpec(asdCliPath).cliArg}`);
-    hash.update(generateOpencodeGuardPlugin(asdCliPath));
+    hash.update(
+      openCodeProfile
+        ? generateOpencodePluginForProfile(openCodeProfile, asdCliPath).content
+        : generateOpencodeGuardPlugin(asdCliPath)
+    );
   }
   hash.update("no-ai-coauthor-v1");
 
@@ -821,7 +897,13 @@ function computeConfigHash(
 
   for (const harnessId of DEFAULT_HARNESS_IDS) {
     for (const skill of ASD_SKILLS) {
-      hash.update(getSkillTemplate(skill, { harnessId, routingConfig: parsedRouting }));
+      hash.update(
+        getSkillTemplate(skill, {
+          harnessId,
+          routingConfig: parsedRouting,
+          openCodeProfile: harnessId === "opencode" ? effectiveOcProfile : undefined,
+        })
+      );
     }
     for (const role of AGENT_ROLES) {
       const route = resolveLightSubagentRoute(harnessId, role, parsedRouting);
@@ -941,6 +1023,9 @@ export async function syncHarnessConfigs(
   const asdRoot = getAsdRoot();
   const asdCliPath =
     options?.asdCliPath || path.join(asdRoot, "src", "cli", "index.ts");
+  const syncEnv = options?.env ?? process.env;
+  const ocProfile =
+    options?.openCodeProfile ?? resolveOpenCodeCapabilityProfile({ env: syncEnv });
 
   // 1. Discover available models (pre-warming ~/.asd/state/models-cache.json),
   //    bootstrap presets (auto-substituting missing preset models ONLY on initial creation
@@ -1008,7 +1093,12 @@ export async function syncHarnessConfigs(
     }
   }
 
-  const configHash = computeConfigHash(homeDir, options?.projectRoot, asdCliPath);
+  const configHash = computeConfigHash(
+    homeDir,
+    options?.projectRoot,
+    asdCliPath,
+    ocProfile
+  );
   const lastSync = loadLastSync(homeDir);
   const nativeCapabilitiesMap = loadHarnessNativeCapabilities();
   const catalogMcpServers = loadCatalogMcpServers(homeDir, asdRoot);
@@ -1062,7 +1152,10 @@ export async function syncHarnessConfigs(
 
   for (const harnessId of DEFAULT_HARNESS_IDS) {
     const adapter = adapters[harnessId];
-    const targets = adapter.globalConfigTargets(homeDir);
+    const targets =
+      harnessId === "opencode"
+        ? (adapter as OpencodeAdapter).globalConfigTargets(homeDir, ocProfile)
+        : adapter.globalConfigTargets(homeDir);
     const nativeCaps = nativeCapabilitiesMap[harnessId] ?? new Set<string>();
 
     const isHashMatched =
@@ -1083,7 +1176,11 @@ export async function syncHarnessConfigs(
     // Check for user config divergence: compare current user config file hashes with last sync
     let userConfigDiverged = false;
     if (isHashMatched && allTargetsExist && lastSync?.harnesses?.[harnessId]?.userConfigHashes) {
-      const currentHashes = computeUserConfigHashes(homeDir, harnessId);
+      const currentHashes = computeUserConfigHashes(
+        homeDir,
+        harnessId,
+        harnessId === "opencode" ? ocProfile : undefined
+      );
       const lastHashes = lastSync.harnesses[harnessId]!.userConfigHashes!;
       for (const [filePath, lastHash] of Object.entries(lastHashes)) {
         const currentHash = currentHashes[filePath];
@@ -1170,7 +1267,11 @@ export async function syncHarnessConfigs(
           const cmdPath = path.join(opencodeDir, "command", `${skill}.md`);
           safeWriteText(
             cmdPath,
-            getSkillTemplate(skill, { harnessId: "opencode", routingConfig })
+            getSkillTemplate(skill, {
+              harnessId: "opencode",
+              routingConfig,
+              openCodeProfile: ocProfile.effectiveProfile,
+            })
           );
           written.push(cmdPath);
         }
@@ -1186,17 +1287,57 @@ export async function syncHarnessConfigs(
           written.push(agentPath);
         }
 
-        // AGENTS.md
+        // AGENTS.md (back up pre-existing non-ASD user AGENTS.md cleanly)
         const agentsMdPath = path.join(opencodeDir, "AGENTS.md");
-        safeWriteText(agentsMdPath, generateAllAgentsMarkdown(routingConfig, "opencode"));
+        const expectedAgentsMd = generateAllAgentsMarkdown(routingConfig, "opencode");
+        backupUserFile(agentsMdPath, expectedAgentsMd);
+        safeWriteText(agentsMdPath, expectedAgentsMd);
         written.push(agentsMdPath);
 
-        // ASD Policy Guard Plugin (PreToolUse + Stop hooks)
-        const opencodePluginPath = path.join(opencodeDir, "plugin", "asd-guard.js");
-        safeWriteText(opencodePluginPath, generateOpencodeGuardPlugin(asdCliPath));
+        // ASD Policy Guard Plugin (V2 plugins/asd-guard/index.js or frozen V1 plugin/asd-guard.js)
+        const pluginArtifact = generateOpencodePluginForProfile(ocProfile, asdCliPath);
+        const opencodePluginPath = path.join(
+          opencodeDir,
+          ...pluginArtifact.relativePath.split("/")
+        );
+        safeWriteText(opencodePluginPath, pluginArtifact.content);
         written.push(opencodePluginPath);
 
-        // opencode.json & opencode.jsonc
+        // Cross-version guard cleanup (only remove ASD-managed guard files; preserve user plugins)
+        const v1PluginPath = path.join(
+          opencodeDir,
+          ...OPENCODE_V1_PLUGIN_RELATIVE_PATH.split("/")
+        );
+        const v2PluginPath = path.join(
+          opencodeDir,
+          ...OPENCODE_V2_PLUGIN_RELATIVE_PATH.split("/")
+        );
+        if (ocProfile.effectiveProfile === "v2") {
+          if (fs.existsSync(v1PluginPath)) {
+            try {
+              if (fs.readFileSync(v1PluginPath, "utf8").includes(OPENCODE_V1_PLUGIN_MARKER)) {
+                fs.unlinkSync(v1PluginPath);
+                removeDirIfEmpty(path.join(opencodeDir, "plugin"));
+              }
+            } catch {
+              // Ignore stale V1 guard cleanup error
+            }
+          }
+        } else {
+          if (fs.existsSync(v2PluginPath)) {
+            try {
+              if (fs.readFileSync(v2PluginPath, "utf8").includes(OPENCODE_V2_PLUGIN_MARKER)) {
+                fs.unlinkSync(v2PluginPath);
+                removeDirIfEmpty(path.join(opencodeDir, "plugins", "asd-guard"));
+                removeDirIfEmpty(path.join(opencodeDir, "plugins"));
+              }
+            } catch {
+              // Ignore stale V2 guard cleanup error
+            }
+          }
+        }
+
+        // opencode.json & opencode.jsonc (read-only inspection of opencode.jsonc; never backed up or modified)
         const opencodeJsoncPath = path.join(opencodeDir, "opencode.jsonc");
         const opencodeJsoncKeys = new Set<string>();
         if (fs.existsSync(opencodeJsoncPath)) {
@@ -1222,7 +1363,6 @@ export async function syncHarnessConfigs(
           }
         }
         const opencodeJsonPath = path.join(opencodeDir, "opencode.json");
-        // Compute the expected merged content for backup comparison
         let expectedOpencodeJson: Record<string, unknown> = { _asdVersion: ASD_VERSION };
         if (fs.existsSync(opencodeJsonPath)) {
           try {
@@ -1231,15 +1371,11 @@ export async function syncHarnessConfigs(
             expectedOpencodeJson = { _asdVersion: ASD_VERSION };
           }
         }
-        // Apply the same mutations that syncJsonMcpConfigFile will apply
         if (expectedOpencodeJson.mcp && typeof expectedOpencodeJson.mcp === "object") {
           for (const k of Object.keys(expectedOpencodeJson.mcp as Record<string, unknown>)) {
             opencodeJsoncKeys.add(k);
           }
         }
-        // We can't easily compute the full merged result without duplicating syncJsonMcpConfigFile logic
-        // So we'll pass undefined for asdManagedContent for opencode.jsonc (backup will be created if missing)
-        backupUserFile(opencodeJsoncPath);
         syncJsonMcpConfigFile({
           filePath: opencodeJsonPath,
           harnessId: "opencode",
@@ -1649,7 +1785,7 @@ export async function syncHarnessConfigs(
     harnesses: {
       ...lastSync?.harnesses,
       "claude-code": { hash: configHash, syncedAt: new Date().toISOString(), userConfigHashes: computeUserConfigHashes(homeDir, "claude-code") },
-      opencode: { hash: configHash, syncedAt: new Date().toISOString(), userConfigHashes: computeUserConfigHashes(homeDir, "opencode") },
+      opencode: { hash: configHash, syncedAt: new Date().toISOString(), userConfigHashes: computeUserConfigHashes(homeDir, "opencode", ocProfile) },
       codex: { hash: configHash, syncedAt: new Date().toISOString(), userConfigHashes: computeUserConfigHashes(homeDir, "codex") },
       antigravity: { hash: configHash, syncedAt: new Date().toISOString(), userConfigHashes: computeUserConfigHashes(homeDir, "antigravity") },
       cursor: { hash: configHash, syncedAt: new Date().toISOString(), userConfigHashes: computeUserConfigHashes(homeDir, "cursor") },
@@ -1662,7 +1798,7 @@ export async function syncHarnessConfigs(
     ? []
     : installCliPathShims(homeDir, asdCliPath);
 
-  const acpSummary = probeAllHarnessesAcp(options?.env ?? process.env);
+  const acpSummary = probeAllHarnessesAcp(syncEnv, ocProfile);
 
   return {
     status: anyUpdated ? "updated" : "skipped",
@@ -1723,6 +1859,8 @@ export function syncAgentModelsIfNeeded(options?: {
   homeDir?: string;
   projectRoot?: string;
   force?: boolean;
+  env?: Record<string, string | undefined>;
+  openCodeProfile?: OpenCodeCapabilityProfile;
 }): { updated: boolean; filesWritten: string[] } {
   if (process.env.ASD_SESSION_ROLE === "subagent") {
     return { updated: false, filesWritten: [] };
@@ -1740,6 +1878,10 @@ export function syncAgentModelsIfNeeded(options?: {
     return { updated: false, filesWritten: [] };
   }
 
+  const ocProfile =
+    options?.openCodeProfile ??
+    resolveOpenCodeCapabilityProfile({ env: options?.env ?? process.env });
+
   const activeRoutingPath = hasLocal ? localRoutingPath! : globalRoutingPath;
   let rawRouting = "";
   let routingConfig: RoutingConfig | null = null;
@@ -1755,6 +1897,7 @@ export function syncAgentModelsIfNeeded(options?: {
   const hash = crypto
     .createHash("sha256")
     .update(ASD_VERSION)
+    .update(`opencode-profile:${ocProfile.effectiveProfile}`)
     .update(activeRoutingPath)
     .update(rawRouting)
     .digest("hex");
@@ -1860,7 +2003,11 @@ export function syncAgentModelsIfNeeded(options?: {
     for (const skill of ASD_SKILLS) {
       writeIfChanged(
         fileForSkill(skill),
-        getSkillTemplate(skill, { harnessId, routingConfig })
+        getSkillTemplate(skill, {
+          harnessId,
+          routingConfig,
+          openCodeProfile: harnessId === "opencode" ? ocProfile.effectiveProfile : undefined,
+        })
       );
     }
   }
@@ -1906,13 +2053,19 @@ export async function uninstallHarnessConfigs(
     }
   };
 
-  const removeDirIfEmpty = (dirPath: string) => {
+  const removeManagedFileIfMarked = (
+    filePath: string,
+    marker: string,
+    harness: HarnessId
+  ) => {
+    if (!fs.existsSync(filePath)) return;
     try {
-      if (fs.existsSync(dirPath) && fs.readdirSync(dirPath).length === 0) {
-        fs.rmdirSync(dirPath);
+      const content = fs.readFileSync(filePath, "utf8");
+      if (content.includes(marker)) {
+        removeFile(filePath, harness);
       }
     } catch {
-      // Ignore directory removal error
+      // Ignore read/unlink error
     }
   };
 
@@ -2075,9 +2228,34 @@ export async function uninstallHarnessConfigs(
     removeFile(path.join(opencodeDir, "agent", `asd-${role}.md`), "opencode");
   }
   removeDirIfEmpty(path.join(opencodeDir, "agent"));
-  removeFile(path.join(opencodeDir, "plugin", "asd-guard.js"), "opencode");
+
+  // Remove only ASD-managed V1 & V2 guard plugins; never touch user plugins
+  removeManagedFileIfMarked(
+    path.join(opencodeDir, ...OPENCODE_V1_PLUGIN_RELATIVE_PATH.split("/")),
+    OPENCODE_V1_PLUGIN_MARKER,
+    "opencode"
+  );
   removeDirIfEmpty(path.join(opencodeDir, "plugin"));
-  removeFile(path.join(opencodeDir, "AGENTS.md"), "opencode");
+
+  removeManagedFileIfMarked(
+    path.join(opencodeDir, ...OPENCODE_V2_PLUGIN_RELATIVE_PATH.split("/")),
+    OPENCODE_V2_PLUGIN_MARKER,
+    "opencode"
+  );
+  removeDirIfEmpty(path.join(opencodeDir, "plugins", "asd-guard"));
+  removeDirIfEmpty(path.join(opencodeDir, "plugins"));
+
+  // Restore pre-existing user AGENTS.md if backed up, or remove only if ASD-managed
+  const opencodeAgentsMd = path.join(opencodeDir, "AGENTS.md");
+  if (fs.existsSync(`${opencodeAgentsMd}.asd-backup`)) {
+    const result = smartRestoreUserBackup(opencodeAgentsMd);
+    if (result === "restored") {
+      restoredFiles.push(opencodeAgentsMd);
+      harnessStatus.opencode.restored.push(opencodeAgentsMd);
+    }
+  } else {
+    removeManagedFileIfMarked(opencodeAgentsMd, "ASD Multi-Agent Roster", "opencode");
+  }
 
   cleanupJsonMcpFile(path.join(opencodeDir, "opencode.json"), "opencode", [
     "_asdVersion",
@@ -2101,22 +2279,40 @@ export async function uninstallHarnessConfigs(
       }
     } else {
       try {
-        const omoParsed = JSON.parse(fs.readFileSync(omoConfigFile, "utf8")) as Record<string, unknown>;
-        if (omoParsed.git_master && typeof omoParsed.git_master === "object" && !Array.isArray(omoParsed.git_master)) {
-          const gm = omoParsed.git_master as Record<string, unknown>;
-          if (gm.commit_footer === false) delete gm.commit_footer;
-          if (gm.include_co_authored_by === false) delete gm.include_co_authored_by;
-          if (Object.keys(gm).length === 0) delete omoParsed.git_master;
-        }
-        if (Object.keys(omoParsed).length === 0) {
-          removeFile(omoConfigFile, "opencode");
-        } else {
-          safeWriteJson(omoConfigFile, omoParsed);
-          restoredFiles.push(omoConfigFile);
-          harnessStatus.opencode.restored.push(omoConfigFile);
+        const rawOmo = parseJsonc(fs.readFileSync(omoConfigFile, "utf8"));
+        if (rawOmo && typeof rawOmo === "object" && !Array.isArray(rawOmo)) {
+          const omoParsed = rawOmo as Record<string, unknown>;
+          let modified = false;
+          if (
+            omoParsed.git_master &&
+            typeof omoParsed.git_master === "object" &&
+            !Array.isArray(omoParsed.git_master)
+          ) {
+            const gm = omoParsed.git_master as Record<string, unknown>;
+            if (gm.commit_footer === false) {
+              delete gm.commit_footer;
+              modified = true;
+            }
+            if (gm.include_co_authored_by === false) {
+              delete gm.include_co_authored_by;
+              modified = true;
+            }
+            if (Object.keys(gm).length === 0) {
+              delete omoParsed.git_master;
+            }
+          }
+          if (modified) {
+            if (Object.keys(omoParsed).length === 0) {
+              removeFile(omoConfigFile, "opencode");
+            } else {
+              safeWriteJson(omoConfigFile, omoParsed);
+              restoredFiles.push(omoConfigFile);
+              harnessStatus.opencode.restored.push(omoConfigFile);
+            }
+          }
         }
       } catch {
-        removeFile(omoConfigFile, "opencode");
+        // Leave unparseable or user JSONC oh-my-openagent.json untouched
       }
     }
   } else {
@@ -2433,13 +2629,85 @@ export async function doctorProbe(
 
   // 4. Harness CLIs & ACP readiness availability
   const probeEnv = options?.env ?? process.env;
-  const { acpReadiness, acpBridgeHints, installedClis } = probeAllHarnessesAcp(probeEnv);
+  const {
+    acpReadiness,
+    acpBridgeHints,
+    installedClis,
+    openCodeProfile: probedOcProfile,
+  } = probeAllHarnessesAcp(probeEnv, options?.openCodeProfile);
   const claudePath = installedClis["claude-code"].resolvedPath;
   const opencodePath = installedClis.opencode.resolvedPath;
   const codexPath = installedClis.codex.resolvedPath;
   const agyPath = installedClis.antigravity.resolvedPath;
   const cursorBin = installedClis.cursor.binary;
   const cursorPath = installedClis.cursor.resolvedPath;
+
+  const ocProfile =
+    options?.openCodeProfile ??
+    probedOcProfile ??
+    buildOpenCodeCapabilityProfile({
+      rawOutput: null,
+      version: null,
+      major: null,
+      pluginApi: "unknown",
+      source: "fallback",
+    });
+  const opencodeDir = path.join(homeDir, ".config", "opencode");
+  const v2GuardPath = path.join(
+    opencodeDir,
+    ...OPENCODE_V2_PLUGIN_RELATIVE_PATH.split("/")
+  );
+  const v1GuardPath = path.join(
+    opencodeDir,
+    ...OPENCODE_V1_PLUGIN_RELATIVE_PATH.split("/")
+  );
+  const fileContainsMarker = (filePath: string, marker: string): boolean => {
+    if (!fs.existsSync(filePath)) return false;
+    try {
+      return fs.readFileSync(filePath, "utf8").includes(marker);
+    } catch {
+      return false;
+    }
+  };
+  const hasV2Guard = fileContainsMarker(v2GuardPath, OPENCODE_V2_PLUGIN_MARKER);
+  const hasV1Guard = fileContainsMarker(v1GuardPath, OPENCODE_V1_PLUGIN_MARKER);
+  const ocOverrideRaw = probeEnv.ASD_OPENCODE_PROFILE?.trim().toLowerCase();
+  const hasOcOverride = ocOverrideRaw === "v1" || ocOverrideRaw === "v2";
+  const shouldCheckOcProfile = Boolean(
+    opencodePath || options?.openCodeProfile || hasOcOverride
+  );
+  let driftDetected = false;
+  let driftWarning: string | undefined;
+  if (shouldCheckOcProfile) {
+    if (ocProfile.effectiveProfile === "v2" && !hasV2Guard) {
+      driftDetected = true;
+      driftWarning = hasV1Guard
+        ? `OpenCode V2 detected with stale V1 guard ${OPENCODE_V1_PLUGIN_RELATIVE_PATH}; V2 guard ${OPENCODE_V2_PLUGIN_RELATIVE_PATH} is missing — run \`asd sync\``
+        : `OpenCode V2 detected but V2 guard ${OPENCODE_V2_PLUGIN_RELATIVE_PATH} is missing — run \`asd sync\``;
+    } else if (
+      ocProfile.effectiveProfile === "v1" &&
+      !ocProfile.degraded &&
+      !hasV1Guard &&
+      hasV2Guard
+    ) {
+      driftDetected = true;
+      driftWarning = `OpenCode V1 detected with V2 guard ${OPENCODE_V2_PLUGIN_RELATIVE_PATH}; V1 guard ${OPENCODE_V1_PLUGIN_RELATIVE_PATH} is missing — run \`asd sync\``;
+    }
+  }
+  const ocDegradedWarning =
+    shouldCheckOcProfile && ocProfile.degraded
+      ? "OpenCode version detection failed; degraded fallback to V1 profile active"
+      : undefined;
+  const ocVersionLabel = ocProfile.version.version ?? "unknown";
+  const activeGuardPath =
+    ocProfile.effectiveProfile === "v2"
+      ? hasV2Guard
+        ? v2GuardPath
+        : null
+      : hasV1Guard
+        ? v1GuardPath
+        : null;
+
   const harnesses: DoctorProbeResult["harnesses"] = {
     "claude-code": {
       installed: Boolean(claudePath),
@@ -2456,6 +2724,16 @@ export async function doctorProbe(
       resolvedPath: opencodePath,
       hookCoverage: { preToolUse: "plugin-hook", stop: "plugin-hook" },
       acp: acpReadiness.opencode,
+      version: ocVersionLabel,
+      activeProfile: ocProfile.effectiveProfile,
+      degraded: ocProfile.degraded,
+      guardStatus: {
+        hasV2Guard,
+        hasV1Guard,
+        activeGuardPath,
+        driftDetected,
+        ...(driftWarning ? { driftWarning } : {}),
+      },
     },
     codex: {
       installed: Boolean(codexPath),
@@ -2507,11 +2785,36 @@ export async function doctorProbe(
       acpCheckSegments.join(", ") +
       (acpBridgeHints.length > 0 ? ` | Hints: ${acpBridgeHints.join(" | ")}` : ""),
   });
+  const ocHookPluginLabel =
+    ocProfile.effectiveProfile === "v2"
+      ? OPENCODE_V2_PLUGIN_RELATIVE_PATH
+      : OPENCODE_V1_PLUGIN_RELATIVE_PATH;
   checks.push({
     name: "hook_coverage",
     ok: true,
-    message:
-      "PreToolUse/Stop coverage: claude-code/antigravity/cursor (native hooks), opencode (plugin/asd-guard.js), codex (notify Stop hook + CLI --sandbox; no native PreToolUse hook)",
+    message: `PreToolUse/Stop coverage: claude-code/antigravity/cursor (native hooks), opencode (${ocHookPluginLabel}), codex (notify Stop hook + CLI --sandbox; no native PreToolUse hook)`,
+  });
+  const guardSummary =
+    hasV2Guard && hasV1Guard
+      ? `${OPENCODE_V2_PLUGIN_RELATIVE_PATH} + ${OPENCODE_V1_PLUGIN_RELATIVE_PATH}`
+      : hasV2Guard
+        ? OPENCODE_V2_PLUGIN_RELATIVE_PATH
+        : hasV1Guard
+          ? OPENCODE_V1_PLUGIN_RELATIVE_PATH
+          : "none";
+  const ocProfileSegments = [
+    `OpenCode ${ocVersionLabel} (profile: ${ocProfile.effectiveProfile}, guard: ${guardSummary})`,
+  ];
+  if (ocDegradedWarning) {
+    ocProfileSegments.push(`Warning: ${ocDegradedWarning}`);
+  }
+  if (driftWarning) {
+    ocProfileSegments.push(`Warning: ${driftWarning}`);
+  }
+  checks.push({
+    name: "opencode_profile",
+    ok: true,
+    message: ocProfileSegments.join(" | "),
   });
 
   // 5. In-memory synthetic PreToolUse security policy probe (.GIT/config, .ENV)

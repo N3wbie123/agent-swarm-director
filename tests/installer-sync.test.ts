@@ -45,6 +45,16 @@ import * as agentRendererMod from "../src/adapters/installer/agent-renderer.ts";
 import * as mcpSyncMod from "../src/adapters/installer/mcp-sync.ts";
 import { AGENT_ROLES, ASD_VERSION, type HarnessId, type RoutingConfig } from "../src/core/types.ts";
 import { ASD_SKILLS } from "../src/adapters/claude-code.ts";
+import {
+  OPENCODE_V2_PLUGIN_MARKER,
+  OPENCODE_V2_PLUGIN_RELATIVE_PATH,
+  buildOpenCodeCapabilityProfile,
+  resolveOpenCodeCapabilityProfile,
+} from "../src/adapters/opencode.ts";
+import {
+  OPENCODE_V1_PLUGIN_MARKER,
+  OPENCODE_V1_PLUGIN_RELATIVE_PATH,
+} from "../src/adapters/opencode-v1.ts";
 
 function createTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -1194,10 +1204,21 @@ describe("T1.3: Subagent tools frontmatter, quoted hooks, OpenCode plugin, and r
         assert.ok(stopCmd.includes(`"${posixCli}"`), `Expected quoted CLI path in Stop: ${stopCmd}`);
       }
 
-      const ocPluginPath = path.join(spaceHome, ".config", "opencode", "plugin", "asd-guard.js");
-      assert.ok(fs.existsSync(ocPluginPath), "OpenCode asd-guard.js plugin must be installed");
+      const activeOcProfile = resolveOpenCodeCapabilityProfile().effectiveProfile;
+      const ocPluginRelPath =
+        activeOcProfile === "v2"
+          ? OPENCODE_V2_PLUGIN_RELATIVE_PATH
+          : OPENCODE_V1_PLUGIN_RELATIVE_PATH;
+      const ocPluginPath = path.join(spaceHome, ".config", "opencode", ...ocPluginRelPath.split("/"));
+      assert.ok(fs.existsSync(ocPluginPath), `OpenCode plugin (${ocPluginRelPath}) must be installed`);
       const pluginSrc = fs.readFileSync(ocPluginPath, "utf8");
-      assert.ok(pluginSrc.includes("tool.execute.before"), "OpenCode plugin must hook tool.execute.before");
+      if (activeOcProfile === "v2") {
+        assert.ok(pluginSrc.includes(OPENCODE_V2_PLUGIN_MARKER), "OpenCode V2 plugin must carry V2 marker");
+        assert.ok(pluginSrc.includes("execute.before"), "OpenCode V2 plugin must hook execute.before");
+      } else {
+        assert.ok(pluginSrc.includes(OPENCODE_V1_PLUGIN_MARKER), "OpenCode V1 plugin must carry V1 marker");
+        assert.ok(pluginSrc.includes("tool.execute.before"), "OpenCode V1 plugin must hook tool.execute.before");
+      }
       assert.ok(pluginSrc.includes(posixCli), "OpenCode plugin must reference configured CLI path");
       assert.ok(
         pluginSrc.includes("resolveNodeExecutable()"),
@@ -1581,9 +1602,19 @@ describe("T3.1: Facade Split, Harness-Conditional Skills, Dynamic routing.jsonc 
 
     const ocAsd = getSkillTemplate("asd", { harnessId: "opencode" });
     assert.ok(ocAsd.includes('Invoke `task` with `subagent_type: "asd-scout"`'));
-    assert.ok(ocAsd.includes("--mode parallel_spawn --async"));
+    assert.ok(ocAsd.includes("--mode parallel_spawn"));
+    assert.equal(ocAsd.includes("asd-guard.js"), false);
+    assert.equal(ocAsd.includes("ALWAYS pass `--async`"), false);
+    assert.equal(ocAsd.includes("--mode parallel_spawn --async"), false);
     assert.equal(ocAsd.includes("invoke_subagent"), false);
     assert.equal(ocAsd.includes("Agent` / `Task"), false);
+
+    const ocAsdV1 = getSkillTemplate("asd", { harnessId: "opencode", openCodeProfile: "v1" });
+    assert.ok(ocAsdV1.includes('Invoke `task` with `subagent_type: "asd-scout"`'));
+    assert.ok(ocAsdV1.includes("--mode parallel_spawn --async"));
+    assert.ok(ocAsdV1.includes("ALWAYS pass `--async`"));
+    assert.ok(ocAsdV1.includes("asd-guard.js"));
+    assert.ok(ocAsdV1.includes("Legacy V1 Non-Blocking Rule"));
 
     const agAsd = getSkillTemplate("asd", { harnessId: "antigravity" });
     assert.ok(agAsd.includes('invoke_subagent(TypeName="asd-scout", Model="flash_lite")'));
@@ -1600,13 +1631,16 @@ describe("T3.1: Facade Split, Harness-Conditional Skills, Dynamic routing.jsonc 
     assert.equal(curAsd.includes("invoke_subagent"), false);
     assert.equal(curAsd.includes("asd-guard.js"), false);
 
-    // Calling without harnessId strips tags cleanly while preserving all blocks and resolving placeholders
+    // Calling without harnessId strips tags cleanly while keeping general + opencode-v2 blocks (and excluding opencode-v1)
     const unharnessed = getSkillTemplate("asd");
     assert.equal(unharnessed.includes("<!-- @harness:"), false);
     assert.equal(unharnessed.includes("<!-- @end -->"), false);
     assert.equal(/\{\{LIGHT_[A-Z]+_MODEL\}\}/.test(unharnessed), false);
     assert.ok(unharnessed.includes('subagent_type: "asd-scout"'));
     assert.ok(unharnessed.includes('invoke_subagent(TypeName="asd-scout"'));
+    assert.ok(unharnessed.includes("OpenCode V2 natively backgrounds subagents/shell commands"));
+    assert.equal(unharnessed.includes("Legacy V1 Non-Blocking Rule"), false);
+    assert.equal(unharnessed.includes("asd-guard.js"), false);
 
     // Canonical asd-handoff alias rewrites frontmatter name cleanly
     const asdHandoff = getSkillTemplate("asd-handoff", { harnessId: "claude-code" });
@@ -1681,14 +1715,22 @@ describe("T3.1: Facade Split, Harness-Conditional Skills, Dynamic routing.jsonc 
         path.join(dynHome, ".config", "opencode", "command", "asd-run.md"),
         "utf8"
       );
-      assert.ok(syncedOcCmd.includes("OpenCode Non-Blocking Rule"));
+      const activeOcProfile = resolveOpenCodeCapabilityProfile().effectiveProfile;
+      if (activeOcProfile === "v2") {
+        assert.ok(syncedOcCmd.includes("OpenCode V2 natively backgrounds subagents/shell commands"));
+        assert.equal(syncedOcCmd.includes("asd-guard.js"), false);
+      } else {
+        assert.ok(syncedOcCmd.includes("Legacy V1 Non-Blocking Rule"));
+        assert.ok(syncedOcCmd.includes("asd-guard.js"));
+      }
       assert.equal(syncedOcCmd.includes("invoke_subagent"), false);
 
       const syncedCcSkill = fs.readFileSync(
         path.join(dynHome, ".claude", "skills", "asd-run", "SKILL.md"),
         "utf8"
       );
-      assert.equal(syncedCcSkill.includes("OpenCode Non-Blocking Rule"), false);
+      assert.equal(syncedCcSkill.includes("OpenCode V2 natively backgrounds"), false);
+      assert.equal(syncedCcSkill.includes("Legacy V1 Non-Blocking Rule"), false);
       assert.ok(syncedCcSkill.includes('`Agent` / `Task` with `subagent_type: "asd-<role>"`'));
     } finally {
       removeTempDir(dynHome);
@@ -1734,5 +1776,383 @@ describe("T3.1: Facade Split, Harness-Conditional Skills, Dynamic routing.jsonc 
     assert.ok(rosterMd.includes("`DIRECT`"));
     assert.ok(rosterMd.includes("`LIGHT`"));
     assert.ok(rosterMd.includes("`HEAVY`"));
+  });
+});
+
+describe("OpenCode V1/V2 Profile-Aware Sync, Uninstall Safety, Doctor Drift & Skill Rendering", () => {
+  test("(a) & (b) V2 sync vs V1 sync: installs profile-matched guard & skills, cleans stale ASD cross-version guards, preserves user plugins, and skips spurious opencode.jsonc backup", async () => {
+    const ocHome = createTempDir("asd-oc-v1v2-sync-");
+    try {
+      const opencodeDir = path.join(ocHome, ".config", "opencode");
+      const v1PluginDir = path.join(opencodeDir, "plugin");
+      const v1PluginPath = path.join(v1PluginDir, "asd-guard.js");
+      const v2PluginPath = path.join(opencodeDir, "plugins", "asd-guard", "index.js");
+      const userPluginPath = path.join(opencodeDir, "plugins", "user-custom", "index.js");
+      const jsoncPath = path.join(opencodeDir, "opencode.jsonc");
+
+      fs.mkdirSync(v1PluginDir, { recursive: true });
+      fs.mkdirSync(path.dirname(userPluginPath), { recursive: true });
+      fs.writeFileSync(v1PluginPath, `${OPENCODE_V1_PLUGIN_MARKER} (v2.6.0)\nexport default {};\n`, "utf8");
+      const userPluginSrc = "export default { id: 'user-custom-plugin' };\n";
+      fs.writeFileSync(userPluginPath, userPluginSrc, "utf8");
+      const userJsoncSrc = '// User JSONC\n{\n  "model": "openai/gpt-5.4",\n}\n';
+      fs.writeFileSync(jsoncPath, userJsoncSrc, "utf8");
+
+      const v2Env = { ...process.env, ASD_OPENCODE_PROFILE: "v2" };
+      const v2Sync1 = await syncHarnessConfigs({
+        homeDir: ocHome,
+        noPath: true,
+        skipModelDiscovery: true,
+        env: v2Env,
+      });
+      assert.equal(v2Sync1.status, "updated");
+
+      // (a) V2 sync installs plugins/asd-guard/index.js, removes stale V1 plugin/asd-guard.js + empty plugin/ dir
+      assert.equal(fs.existsSync(v2PluginPath), true, "V2 guard plugins/asd-guard/index.js must exist");
+      assert.ok(fs.readFileSync(v2PluginPath, "utf8").startsWith(OPENCODE_V2_PLUGIN_MARKER));
+      assert.equal(fs.existsSync(v1PluginPath), false, "Stale ASD V1 plugin/asd-guard.js must be removed on V2 sync");
+      assert.equal(fs.existsSync(v1PluginDir), false, "Empty legacy plugin/ dir must be cleaned up");
+      assert.equal(fs.readFileSync(userPluginPath, "utf8"), userPluginSrc, "User plugin in plugins/ must stay intact");
+
+      // (a) No spurious opencode.jsonc.asd-backup and opencode.jsonc untouched
+      assert.equal(fs.existsSync(`${jsoncPath}.asd-backup`), false, "sync must NEVER create opencode.jsonc.asd-backup");
+      assert.equal(fs.readFileSync(jsoncPath, "utf8"), userJsoncSrc);
+
+      // (a) V2 skill guidance omits V1 asd-guard.js / ALWAYS pass --async
+      const v2AsdCmd = fs.readFileSync(path.join(opencodeDir, "command", "asd.md"), "utf8");
+      const v2RunCmd = fs.readFileSync(path.join(opencodeDir, "command", "asd-run.md"), "utf8");
+      assert.ok(v2AsdCmd.includes("OpenCode V2 natively backgrounds subagents/shell commands"));
+      assert.equal(v2AsdCmd.includes("asd-guard.js"), false);
+      assert.equal(v2AsdCmd.includes("ALWAYS pass"), false);
+      assert.equal(v2AsdCmd.includes("--mode parallel_spawn --async"), false);
+      assert.ok(v2RunCmd.includes("OpenCode V2 natively backgrounds subagents/shell commands"));
+      assert.equal(v2RunCmd.includes("asd-guard.js"), false);
+      assert.equal(v2RunCmd.includes("ALWAYS pass"), false);
+      assert.equal(v2RunCmd.includes("--mode parallel_spawn --async"), false);
+
+      // Idempotent second V2 sync skips cleanly
+      const v2Sync2 = await syncHarnessConfigs({
+        homeDir: ocHome,
+        noPath: true,
+        skipModelDiscovery: true,
+        env: v2Env,
+      });
+      assert.equal(v2Sync2.status, "skipped");
+      assert.equal(v2Sync2.harnesses.opencode.skipped, true);
+
+      // (b) Switching to V1 invalidates hash automatically (no --force needed), installs V1 plugin, cleans V2 plugin, preserves user plugin
+      const v1Env = { ...process.env, ASD_OPENCODE_PROFILE: "v1" };
+      const v1Sync = await syncHarnessConfigs({
+        homeDir: ocHome,
+        noPath: true,
+        skipModelDiscovery: true,
+        env: v1Env,
+      });
+      assert.equal(v1Sync.status, "updated");
+      assert.equal(v1Sync.harnesses.opencode.status, "updated");
+      assert.equal(fs.existsSync(v1PluginPath), true, "V1 guard plugin/asd-guard.js must be installed");
+      assert.ok(fs.readFileSync(v1PluginPath, "utf8").startsWith(OPENCODE_V1_PLUGIN_MARKER));
+      assert.equal(fs.existsSync(v2PluginPath), false, "Stale ASD V2 plugin must be removed on V1 sync");
+      assert.equal(fs.existsSync(path.join(opencodeDir, "plugins", "asd-guard")), false);
+      assert.equal(fs.readFileSync(userPluginPath, "utf8"), userPluginSrc, "User plugin must survive V1 sync cleanup");
+
+      const v1AsdCmd = fs.readFileSync(path.join(opencodeDir, "command", "asd.md"), "utf8");
+      const v1RunCmd = fs.readFileSync(path.join(opencodeDir, "command", "asd-run.md"), "utf8");
+      assert.ok(v1AsdCmd.includes("Legacy V1 Non-Blocking Rule"));
+      assert.ok(v1AsdCmd.includes("ALWAYS pass `--async`"));
+      assert.ok(v1AsdCmd.includes("asd-guard.js"));
+      assert.ok(v1RunCmd.includes("Legacy V1 Non-Blocking Rule"));
+      assert.ok(v1RunCmd.includes("ALWAYS pass `--async`"));
+      assert.ok(v1RunCmd.includes("asd-guard.js"));
+
+      // Upgrading V1 -> V2 again automatically invalidates configHash without --force
+      const upgradeSync = await syncHarnessConfigs({
+        homeDir: ocHome,
+        noPath: true,
+        skipModelDiscovery: true,
+        env: v2Env,
+      });
+      assert.equal(upgradeSync.status, "updated");
+      assert.equal(fs.existsSync(v2PluginPath), true);
+      assert.equal(fs.existsSync(v1PluginPath), false);
+    } finally {
+      removeTempDir(ocHome);
+    }
+  });
+
+  test("(c) uninstall removes ASD-managed V1 & V2 plugins while keeping user plugins, user AGENTS.md, opencode.jsonc, and JSONC oh-my-openagent.json intact", async () => {
+    // Subtest 1: V2 sync + pre-existing user AGENTS.md + user plugins + JSONC oh-my-openagent.json with comments
+    const home1 = createTempDir("asd-oc-uninst-1-");
+    try {
+      const opencodeDir = path.join(home1, ".config", "opencode");
+      const userPluginPath = path.join(opencodeDir, "plugins", "user-plugin", "index.js");
+      const unmarkedV1Path = path.join(opencodeDir, "plugin", "asd-guard.js");
+      const userAgentsMdPath = path.join(opencodeDir, "AGENTS.md");
+      const jsoncPath = path.join(opencodeDir, "opencode.jsonc");
+      const omoPath = path.join(opencodeDir, "oh-my-openagent.json");
+
+      fs.mkdirSync(path.dirname(userPluginPath), { recursive: true });
+      fs.mkdirSync(path.dirname(unmarkedV1Path), { recursive: true });
+
+      const userPluginSrc = "export const userPlugin = true;\n";
+      const unmarkedV1Src = "// User-authored custom plugin\nexport default {};\n";
+      const userAgentsSrc = "# My Personal OpenCode Instructions\nKeep things tidy.\n";
+      const userJsoncSrc = '// User opencode.jsonc\n{\n  "theme": "tokyonight",\n}\n';
+      const userOmoJsoncSrc = [
+        "// User Oh-My-OpenAgent JSONC config",
+        "{",
+        '  "agents": {',
+        '    "sisyphus": { "model": "anthropic/claude-opus-4-6" },',
+        "  },",
+        "}",
+      ].join("\n") + "\n";
+
+      fs.writeFileSync(userPluginPath, userPluginSrc, "utf8");
+      fs.writeFileSync(unmarkedV1Path, unmarkedV1Src, "utf8");
+      fs.writeFileSync(userAgentsMdPath, userAgentsSrc, "utf8");
+      fs.writeFileSync(jsoncPath, userJsoncSrc, "utf8");
+
+      await syncHarnessConfigs({
+        homeDir: home1,
+        noPath: true,
+        skipModelDiscovery: true,
+        env: { ...process.env, ASD_OPENCODE_PROFILE: "v2" },
+      });
+
+      const v2GuardPath = path.join(opencodeDir, "plugins", "asd-guard", "index.js");
+      assert.equal(fs.existsSync(v2GuardPath), true);
+      assert.equal(fs.existsSync(`${jsoncPath}.asd-backup`), false);
+
+      // Write user's JSONC oh-my-openagent.json (no backup) to verify uninstall bug (b) fix
+      fs.writeFileSync(omoPath, userOmoJsoncSrc, "utf8");
+
+      await uninstallHarnessConfigs({ homeDir: home1 });
+
+      assert.equal(fs.existsSync(v2GuardPath), false, "ASD V2 plugin must be removed on uninstall");
+      assert.equal(fs.existsSync(path.join(opencodeDir, "plugins", "asd-guard")), false);
+      assert.equal(fs.readFileSync(userPluginPath, "utf8"), userPluginSrc, "User plugin in plugins/ must survive uninstall");
+      assert.equal(fs.readFileSync(unmarkedV1Path, "utf8"), unmarkedV1Src, "Unmarked plugin/asd-guard.js must NOT be deleted");
+      assert.equal(fs.readFileSync(userAgentsMdPath, "utf8"), userAgentsSrc, "Pre-existing user AGENTS.md must be restored");
+      assert.equal(fs.readFileSync(jsoncPath, "utf8"), userJsoncSrc, "opencode.jsonc must remain untouched");
+      assert.equal(fs.readFileSync(omoPath, "utf8"), userOmoJsoncSrc, "JSONC oh-my-openagent.json with comments must stay 100% intact");
+    } finally {
+      removeTempDir(home1);
+    }
+
+    // Subtest 2: V1 marked plugin removed, unparseable oh-my-openagent.json preserved, user-authored AGENTS.md without backup preserved
+    const home2 = createTempDir("asd-oc-uninst-2-");
+    try {
+      const opencodeDir = path.join(home2, ".config", "opencode");
+      const v1GuardPath = path.join(opencodeDir, "plugin", "asd-guard.js");
+      const agentsMdPath = path.join(opencodeDir, "AGENTS.md");
+      const omoPath = path.join(opencodeDir, "oh-my-openagent.json");
+
+      fs.mkdirSync(path.dirname(v1GuardPath), { recursive: true });
+      fs.writeFileSync(v1GuardPath, `${OPENCODE_V1_PLUGIN_MARKER} (v2.7.0)\nexport default {};\n`, "utf8");
+      const customAgentsSrc = "# Custom Non-ASD AGENTS.md\n";
+      fs.writeFileSync(agentsMdPath, customAgentsSrc, "utf8");
+      const brokenOmoSrc = "{ invalid-unparseable-omo-jsonc :::\n";
+      fs.writeFileSync(omoPath, brokenOmoSrc, "utf8");
+
+      await uninstallHarnessConfigs({ homeDir: home2 });
+
+      assert.equal(fs.existsSync(v1GuardPath), false, "ASD-marked V1 plugin must be removed on uninstall");
+      assert.equal(fs.readFileSync(agentsMdPath, "utf8"), customAgentsSrc, "User-authored non-ASD AGENTS.md must NOT be deleted");
+      assert.equal(fs.readFileSync(omoPath, "utf8"), brokenOmoSrc, "Unparseable oh-my-openagent.json must NOT be deleted");
+    } finally {
+      removeTempDir(home2);
+    }
+  });
+
+  test("(d) doctorProbe reports OpenCode version, V1/V2 profile, plugin drift, ACP args, and degraded fallback warnings", async () => {
+    const docHome = createTempDir("asd-oc-doctor-home-");
+    const fakeBinDir = createTempDir("asd-oc-doctor-bins-");
+    try {
+      const ext = process.platform === "win32" ? ".cmd" : "";
+      const ocBinPath = path.join(fakeBinDir, `opencode${ext}`);
+      const writeOcStub = (output: string) => {
+        const script =
+          process.platform === "win32"
+            ? `@echo off\r\necho ${output}\r\n`
+            : `#!/bin/sh\necho "${output}"\n`;
+        fs.writeFileSync(ocBinPath, script, { encoding: "utf8", mode: 0o755 });
+      };
+      const fakeEnv = { PATH: fakeBinDir, Path: fakeBinDir };
+
+      // 1. V2 profile with stale V1 plugin only -> flags drift non-fatally (ok: true, errors: [])
+      const opencodeDir = path.join(docHome, ".config", "opencode");
+      const v1GuardPath = path.join(opencodeDir, "plugin", "asd-guard.js");
+      fs.mkdirSync(path.dirname(v1GuardPath), { recursive: true });
+      fs.writeFileSync(v1GuardPath, `${OPENCODE_V1_PLUGIN_MARKER} (v2.6.0)\n`, "utf8");
+
+      const v2Profile = buildOpenCodeCapabilityProfile({
+        rawOutput: "opencode 2.3.2",
+        version: "2.3.2",
+        major: 2,
+        pluginApi: "v2",
+        source: "cli-probe",
+      });
+      writeOcStub("opencode 2.3.2");
+
+      const driftDoc = await doctorProbe({
+        homeDir: docHome,
+        projectRoot: process.cwd(),
+        env: fakeEnv,
+        openCodeProfile: v2Profile,
+      });
+      assert.equal(driftDoc.ok, true);
+      assert.equal(driftDoc.errors.length, 0);
+      assert.equal(driftDoc.harnesses.opencode.version, "2.3.2");
+      assert.equal(driftDoc.harnesses.opencode.activeProfile, "v2");
+      assert.equal(driftDoc.harnesses.opencode.acp?.args.join(" "), "acp");
+      assert.equal(driftDoc.harnesses.opencode.guardStatus?.hasV1Guard, true);
+      assert.equal(driftDoc.harnesses.opencode.guardStatus?.hasV2Guard, false);
+      assert.equal(driftDoc.harnesses.opencode.guardStatus?.driftDetected, true);
+      assert.ok(driftDoc.harnesses.opencode.guardStatus?.driftWarning?.includes("plugins/asd-guard/index.js"));
+      const ocDriftCheck = driftDoc.checks.find((c) => c.name === "opencode_profile");
+      assert.ok(ocDriftCheck && ocDriftCheck.ok);
+      assert.ok(ocDriftCheck.message?.includes("2.3.2"));
+      assert.ok(ocDriftCheck.message?.includes("plugins/asd-guard/index.js is missing"));
+
+      // 2. Sync V2 -> drift clears
+      await syncHarnessConfigs({
+        homeDir: docHome,
+        noPath: true,
+        skipModelDiscovery: true,
+        env: fakeEnv,
+        openCodeProfile: v2Profile,
+      });
+      const syncedDoc = await doctorProbe({
+        homeDir: docHome,
+        projectRoot: process.cwd(),
+        env: fakeEnv,
+        openCodeProfile: v2Profile,
+      });
+      assert.equal(syncedDoc.ok, true);
+      assert.equal(syncedDoc.harnesses.opencode.guardStatus?.hasV2Guard, true);
+      assert.equal(syncedDoc.harnesses.opencode.guardStatus?.hasV1Guard, false);
+      assert.equal(syncedDoc.harnesses.opencode.guardStatus?.driftDetected, false);
+
+      // 3. V1 profile -> reports activeProfile "v1" and ACP args ["acp", "--pure"]
+      const v1Profile = buildOpenCodeCapabilityProfile({
+        rawOutput: "opencode 1.19.4",
+        version: "1.19.4",
+        major: 1,
+        pluginApi: "v1",
+        source: "cli-probe",
+      });
+      const v1Doc = await doctorProbe({
+        homeDir: docHome,
+        projectRoot: process.cwd(),
+        env: fakeEnv,
+        openCodeProfile: v1Profile,
+      });
+      assert.equal(v1Doc.harnesses.opencode.version, "1.19.4");
+      assert.equal(v1Doc.harnesses.opencode.activeProfile, "v1");
+      assert.deepEqual(v1Doc.harnesses.opencode.acp?.args, ["acp", "--pure"]);
+
+      // 4. Unknown degraded fallback -> reports degraded warning non-fatally
+      const unknownProfile = buildOpenCodeCapabilityProfile({
+        rawOutput: "unparseable",
+        version: null,
+        major: null,
+        pluginApi: "unknown",
+        source: "fallback",
+      });
+      const degradedDoc = await doctorProbe({
+        homeDir: docHome,
+        projectRoot: process.cwd(),
+        env: fakeEnv,
+        openCodeProfile: unknownProfile,
+      });
+      assert.equal(degradedDoc.ok, true);
+      assert.equal(degradedDoc.errors.length, 0);
+      assert.equal(degradedDoc.harnesses.opencode.version, "unknown");
+      assert.equal(degradedDoc.harnesses.opencode.activeProfile, "v1");
+      assert.equal(degradedDoc.harnesses.opencode.degraded, true);
+      const degradedCheck = degradedDoc.checks.find((c) => c.name === "opencode_profile");
+      assert.ok(
+        degradedCheck?.message?.includes("OpenCode version detection failed; degraded fallback to V1 profile active")
+      );
+    } finally {
+      removeTempDir(docHome);
+      removeTempDir(fakeBinDir);
+    }
+  });
+
+  test("(e) skill-renderer handles opencode-v2, opencode-v1, omitted harnessId, other harnesses, and {{LIGHT_*_MODEL}} routes", () => {
+    const customRouting = {
+      _asdVersion: ASD_VERSION,
+      lightSubagents: {
+        opencode: {
+          scout: { model: "custom/oc-scout-model" },
+          worker: { model: "custom/oc-worker-model" },
+          defaultModel: "custom/oc-default",
+        },
+      },
+      agents: {},
+      categories: {},
+    } as unknown as RoutingConfig;
+
+    const runV2 = getSkillTemplate("asd-run", {
+      harnessId: "opencode",
+      openCodeProfile: "v2",
+      routingConfig: customRouting,
+    });
+    assert.ok(runV2.includes("OpenCode V2 natively backgrounds subagents/shell commands"));
+    assert.equal(runV2.includes("Legacy V1 Non-Blocking Rule"), false);
+    assert.equal(runV2.includes("asd-guard.js"), false);
+    assert.equal(runV2.includes("ALWAYS pass"), false);
+    assert.equal(runV2.includes("--mode parallel_spawn --async"), false);
+
+    const runV1 = getSkillTemplate("asd-run", {
+      harnessId: "opencode",
+      openCodeProfile: "v1",
+      routingConfig: customRouting,
+    });
+    assert.ok(runV1.includes("Legacy V1 Non-Blocking Rule"));
+    assert.ok(runV1.includes("ALWAYS pass `--async`"));
+    assert.ok(runV1.includes("--mode parallel_spawn --async"));
+    assert.ok(runV1.includes("asd-guard.js"));
+    assert.equal(runV1.includes("OpenCode V2 natively backgrounds"), false);
+
+    const runOmitted = getSkillTemplate("asd-run");
+    assert.ok(runOmitted.includes("OpenCode V2 natively backgrounds subagents/shell commands"));
+    assert.equal(runOmitted.includes("Legacy V1 Non-Blocking Rule"), false);
+    assert.equal(runOmitted.includes("asd-guard.js"), false);
+    assert.ok(runOmitted.includes("Claude Code"));
+
+    // Verify comma-separated tags + {{LIGHT_*_MODEL}} OpenCode route preservation across both V1 and V2
+    const sample = [
+      "<!-- @harness:opencode -->common oc {{LIGHT_SCOUT_MODEL}}<!-- @end -->",
+      "<!-- @harness:opencode-v2,claude-code -->v2-or-cc {{LIGHT_WORKER_MODEL}}<!-- @end -->",
+      "<!-- @harness:opencode-v1 -->v1-only {{LIGHT_WORKER_MODEL}}<!-- @end -->",
+    ].join("\n");
+
+    const renderedOcV2 = renderSkillTemplate(sample, {
+      harnessId: "opencode",
+      openCodeProfile: "v2",
+      routingConfig: customRouting,
+    });
+    assert.ok(renderedOcV2.includes("common oc custom/oc-scout-model"));
+    assert.ok(renderedOcV2.includes("v2-or-cc custom/oc-worker-model"));
+    assert.equal(renderedOcV2.includes("v1-only"), false);
+
+    const renderedOcV1 = renderSkillTemplate(sample, {
+      harnessId: "opencode",
+      openCodeProfile: "v1",
+      routingConfig: customRouting,
+    });
+    assert.ok(renderedOcV1.includes("common oc custom/oc-scout-model"));
+    assert.ok(renderedOcV1.includes("v1-only custom/oc-worker-model"));
+    assert.equal(renderedOcV1.includes("v2-or-cc"), false);
+
+    const renderedCc = renderSkillTemplate(sample, {
+      harnessId: "claude-code",
+      routingConfig: customRouting,
+    });
+    assert.equal(renderedCc.includes("common oc"), false);
+    assert.equal(renderedCc.includes("v1-only"), false);
+    assert.ok(renderedCc.includes("v2-or-cc"));
   });
 });

@@ -54,7 +54,8 @@ Present the plan summary, recommend `DIRECT`, `LIGHT`, or `HEAVY` (plus optional
 <!-- @harness:codex -->  - Spawn internal `asd-<role>` subagent on its synced `routing.jsonc` model.<!-- @end -->
 <!-- @harness:cursor -->  - Spawn internal `asd-<role>` subagent on its synced `routing.jsonc` model.<!-- @end -->
 - **`HEAVY`**: Dispatch isolated worktree workers (auto-verified per task; run `asd verify --task <T-ID>` for manual re-checks):
-<!-- @harness:opencode -->  - MUST pass `--async`: `asd dispatch --turn <N> --mode parallel_spawn --async` (`asd-guard.js` auto-notifies on completion).<!-- @end -->
+<!-- @harness:opencode-v2 -->  - Run `asd dispatch --turn <N> --mode parallel_spawn` (OpenCode V2 natively backgrounds subagents/shell commands; optional `--async` + `asd wait` remains available if detached execution is explicitly desired).<!-- @end -->
+<!-- @harness:opencode-v1 -->  - Legacy V1 Non-Blocking Rule: ALWAYS pass `--async` (`asd dispatch --turn <N> --mode parallel_spawn --async`); `asd-guard.js` auto-notifies your session on wave completion (optional wait: `asd status` / `asd wait --timeout 600000`).<!-- @end -->
 <!-- @harness:claude-code -->  - Run `asd dispatch --turn <N> --mode parallel_spawn`.<!-- @end -->
 <!-- @harness:antigravity -->  - Run `asd dispatch --turn <N> --mode parallel_spawn`.<!-- @end -->
 <!-- @harness:codex -->  - Run `asd dispatch --turn <N> --mode parallel_spawn`.<!-- @end -->

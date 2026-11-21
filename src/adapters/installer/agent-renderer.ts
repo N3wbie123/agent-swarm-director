@@ -162,6 +162,7 @@ export function generateAgentContent(
   if (opts?.harnessId === "opencode") {
     frontmatterLines.push(`mode: subagent`);
     if (isReadOnlyRole) {
+      // OpenCode V2 automatically maps write/edit/patch: false to deny permissions.
       frontmatterLines.push(`tools:`);
       frontmatterLines.push(`  write: false`);
       frontmatterLines.push(`  edit: false`);

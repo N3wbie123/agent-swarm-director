@@ -147,4 +147,43 @@ describe("2. Capability-Aware & Dedup Gap-Filling MCP Sync", () => {
       removeTempDir(omoHome);
     }
   });
+
+  test("deduplicates OpenCode MCP catalog against opencode.jsonc without modifying or backing up opencode.jsonc under V2", async () => {
+    const ocMcpHome = createTempDir("asd-test-oc-mcp-v2-");
+    try {
+      const opencodeDir = path.join(ocMcpHome, ".config", "opencode");
+      fs.mkdirSync(opencodeDir, { recursive: true });
+      const jsoncPath = path.join(opencodeDir, "opencode.jsonc");
+      const jsoncRaw =
+        '// User OpenCode V2 JSONC\n{\n  "mcp": {\n    "context7": { "type": "remote", "url": "https://custom.c7" },\n  },\n}\n';
+      fs.writeFileSync(jsoncPath, jsoncRaw, "utf8");
+
+      await syncHarnessConfigs({
+        homeDir: ocMcpHome,
+        noPath: true,
+        skipModelDiscovery: true,
+        env: { ...process.env, ASD_OPENCODE_PROFILE: "v2" },
+      });
+
+      assert.equal(fs.readFileSync(jsoncPath, "utf8"), jsoncRaw);
+      assert.equal(fs.existsSync(`${jsoncPath}.asd-backup`), false);
+      const opencodeJson = JSON.parse(
+        fs.readFileSync(path.join(opencodeDir, "opencode.json"), "utf8")
+      );
+      assert.equal(opencodeJson.mcpServers.context7, undefined);
+      assert.ok(opencodeJson.mcpServers.websearch);
+      assert.ok(
+        fs.existsSync(path.join(opencodeDir, "plugins", "asd-guard", "index.js"))
+      );
+
+      await uninstallHarnessConfigs({ homeDir: ocMcpHome });
+      assert.equal(fs.readFileSync(jsoncPath, "utf8"), jsoncRaw);
+      assert.equal(
+        fs.existsSync(path.join(opencodeDir, "plugins", "asd-guard", "index.js")),
+        false
+      );
+    } finally {
+      removeTempDir(ocMcpHome);
+    }
+  });
 });

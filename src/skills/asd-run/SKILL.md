@@ -47,8 +47,11 @@ description: Execution & resume workflow for ASD v2.7.0 across 3-track DIRECT/LI
   - **Cursor**: delegate via native subagent (synced `~/.cursor/agents/asd-<role>.md`) or execute directly within `targetFiles`.
   <!-- @end -->
 - **`HEAVY`**:
-  <!-- @harness:opencode -->
-  - **OpenCode Non-Blocking Rule**: ALWAYS pass `--async` (`asd dispatch --turn <N> --mode parallel_spawn --async`); `asd-guard.js` auto-notifies your session on wave completion (optional wait: `asd status` / `asd wait --timeout 600000`).
+  <!-- @harness:opencode-v2 -->
+  - Run `asd dispatch --turn <N> --mode parallel_spawn` (OpenCode V2 natively backgrounds subagents/shell commands; optional `--async` + `asd wait` remains available if detached execution is explicitly desired).
+  <!-- @end -->
+  <!-- @harness:opencode-v1 -->
+  - **Legacy V1 Non-Blocking Rule**: ALWAYS pass `--async` (`asd dispatch --turn <N> --mode parallel_spawn --async`); `asd-guard.js` auto-notifies your session on wave completion (optional wait: `asd status` / `asd wait --timeout 600000`).
   <!-- @end -->
   <!-- @harness:claude-code -->
   - Run `asd dispatch --turn <N> --mode parallel_spawn` (optional `--transport <auto|acp|cli>`).
