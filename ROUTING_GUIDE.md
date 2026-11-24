@@ -1,8 +1,8 @@
-# ASD v2.4.2 Model Routing Configuration Guide (`routing.jsonc`)
+# ASD v2.7.0 Model Routing Configuration Guide (`routing.jsonc`)
 
 **English** | [한국어](./ROUTING_GUIDE_ko.md) | [📖 Back to README](./README.md)
 
-ASD (Agent Swarm Director) routes models differently depending on the execution mode: **`LIGHT` mode (internal subagent delegation within the active harness)** and **`HEAVY` mode (external harness CLI parallel process spawning & blind debate)**.
+ASD (Agent Swarm Director v2.7.0) routes models across its 3-track execution model: **`DIRECT`** (main session executes directly), **`LIGHT` mode** (`lightSubagents` — internal subagent delegation within the active harness), and **`HEAVY` mode** (`agents` & `categories` — external ACP/CLI parallel process spawning & cross-model blind debate).
 
 ---
 
@@ -77,7 +77,7 @@ You can freely use any of the following three formats for each role (`worker`, `
 
 ```jsonc
 {
-  "_asdVersion": "2.4.2",
+  "_asdVersion": "2.7.0",
   "lightSubagents": {
     // 1) Antigravity: Must use one of "flash_lite" | "flash" | "pro".
     //    (Even if "inherit" or "gemini-3.8-flash" is written, ASD automatically normalizes it

@@ -1,17 +1,17 @@
-# Agent Swarm Director (ASD v2.5.0) — 아키텍처 및 전체 파일·함수 상세 레퍼런스
+# Agent Swarm Director (ASD v2.7.0) — 아키텍처 및 전체 파일·함수 상세 레퍼런스
 
-> **최종 갱신일**: 2026-11-04  
-> **버전**: `2.5.0` (`agent-swarm-director`)  
+> **최종 갱신일**: 2026-11-25  
+> **버전**: `2.7.0` (`agent-swarm-director`)  
 > **대상 하네스 (5대 AI 코딩 CLI)**: Claude Code (`@cc`), OpenCode (`@oc`), Codex CLI (`@cx`), Antigravity (`@ag`), Cursor CLI (`@cr`)  
 > **외부 런타임 의존성**: `0개` (`dependencies: {}` — 순수 Node.js `>=22.13.0` 내장 모듈만 사용)
 
-[English](./PROJECT_STATUS.md) | **한국어** | [📖 README (한국어)](./README_ko.md) | [📖 README (EN)](./README.md) | [🔌 외부 SDK 및 DB 레퍼런스](./EXTERNAL_SDK_REFERENCE_ko.md) | [🤖 AI 작업 지침 프롬프트](./AI_WORKFLOW_PROMPT_ko.md) | [📋 패치 노트 (KR)](./PATCH_NOTES_ko.md) | [📋 Patch Notes (EN)](./PATCH_NOTES.md)
+[English](./PROJECT_STATUS.md) | **한국어** | [📖 README (한국어)](./README_ko.md) | [🔌 외부 SDK 및 하네스 레퍼런스](./EXTERNAL_SDK_REFERENCE_ko.md) | [⚡ ACP 로드맵](./docs/ACP_ROADMAP_ko.md) | [🤖 AI 작업 지침 프롬프트](./AI_WORKFLOW_PROMPT_ko.md) | [📋 패치 노트](./PATCH_NOTES_ko.md)
 
 ---
 
 ## 1. 프로젝트 개요 및 3대 아키텍처 불변성
 
-**Agent Swarm Director (ASD v2.5.0)**는 서로 다른 5개의 AI 코딩 하네스(**Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, **Cursor CLI**)를 단일 결정론적 컨트롤 플레인으로 통합 제어하는 **외부 의존성 0개(Zero-Dependency)** 멀티 에이전트 오케스트레이션 엔진이자 SDK입니다.
+**Agent Swarm Director (ASD v2.7.0)**는 서로 다른 5개의 AI 코딩 하네스(**Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, **Cursor CLI**)를 단일 결정론적 컨트롤 플레인으로 통합 제어하는 **외부 의존성 0개(Zero-Dependency)** 멀티 에이전트 오케스트레이션 엔진이자 SDK입니다.
 
 ### 1.1 3대 아키텍처 불변성 (Core Invariants)
 1. **Zero External Runtime Dependencies (`dependencies: {}`)**:
@@ -27,60 +27,70 @@
 
 ```text
 asd-multiagent/
-├── package.json                 # Zero runtime dependencies, version 2.5.0, bin: {"asd": "./src/cli/index.ts"}, exports 서브패스 정의
+├── package.json                 # Zero runtime dependencies, version 2.7.0, bin: {"asd": "./src/cli/index.ts"}, exports 서브패스 정의
 ├── tsconfig.json                # erasableSyntaxOnly: true, strict: true
 ├── README.md / README_ko.md     # 영문/국문 사용자 매뉴얼 (스킬 및 CLI 가이드)
 ├── PROJECT_STATUS.md / _ko.md   # 전체 아키텍처 및 파일별·주요 함수별 상세 레퍼런스 (본 문서)
-├── EXTERNAL_SDK_REFERENCE.md    # 외부 연동(asd-gui 등)을 위한 SDK API 및 단일 DB 전환 레퍼런스
+├── EXTERNAL_SDK_REFERENCE.md / _ko.md # 공개 SDK API, 5대 하네스 저장소·스트리밍 스펙 및 단일 DB 레퍼런스
+├── ROUTING_GUIDE.md / _ko.md    # 모델 라우팅 설정 가이드 (routing.jsonc)
+├── AI_WORKFLOW_PROMPT.md / _ko.md # AI 에이전트 작업 규칙 및 온보딩 프롬프트
 ├── PATCH_NOTES.md / _ko.md      # 영문/국문 버전별 패치 노트
-├── HARNESS_INTEGRATION_REFERENCE.md  # 앱팀용 하네스 통합 바이블 (저장소·포맷·실측 이벤트 스키마·함정, v2.5.0)
 ├── docs/
-│   ├── CORE_GUI_BOUNDARY_AUDIT.md   # Core–GUI 경계 감사 (GUI 기능 분리 원칙 및 위반 정리, v2.4.3)
-│   ├── ORCHESTRATOR_APP_PLAN.md     # 오케스트레이터 TUI/GUI 앱 개발 계획 (하네스 실측 매트릭스 포함)
-│   └── SDK_SURFACE_CLEANUP_PLAN.md  # SDK 공개 표면 정리 계획 (ASD-Nexus 재작성 시 breaking change 후보·제거 조건)
+│   ├── ACP_ROADMAP.md / _ko.md                # ACP v1/v2 하이브리드 아키텍처 및 추후 GUI 연동 체크리스트
+│   └── OPENCODE_V1_V2_MIGRATION_PLAN.md / _ko.md # OpenCode V2 정식 지원 정책 및 동결 V1 제거 계획
 ├── presets/
-│   ├── default-routing.jsonc    # 5대 전문 역할 및 카테고리/난이도별 기본 모델 라우팅 + 다중 폴백 체인
-│   └── default-mcp.jsonc        # Gap-filling MCP 서버 카탈로그 (context7, grep_app, websearch)
+│   ├── default-routing.jsonc    # 기본 lightSubagents + agents/categories 라우팅 및 다중 폴백 체인
+│   ├── default-mcp.jsonc        # Gap-filling 외부 MCP 서버 카탈로그
+│   └── agents/                  # 5대 전문 역할 페르소나 템플릿 (planner, architect, worker, scout, critic)
 ├── scripts/
-│   └── run-tests.mjs            # 임시 ASD_HOME_DIR 격리 기반 전체/개별 테스트 실행기
+│   ├── run-tests.mjs            # 임시 ASD_HOME_DIR 격리 기반 전체/개별 테스트 실행기
+│   └── eval-trajectory.ts       # 결정론적 오프라인 3트랙(DIRECT/LIGHT/HEAVY) 궤적 벤치마크
 ├── src/
-│   ├── index.ts                 # 외부 라이브러리(asd-gui 등) 연동을 위한 통합 Public SDK 엔트리포인트
+│   ├── index.ts                 # 외부 라이브러리(ASD-Nexus 등) 연동을 위한 통합 Public SDK 엔트리포인트
 │   ├── core/                    # 코어 오케스트레이션 엔진 (어댑터 의존성 0)
-│   │   ├── types.ts             # 전체 상수/타입(5대 하네스, 5대 역할, 3단계 난이도, 드라이버, 태스크, 토론 스키마)
+│   │   ├── types.ts             # 전체 상수/타입(5대 하네스, 5대 역할, 3트랙 DIRECT/LIGHT/HEAVY, 스키마)
+│   │   ├── acp-types.ts         # ACP v1/v2 JSON-RPC 프로토콜 타입 및 정규화 이벤트 정의
+│   │   ├── acp-client.ts        # 무의존성 ACP stdio 클라이언트(AcpStdioClient), 준비 상태 탐색, 권한 가드, 카탈로그 모델 매퍼
+│   │   ├── opencode-profile.ts  # OpenCode V2(2.x 정식) vs 레거시 V1(1.x 동결) 감지 및 기능 프로파일
 │   │   ├── config.ts            # 2-Path 레이아웃(~/.asd 및 <project>/.asd), 단일 core.db 경로, 라우팅 설정 로더
 │   │   ├── db.ts                # node:sqlite WAL 모드 4-테이블 SSOT 드라이버 (sessions, tasks, debates, session_drivers)
-│   │   ├── session-tracker.ts   # 프로젝트 탐색, 5대 하네스 로컬 CLI 세션 발견/추적, CLI ↔ ASD 세션 승격(Promote)/하강(Demote), `ses_` 세션 속성 보정 및 cli-recent 자가 치유
-│   │   ├── acp-client.ts        # 무의존성 ACP JSON-RPC 2.0 클라이언트(AcpStdioClient), 하네스 ACP 프로빙(probeAcpCapability), 권한 가드
-│   │   ├── drivers.ts           # 멀티 드라이버 소유권(session_drivers), 0-Token 브리핑(기본 로케일 'en'), 상주 ACP 세션 풀·스트리밍 턴 실행기(runDriverTurn)
-│   │   ├── transcripts.ts       # 5대 하네스 로컬 대화 기록 탐색 및 4분류(Thinking, Tool Use, Tool Result, 응답/유저) 파서
-│   │   ├── router.ts            # 4단계 모델 라우팅, 미설치 하네스 필터링, 다양성 리뷰어 선택, 자동 폴백 체인, 프로젝트 라우팅 저장(saveProjectRoutingConfig)
-│   │   ├── spawner.ts           # 서브에이전트 프로세스 스폰, 시크릿 마스킹 로깅, 프로세스 트리 강제 종료, 아티팩트 마감
-│   │   ├── workspace.ts         # Git 베이스라인 보호, LIGHT 체크포인트/롤백, HEAVY 워크트리 및 크로스 프로세스 뮤텍스 병합
-│   │   ├── file-lock.ts         # 크로스 프로세스 권고 파일 락 공용 구현 (merge.lock·cli-recent.lock, PID/경과 기반 stale 회수, 재진입 지원)
-│   │   ├── debate.ts            # 블라인드 교차 모델 적대적 토론 브로커 (Round 1 병렬 비평 + Round 2 심판)
-│   │   ├── policy.ts            # 1ms PreToolUse 경로/명령 가드, ASD_DRIVER_ID 바인딩 및 Stop 훅 3회 무진전 서킷 브레이커
-│   │   ├── render.ts            # .asd/PLAN.md 양방향 파서/렌더러, 전경 세션 제어, 실시간 progressBoard(영문 기본 출력), summary.md 생성
+│   │   ├── session-tracker.ts   # 프로젝트 탐색, 5대 하네스 세션 추적, 승격/하강, buildSpawnSpec 단일 명령 빌더
+│   │   ├── drivers.ts           # 멀티 드라이버 소유권(session_drivers), 0-Token 브리핑, 상주 ACP 풀·스트리밍 턴 실행기
+│   │   ├── transcripts.ts       # 5대 하네스 로컬 대화 기록 탐색(OpenCode V2 session_v2, Codex .jsonl.zst 포함) 및 4분류 파서
+│   │   ├── router.ts            # 4단계 모델 라우팅, 미설치 하네스 필터링, excludedFamilies 다양성 선택, 상한 제한 runWithFallbacks
+│   │   ├── spawner.ts           # 서브에이전트 프로세스 스폰, 시크릿 마스킹 로깅, 프로세스 트리 종료, 아티팩트 마감
+│   │   ├── workspace.ts         # Git 베이스라인 보호, DIRECT/LIGHT 체크포인트/롤백, HEAVY 워크트리 및 뮤텍스 병합
+│   │   ├── file-lock.ts         # 크로스 프로세스 권고 파일 락 공용 구현 (merge.lock·cli-recent.lock)
+│   │   ├── debate.ts            # 블라인드 교차 모델 토론 브로커 (역할별 루브릭, 스트리밍 NDJSON 파서, REJECT 가드, Arbiter 단독 권위, 안전한 R2 인용 확장)
+│   │   ├── policy.ts            # 1ms PreToolUse 경로/명령 가드(resolveSafeTargetPath, checkProtectedPath) 및 Stop 서킷 브레이커
+│   │   ├── render.ts            # .asd/PLAN.md 양방향 파서/렌더러, 전경 세션 제어, 실시간 progressBoard, summary.md
 │   │   ├── redact.ts            # API 키/JWT/PEM/비밀번호 자동 마스킹 ([REDACTED])
 │   │   ├── jsonc.ts             # 주석/후행 쉼표 안전 JSONC 파서 및 TOML 펜스 블록 매니저
-│   │   ├── models.ts            # 5대 하네스 모델 병렬 탐색 + models-cache.json 디스크 캐시 (v2.4.3 cli/dashboard에서 이관)
-│   │   ├── session-services.ts  # 세션 메모 저장 및 대시보드 통합 스냅샷 수집 (v2.4.3 이관)
-│   │   ├── subagent-control.ts  # 서브에이전트 런타임 제어(kill/retry/fallback/custom/resume) (v2.4.3 이관)
-│   │   └── subagent-logs.ts     # 서브에이전트 아티팩트 로그 스캐너 (v2.4.3 cli/index에서 이관)
-│   ├── adapters/                # 5대 AI 하네스 어댑터 및 글로벌 인스톨러
+│   │   ├── models.ts            # 5대 하네스 모델 병렬 탐색 + models-cache.json 디스크 캐시
+│   │   ├── session-services.ts  # 세션 메모 저장 및 대시보드 통합 스냅샷 수집
+│   │   ├── subagent-control.ts  # 서브에이전트 런타임 제어(kill/retry/fallback/custom/resume)
+│   │   └── subagent-logs.ts     # 서브에이전트 아티팩트 로그 스캐너
+│   ├── adapters/                # 5대 AI 하네스 어댑터, 레지스트리 및 글로벌 인스톨러
 │   │   ├── claude-code.ts       # Claude Code (@cc) 어댑터 (~/.claude, ~/.claude.json)
-│   │   ├── opencode.ts          # OpenCode (@oc) 어댑터 (~/.config/opencode)
+│   │   ├── opencode.ts          # OpenCode V2 (@oc) 정식 어댑터 (~/.config/opencode)
+│   │   ├── opencode-v1.ts       # 동결된 레거시 OpenCode V1 (1.x) 호환 모듈
 │   │   ├── codex.ts             # Codex CLI (@cx) 어댑터 (~/.codex/config.toml)
 │   │   ├── antigravity.ts       # Antigravity (@ag) 어댑터 (~/.gemini)
 │   │   ├── cursor.ts            # Cursor CLI (@cr) 어댑터 (~/.cursor)
-│   │   └── installer.ts         # 글로벌 동기화(sync), 외과적 제거(uninstall), 100ms 헬스체크(doctor)
-│   ├── mcp/                     # MCP 프로토콜 및 오케스트레이션 핸들러
-│   │   ├── server.ts            # handlePlan, handleDispatch, handleVerify, handleDebate 코어 핸들러 및 Subagent Isolation Guard
-│   │   └── stdio-rpc.ts         # 비동기 JSON-RPC 2.0 stdio 트랜스포트
+│   │   ├── registry.ts          # 하네스 런타임·프로비저너 플러그인 레지스트리
+│   │   ├── installer.ts         # 글로벌 동기화, 외과적 제거, ~10ms ACP 진단 파사드
+│   │   └── installer/           # 모듈형 skill-renderer, agent-renderer, mcp-sync 서브모듈
+│   ├── orchestrator/            # 모듈형 인프로세스 CLI 오케스트레이션 핸들러
+│   │   ├── index.ts             # AsdOrchestrator 및 handlePlan/handleDispatch/handleVerify/handleDebate 공개
+│   │   ├── plan-handler.ts      # Plan create/get/update/sync_from_md/schema 및 LIGHT 파일 겹침 감지기
+│   │   ├── dispatch-handler.ts  # Wave 디스패치 (claim_only / parallel_spawn / --async) 및 Cross-Scope 후속 태스크 생성
+│   │   ├── verify-handler.ts    # 검증 게이트, 3-Strike 에스컬레이션 힌트, 커밋/병합, summary.md 생성
+│   │   └── debate-handler.ts    # 토론 브로커 오케스트레이션 래퍼
 │   ├── cli/                     # 통합 터미널 CLI 및 로컬 웹 대시보드
-│   │   ├── index.ts             # 14개 CLI 서브커맨드 엔트리포인트 (plan, dispatch, verify, debate, resume, sync, ui 등)
-│   │   └── dashboard.ts         # 영어 기본('en') / 한국어 지원 Zero-Dependency 실시간 웹 대시보드 (http://127.0.0.1:3847) — v2.4.3부터 데이터 서비스는 core/로 이관, 서버+UI 전용
-│   └── skills/                  # 5대 하네스에 공통 배포되는 슬래시 스킬 템플릿 (asd, asd-plan, asd-run, asd-debug, asd-debate, handoff)
-└── tests/                       # 97개 테스트 스위트, 총 405개 단위/통합 테스트
+│   │   ├── index.ts             # CLI 서브커맨드 엔트리포인트 (plan, dispatch, wait, verify, debate, resume, sync, doctor, ui 등)
+│   │   └── dashboard.ts         # 기능 동결된 Zero-Dependency 로컬 웹 대시보드 (http://127.0.0.1:3847, 서브패스 전용)
+│   └── skills/                  # 하네스 조건부 렌더링 슬래시 스킬 템플릿 (asd, asd-plan, asd-run, asd-debug, asd-debate, handoff)
+└── tests/                       # 전체 단위/통합 테스트 스위트 (`npm test`)
 ```
 
 ---
@@ -115,9 +125,9 @@ ASD v2.4.0은 프로젝트 폴더 오염을 막고 멀티 프로젝트·멀티 �
 
 ## 4. 파일별·주요 함수별 상세 기능 레퍼런스
 
-### 4.1 공개 SDK 엔트리포인트 — [`src/index.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/index.ts)
-외부 애플리케이션(`asd-gui` 등)이 `import { ... } from "agent-swarm-director"` 한 줄로 코어 전체 기능을 재사용할 수 있도록 모든 모듈을 re-export합니다.
-- `src/core/*` 전체 모듈, `src/adapters/*` 5대 어댑터 및 인스톨러, `src/mcp/server.ts` 오케스트레이션 핸들러(`handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate`), `src/cli/index.ts` 헬퍼(`getAdapter`, `getLatestSession`, `runAsdLogs`, `runAsdClean`), 그리고 대시보드 데이터 서비스(`collectDashboardSnapshot`, `discoverHarnessModels`, `getModelsDiskCachePath`, `saveSessionMemo`, `saveProjectRoutingConfig`, `runSubagentControlAction`, `scanSubagentLogs`)를 공개합니다. `startDashboardServer`는 루트 엔트리에서 제외되었으며(이 변경, T4.2) 서브패스 `agent-swarm-director/cli/dashboard.ts`로만 접근합니다.
+### 4.1 공개 SDK 엔트리포인트 — [`src/index.ts`](./src/index.ts)
+외부 애플리케이션(**ASD-Nexus** 등)이 `import { ... } from "agent-swarm-director"` 한 줄로 코어 전체 기능을 재사용할 수 있도록 모든 모듈을 re-export합니다.
+- `src/core/*` 전체 모듈(`acp-types`, `acp-client` 포함), `src/adapters/*` 5대 어댑터·레지스트리·인스톨러, `src/orchestrator/index.ts` 핸들러(`AsdOrchestrator`, `PLAN_SCHEMA_DEFINITION`, `handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate`), `src/cli/index.ts` 헬퍼(`getAdapter`, `getLatestSession`, `runAsdLogs`, `runAsdClean`), 그리고 대시보드 데이터 서비스를 공개합니다. `startDashboardServer`는 루트 엔트리에서 제외되었으며 서브패스 `agent-swarm-director/cli/dashboard`로만 접근합니다.
 
 ---
 
@@ -126,12 +136,12 @@ ASD v2.4.0은 프로젝트 폴더 오염을 막고 멀티 프로젝트·멀티 �
 #### ① [`src/core/types.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts)
 전체 시스템의 상수 배열(`as const`)과 TypeScript 인터페이스를 정의하는 리프(Leaf) 모듈입니다.
 - **주요 상수 및 유니온 타입**:
-  - [`ASD_VERSION`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L11) (`"2.5.0"`): 패키지 및 설정 버전 상수.
+  - [`ASD_VERSION`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L11) (`"2.7.0"`): 패키지 및 설정 버전 상수.
   - [`HARNESS_IDS`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L17-L23) / `HarnessId`: `"claude-code" | "opencode" | "codex" | "antigravity" | "cursor"`.
   - [`AGENT_ROLES`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L31-L37) / `AgentRole`: 5대 핵심 역할 (`"planner" | "architect" | "worker" | "scout" | "critic"`).
   - [`TASK_CATEGORIES`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L42-L48) / `TaskCategory`: `"visual-ui" | "design" | "research" | "writing" | "general"`.
   - [`DIFFICULTY_TIERS`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L53-L57) / `DifficultyTier`: `"low" | "medium" | "high"`.
-  - [`TASK_TRACKS`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L61) / `TaskTrack`: `"LIGHT" | "HEAVY"`.
+  - [`TASK_TRACKS`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L61) / `TaskTrack`: `"DIRECT" | "LIGHT" | "HEAVY"`.
   - [`TASK_STATUSES`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L65-L73) / `TaskStatus`: `"pending" | "running" | "verifying" | "awaiting_approval" | "done" | "escalated" | "failed" | "merge_conflict"`.
   - [`SESSION_PHASES`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L77) / `SessionPhase`: `"planning" | "running" | "paused" | "done"`.
   - [`DRIVER_SOURCES`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L85) / `DriverSource`: `"cli" | "gui" | "subagent"`.
@@ -241,63 +251,42 @@ Git 작업 트리 보호, `LIGHT` 체크포인트 커밋/롤백, `HEAVY` 워크�
 
 ### 4.3 5대 하네스 어댑터 및 인스톨러 (`src/adapters/`)
 
-- **[`claude-code.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/claude-code.ts), [`opencode.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/opencode.ts), [`codex.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/codex.ts), [`antigravity.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/antigravity.ts), [`cursor.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/cursor.ts)**:
-  - 모든 어댑터는 공통 `HarnessAdapter` 인터페이스를 구현합니다:
-    - `detectCli()`: 바이너리 경로(`claude`, `opencode`, `codex`, `agy`, `cursor-agent`/`agent`) 및 버전, Headless 지원 여부를 탐지합니다.
-    - `buildHeadlessCommand(options)`: 비대화형 서브에이전트 실행을 위한 CLI 인자 배열과 환경변수를 생성합니다.
-    - `getCapabilities()`: 내장 도구(`nativeLsp`, `nativeWebSearch`, `supportsHooks` 등) 지원 여부를 반환하여 Gap-Filling MCP 주입 시 중복을 방지합니다.
-- **[`src/adapters/installer.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/installer.ts)**:
-  - [`syncGlobalHarnesses(options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/installer.ts#L1310-L1520): 5대 하네스의 글로벌 설정 디렉토리(`~/.claude`, `~/.config/opencode`, `~/.codex`, `~/.gemini`, `~/.cursor`)에 7개 스킬, 5대 에이전트 페르소나, 보안 훅(`PreToolUse`, `Stop`, Codex `notify`, Cursor 중첩 `hooks.json`), 부족한 MCP 서버, 전역 `PATH`의 `asd` 실행 심(shim)을 멱등(Idempotent)하게 동기화합니다.
-  - [`uninstallGlobalHarnesses(options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/installer.ts#L1525-L1690): ASD가 설치한 훅, 펜스 블록, `_asdManaged` MCP 항목, 에이전트, 스킬만 외과적으로 제거하고 사용자의 기존 설정은 100% 보존합니다.
-  - [`runDoctor(options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/installer.ts#L1695-L1830): 100ms 이내에 Node 버전, SQLite WAL, Git 저장소, 5대 하네스 바이너리 상태, `PreToolUse` 가드 정상 작동 여부를 진단합니다.
+- **`claude-code.ts`, `opencode.ts` (+ 동결 `opencode-v1.ts`), `codex.ts`, `antigravity.ts`, `cursor.ts` 및 `registry.ts`**:
+  - 어댑터는 훅 번역(`formatPreToolUseDeny`, `formatStopBlock`), 글로벌 설정 경로(`globalConfigTargets`), CLI/기능 탐지, OpenCode V2/V1 프로파일 분기를 담당합니다. CLI 명령 조립은 `src/core/session-tracker.ts`(`buildSpawnSpec`) 단일 경로로 통합되어 있습니다.
+- **`src/adapters/installer.ts` + `src/adapters/installer/{skill-renderer,agent-renderer,mcp-sync}.ts`**:
+  - `syncHarnessConfigs(options?)`: 5대 하네스 글로벌 디렉토리에 하네스 조건부 스킬(`routing.jsonc` 모델 동적 주입), 5대 에이전트 페르소나, 보안 훅, 외부 MCP 카탈로그, 전역 `PATH` `asd` 심을 멱등 동기화합니다.
+  - `uninstallGlobalConfigs(options?)`: ASD가 설치한 훅·펜스 블록·`_asdManaged` MCP 항목·에이전트·스킬만 외과적으로 제거하고 사용자 설정을 100% 복원합니다.
+  - `runAsdDoctor(options?)`: ~10ms 만에 Node 버전, SQLite WAL, Git, 5대 하네스 바이너리, OpenCode V1/V2 플러그인 드리프트, ACP 준비 상태 및 `PreToolUse` 가드를 진단합니다.
 
 ---
 
-### 4.4 MCP 서버 및 오케스트레이션 핸들러 (`src/mcp/`)
+### 4.4 모듈형 CLI 오케스트레이터 (`src/orchestrator/`)
 
-- **[`src/mcp/server.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/mcp/server.ts)**:
-  - CLI(`asd plan`, `asd dispatch`, `asd verify`, `asd debate`)와 MCP 서버(`AsdMcpServer`) 양쪽에서 공통으로 호출하는 코어 오케스트레이션 핸들러입니다.
-  - [`handlePlan(ctx, args)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/mcp/server.ts#L590-L820): `create`, `get`, `update`, `sync_from_md` 액션을 처리하며, SQLite `tasks`와 `.asd/PLAN.md`, `.asd/sessions/<id>/main.json`을 동기화하고 메인 하네스 세션을 자동 연결합니다.
-  - [`handleDispatch(ctx, args)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/mcp/server.ts#L825-L1250):
-    - 고아 태스크 복구(`recoverOrphanedTasks`) → 선행 태스크(`depends_on`) 완료 확인 → 원자적 클레임(`tryClaimTask`)을 수행합니다.
-    - `claim_only`(`LIGHT` 모드 기본값)일 때는 태스크별 위임 프롬프트와 허용 파일(`tests/**` 자동 포함)을 반환하고 서브에이전트 로그 폴더를 생성합니다.
-    - `parallel_spawn`(`HEAVY` 모드)일 때는 태스크별 Git 워크트리를 만들고 외부 하네스 CLI들을 병렬 스폰한 뒤 검증·병합·에스컬레이션(최대 3회) 및 Cross-Scope 후속 태스크 자동 생성(서브에이전트당 최대 2개)까지 일괄 수행합니다.
-  - [`handleVerify(ctx, args)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/mcp/server.ts#L1255-L1520): 태스크의 파일 경계·시크릿·테스트 명령을 검증하여 통과 시 체크포인트 커밋(`LIGHT`) 또는 워크트리 병합(`HEAVY`)을 수행하고, 모든 태스크가 `done`이면 `.asd/summary.md`를 생성합니다.
-  - [`handleDebate(ctx, args)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/mcp/server.ts#L1525-L1660): `runDebateBroker`를 실행하여 이기종 모델 블라인드 토론 결과를 DB에 저장하고 대상 태스크의 `acceptance`에 제약사항을 주입합니다.
-- **[`src/mcp/stdio-rpc.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/mcp/stdio-rpc.ts)**:
-  - `StdioRpcServer`: 줄바꿈 구분 JSON-RPC 2.0 stdio 서버 구현체입니다.
+- **`src/orchestrator/index.ts`, `plan-handler.ts`, `dispatch-handler.ts`, `verify-handler.ts`, `debate-handler.ts`**:
+  - `asd plan`, `asd dispatch`, `asd verify`, `asd debate`를 구동하는 인프로세스 오케스트레이션 핸들러(`AsdOrchestrator`, `PLAN_SCHEMA_DEFINITION`, `handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate`)입니다.
+  - `DIRECT` / `LIGHT` / `HEAVY` 3트랙 라우팅, `LIGHT` 파일 겹침 감지(`findOverlappingLightTargetFiles`), 분리형 `--async` Wave 실행, 3-Strike 검증 에스컬레이션 힌트(`buildEscalationHint`), Cross-Scope 후속 태스크 자동 생성(서브에이전트당 최대 2건), `.asd/summary.md` 생성을 담당합니다.
 
 ---
 
 ### 4.5 CLI 및 로컬 웹 대시보드 (`src/cli/`)
 
-#### ① [`src/cli/index.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts)
-터미널에서 실행되는 `asd` 명령어의 엔트리포인트입니다.
-- 지원 서브커맨드: `sync`, `update`, `status`, `resume`, `handoff`, `migrate`, `plan`, `dispatch`, `verify`, `debate`, `logs`, `ui`, `doctor`, `clean`, `uninstall`, `hook`, `mcp`.
-- [`runHookCli(hookType, flags)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts#L530-L710): 5대 하네스의 `session-start`, `pre-invocation`, `pre-tool-use`, `stop` 훅 호출을 받아 `cli-recent.json`을 갱신하고 정책 평가 결과를 하네스별 규격 JSON으로 반환합니다.
-- [`runAsdResume(projectRoot, flags)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts#L715-L790): 활성 ASD 세션을 하강(`demoteAsdSession`)시키고 원래 하네스의 대화형 CLI를 즉시 실행(또는 `--print`/`--json` 출력)합니다.
-- [`runAsdHandoff(projectRoot, options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts): 활성 세션 상태 및 Git/태스크 정보를 시크릿 마스킹된 `handoff.md` 문서로 생성(또는 `--print` 출력)합니다.
-- [`runAsdMigrate(options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts): 구버전 분산 `core.db`를 단일 공유 `~/.asd/state/core.db`로 자동 통합합니다 (`--clean-legacy` 지원).
+#### ① `src/cli/index.ts`
+터미널에서 실행되는 `asd` 명령어 엔트리포인트입니다.
+- 지원 서브커맨드: `sync`, `update`, `status`, `resume`, `handoff`, `migrate`, `plan`, `dispatch`, `wait`, `verify`, `debate`, `logs`, `ui`, `doctor`, `clean`, `uninstall`, `hook`.
+- 훅 평가(`session-start`, `pre-invocation`, `pre-tool-use`, `stop`), 세션 하강(`asd resume`), 시크릿 마스킹 인수인계(`asd handoff`), 레거시 DB 통합(`asd migrate`)을 수행합니다.
 
-#### ② [`src/cli/dashboard.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/dashboard.ts) (`asd ui` 상세 명세)
-외부 프런트엔드 빌드 도구 없이 `node:http`와 단일 인라인 HTML/CSS/JS로 동작하는 실시간 로컬 웹 대시보드(`http://127.0.0.1:3847`, 기본 언어 `'en'`, UI 내 `'ko'` 전환 지원)입니다. v2.4.3부터 데이터 서비스(`collectDashboardSnapshot`, `discoverHarnessModels`, `saveSessionMemo`, `saveProjectRoutingConfig`, `runSubagentControlAction`, `scanSubagentLogs`)는 `src/core/`(`models.ts`, `session-services.ts`, `subagent-control.ts`, `subagent-logs.ts`, `router.ts`)로 이관되었으며 본 모듈은 HTTP 서버와 UI 렌더링만 담당합니다.
-- **HTTP 엔드포인트 → 코어 서비스 매핑**:
-  - `GET /api/state` → [`collectDashboardSnapshot()`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/session-services.ts) (`core/session-services.ts`): 세션·태스크·토론·드라이버·서브에이전트 로그·라우팅·하네스 상태 통합 스냅샷 (`worktreeStatusCache` 3.5초 TTL, `skipCliSpawn` 옵션 지원).
-  - `GET /api/models`, `POST /api/models/refresh` → [`discoverHarnessModels()`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/models.ts) (`core/models.ts`): 5대 하네스 모델 병렬 탐색 + `~/.asd/state/models-cache.json`(10분 TTL).
-  - `POST /api/session-memo` → `saveSessionMemo()` (`core/session-services.ts`): `sessions.memo`와 `main.json` 동시 저장.
-  - `POST /api/routing` → `saveProjectRoutingConfig()` (`core/router.ts`): 프로젝트 전용 `.asd/routing.jsonc` 저장/초기화.
-  - `POST /api/subagent-action` → `runSubagentControlAction()` (`core/subagent-control.ts`): `kill`/`retry`/`fallback`/`custom` 런타임 제어.
-  - [`startDashboardServer(options)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/dashboard.ts): 로컬 HTTP 서버를 기동합니다 (루트 SDK 엔트리 미노출, 서브패스 `cli/dashboard` 전용).
+#### ② `src/cli/dashboard.ts` (`asd ui` 명세)
+기능 동결된 무의존성 로컬 웹 대시보드(`http://127.0.0.1:3847`, `EN`/`KO` 전환 지원)이며, 데이터 서비스는 `src/core/`(`models.ts`, `session-services.ts`, `subagent-control.ts`, `subagent-logs.ts`, `router.ts`)에서 제공합니다. `startDashboardServer`는 서브패스 `agent-swarm-director/cli/dashboard` 전용입니다.
 
 ---
 
 ## 5. 아키텍처 참고 및 운영 시 주의 사항 (Known Architectural Notes)
 
 1. **Cursor CLI 로컬 트랜스크립트 제약**:
-   - Cursor CLI(`agent` / `cursor-agent`)는 타 하네스와 달리 디스크에 평문 JSONL 대화 기록 파일을 노출하지 않습니다. 따라서 `readHarnessTranscript`는 Cursor에 대해 `{ unsupported: true, messages: [] }`를 반환하며, 대신 `~/.cursor/hooks.json` 기반의 세션 ID 추적(`cli-recent.json`), 실시간 스트리밍 실행(`runDriverTurn` `--output-format stream-json`), 세션 승격/하강(`promoteCliSessionToAsd` / `demoteAsdSession`)을 통해 제어합니다.
+   - Cursor CLI(`agent` / `cursor-agent`)는 비공개 SQLite blob(`store.db`)을 사용하므로 `~/.asd/transcripts/cursor/<sessionId>.jsonl` 폴백 로그가 없는 경우 `readHarnessTranscript`가 `{ unsupported: true, messages: [] }`를 반환합니다.
 2. **단일 프로젝트 내 다중 디렉터 동시 실행 주의**:
-   - SQLite DB는 WAL + `BEGIN IMMEDIATE`와 `session_drivers` 테이블로 동시 접근에 안전하며 `HEAVY` 병합도 `.asd/merge.lock`으로 보호되지만, 하나의 워킹 트리에서 두 개의 `LIGHT` 트랙 디렉터가 동시에 파일을 직접 수정하면 Git 워킹 트리 경합이 발생할 수 있으므로 병렬 작업 시에는 `HEAVY` 트랙(워크트리 격리) 사용을 권장합니다.
+   - SQLite WAL + `BEGIN IMMEDIATE`와 `.asd/merge.lock`이 DB 및 `HEAVY` 병합을 보호하지만, 동일 워킹 트리에서 복수의 `DIRECT`/`LIGHT` 수정을 동시 수행하면 경합이 발생할 수 있으므로 병렬 작업은 `HEAVY`(워크트리 격리)를 권장합니다.
 3. **Node.js 네이티브 TypeScript 실행 시 JSDoc 주석 주의**:
-   - 하네스 `PreToolUse` 훅이 `node --no-warnings src/cli/index.ts hook pre-tool-use`를 직접 실행하므로, `src/` 내부 파일의 `/** ... */` 블록 주석 안에 경로 글로브 `/*` 또는 `*/`(예: `projects/*/*.jsonl`)를 적으면 주석이 조기 종료되어 구문 에러가 발생할 수 있습니다. 주석 내 경로 예시에는 `projects/<dir>/*.jsonl` 형태를 사용합니다.
-4. **Core–GUI 경계 원칙 (v2.4.3)**:
-   - Core는 **CLI + 코어 관리(계획, `asd ui` 대시보드, git worktree 등) + 최소 SDK/API**만 유지하며, 모든 UI·서버·렌더링은 GUI 리포(`asd-gui`) 소속입니다. `asd ui`는 기능 동결(확장 금지)이며, 신규 UI 기능은 GUI 리포에 구현합니다. 경계 위반 정리 및 판정 근거는 [`docs/CORE_GUI_BOUNDARY_AUDIT_ko.md`](./docs/CORE_GUI_BOUNDARY_AUDIT_ko.md)를 참조하세요.
+   - `PreToolUse` 훅이 Node.js로 TypeScript를 직접 실행하므로 `src/` 내 `/** ... */` 주석에 `/*`·`*/`를 적지 말고 `projects/<dir>/*.jsonl` 형태를 사용합니다.
+4. **Core–클라이언트 경계 원칙**:
+   - Core는 **CLI + 코어 오케스트레이션/상태 관리 + 최소 SDK/API**(`dependencies: {}`)만 유지합니다. `asd ui`는 기능 동결 상태이며 모든 리치 UI 개발은 **ASD-Nexus**에서 수행합니다. SDK 및 하네스 계약은 [`EXTERNAL_SDK_REFERENCE_ko.md`](./EXTERNAL_SDK_REFERENCE_ko.md)를 참조하세요.

@@ -1,17 +1,17 @@
-# Agent Swarm Director (ASD v2.5.0) — Architecture & Full File/Function Reference
+# Agent Swarm Director (ASD v2.7.0) — Architecture & Full File/Function Reference
 
-> **Last Updated**: 2026-11-04  
-> **Version**: `2.5.0` (`agent-swarm-director`)  
+> **Last Updated**: 2026-11-25  
+> **Version**: `2.7.0` (`agent-swarm-director`)  
 > **Target Harnesses (5 AI Coding CLIs)**: Claude Code (`@cc`), OpenCode (`@oc`), Codex CLI (`@cx`), Antigravity (`@ag`), Cursor CLI (`@cr`)  
 > **External Runtime Dependencies**: `0` (`dependencies: {}` — uses only pure Node.js `>=22.13.0` built-in modules)
 
-**English** | [한국어](./PROJECT_STATUS_ko.md) | [📖 README](./README.md) | [🔌 External SDK & DB Reference](./EXTERNAL_SDK_REFERENCE.md) | [🤖 AI Workflow Prompt](./AI_WORKFLOW_PROMPT.md) | [📋 Patch Notes](./PATCH_NOTES.md)
+**English** | [한국어](./PROJECT_STATUS_ko.md) | [📖 README](./README.md) | [🔌 External SDK & Harness Reference](./EXTERNAL_SDK_REFERENCE.md) | [⚡ ACP Roadmap](./docs/ACP_ROADMAP.md) | [🤖 AI Workflow Prompt](./AI_WORKFLOW_PROMPT.md) | [📋 Patch Notes](./PATCH_NOTES.md)
 
 ---
 
 ## 1. Project Overview & Three Core Architectural Invariants
 
-**Agent Swarm Director (ASD v2.5.0)** is a **zero-dependency** multi-agent orchestration engine and SDK that unifies five heterogeneous AI coding harnesses (**Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, and **Cursor CLI**) under a single deterministic control plane.
+**Agent Swarm Director (ASD v2.7.0)** is a **zero-dependency** multi-agent orchestration engine and SDK that unifies five heterogeneous AI coding harnesses (**Claude Code**, **OpenCode**, **Codex CLI**, **Antigravity**, and **Cursor CLI**) under a single deterministic control plane.
 
 ### 1.1 Three Core Architectural Invariants
 1. **Zero External Runtime Dependencies (`dependencies: {}`)**:
@@ -27,60 +27,70 @@
 
 ```text
 asd-multiagent/
-├── package.json                 # Zero runtime dependencies, version 2.5.0, bin: {"asd": "./src/cli/index.ts"}, exports subpaths
+├── package.json                 # Zero runtime dependencies, version 2.7.0, bin: {"asd": "./src/cli/index.ts"}, exports subpaths
 ├── tsconfig.json                # erasableSyntaxOnly: true, strict: true
 ├── README.md / README_ko.md     # English/Korean user manual (skills & CLI guide)
 ├── PROJECT_STATUS.md / _ko.md   # Full architecture and file-by-file / function-by-function reference (this document)
-├── EXTERNAL_SDK_REFERENCE.md    # SDK API & single-DB migration reference for external integrations (asd-gui, etc.)
+├── EXTERNAL_SDK_REFERENCE.md / _ko.md # Public SDK API, 5-harness storage/streaming matrix, and single-DB reference
+├── ROUTING_GUIDE.md / _ko.md    # Model routing configuration guide (routing.jsonc)
+├── AI_WORKFLOW_PROMPT.md / _ko.md # AI agent onboarding rules & workflow prompt
 ├── PATCH_NOTES.md / _ko.md      # English/Korean version-by-version patch notes
-├── HARNESS_INTEGRATION_REFERENCE.md  # Harness integration reference for app teams (storage, formats, empirical event schemas, caveats, v2.5.0)
 ├── docs/
-│   ├── CORE_GUI_BOUNDARY_AUDIT.md   # Core-GUI boundary audit (GUI separation principles and violation cleanup, v2.4.3)
-│   ├── ORCHESTRATOR_APP_PLAN.md     # Orchestrator TUI/GUI app development plan (including empirical harness matrix)
-│   └── SDK_SURFACE_CLEANUP_PLAN.md  # Public SDK surface cleanup plan (breaking-change candidates & removal conditions ahead of ASD-Nexus rewrite)
+│   ├── ACP_ROADMAP.md / _ko.md                # ACP v1/v2 hybrid architecture & future GUI integration checklist
+│   └── OPENCODE_V1_V2_MIGRATION_PLAN.md / _ko.md # OpenCode V2 first-class policy & frozen V1 removal plan
 ├── presets/
-│   ├── default-routing.jsonc    # Default model routing across 5 specialist roles and category/difficulty tiers + multi-fallback chains
-│   └── default-mcp.jsonc        # Gap-filling MCP server catalog (context7, grep_app, websearch)
+│   ├── default-routing.jsonc    # Default lightSubagents + agents/categories routing & multi-fallback chains
+│   ├── default-mcp.jsonc        # Gap-filling external MCP server catalog
+│   └── agents/                  # 5 specialist persona templates (planner, architect, worker, scout, critic)
 ├── scripts/
-│   └── run-tests.mjs            # Full/selective test runner with isolated temporary ASD_HOME_DIR
+│   ├── run-tests.mjs            # Full/selective test runner with isolated temporary ASD_HOME_DIR
+│   └── eval-trajectory.ts       # Deterministic offline 3-track (DIRECT/LIGHT/HEAVY) trajectory benchmark
 ├── src/
-│   ├── index.ts                 # Unified Public SDK entrypoint for external libraries (asd-gui, etc.)
+│   ├── index.ts                 # Unified Public SDK entrypoint for external libraries (ASD-Nexus, etc.)
 │   ├── core/                    # Core orchestration engine (zero adapter dependencies)
-│   │   ├── types.ts             # Global constants/types (5 harnesses, 5 roles, 3 difficulty tiers, driver, task, debate schemas)
+│   │   ├── types.ts             # Global constants/types (5 harnesses, 5 roles, 3 tracks DIRECT/LIGHT/HEAVY, schemas)
+│   │   ├── acp-types.ts         # ACP v1/v2 JSON-RPC protocol types and normalized event definitions
+│   │   ├── acp-client.ts        # Zero-dependency ACP stdio client (AcpStdioClient), capability probe, permission guard, catalog model mapper
+│   │   ├── opencode-profile.ts  # OpenCode V2 (2.x, first-class) vs Legacy V1 (1.x, frozen) detection & capability profile
 │   │   ├── config.ts            # 2-Path layout (~/.asd and <project>/.asd), single core.db path, routing config loader
 │   │   ├── db.ts                # node:sqlite WAL-mode 4-table SSOT driver (sessions, tasks, debates, session_drivers)
-│   │   ├── session-tracker.ts   # Project discovery, 5-harness local CLI session discovery/tracking, CLI <-> ASD session promote/demote, `ses_` session attribution fix & cli-recent self-healing
-│   │   ├── acp-client.ts        # Zero-dependency ACP JSON-RPC 2.0 client (AcpStdioClient), harness ACP probing (probeAcpCapability), permission guard
-│   │   ├── drivers.ts           # Multi-driver ownership (session_drivers), 0-Token briefing (default locale 'en'), resident ACP session pool & streaming turn runner (runDriverTurn)
-│   │   ├── transcripts.ts       # 5-harness local transcript discovery & 4-category parser (Thinking, Tool Use, Tool Result, Assistant/User)
-│   │   ├── router.ts            # 4-tier model routing, uninstalled harness filtering, diverse reviewer selection, automatic fallback chain, project routing persistence (saveProjectRoutingConfig)
+│   │   ├── session-tracker.ts   # Project discovery, 5-harness CLI session tracking, promote/demote, buildSpawnSpec single command builder
+│   │   ├── drivers.ts           # Multi-driver ownership (session_drivers), 0-Token briefing, resident ACP pool & streaming turn runner
+│   │   ├── transcripts.ts       # 5-harness local transcript discovery (incl. OpenCode V2 session_v2 & Codex .jsonl.zst) & 4-category parser
+│   │   ├── router.ts            # 4-tier routing, uninstalled harness filtering, excludedFamilies diversity selection, capped runWithFallbacks
 │   │   ├── spawner.ts           # Subagent process spawning, secret-redacted logging, process-tree termination, artifact finalization
-│   │   ├── workspace.ts         # Git baseline protection, LIGHT checkpoint/rollback, HEAVY worktree & cross-process mutex merge
-│   │   ├── file-lock.ts         # Shared cross-process advisory file lock (merge.lock, cli-recent.lock, PID/age-based stale recovery, re-entrant support)
-│   │   ├── debate.ts            # Blind cross-model adversarial debate broker (Round 1 parallel critique + Round 2 arbitration)
-│   │   ├── policy.ts            # 1ms PreToolUse path/command guard, ASD_DRIVER_ID binding & Stop hook 3-strike no-progress circuit breaker
-│   │   ├── render.ts            # Bidirectional .asd/PLAN.md parser/renderer, foreground session control, live English-default progressBoard, summary.md generation
+│   │   ├── workspace.ts         # Git baseline protection, DIRECT/LIGHT checkpoint/rollback, HEAVY worktree & mutex merge
+│   │   ├── file-lock.ts         # Shared cross-process advisory file lock (merge.lock, cli-recent.lock)
+│   │   ├── debate.ts            # Blind cross-model debate broker (role rubrics, streaming NDJSON parser, REJECT guard, Arbiter authority, safe R2 citation expansion)
+│   │   ├── policy.ts            # 1ms PreToolUse path/command guard (resolveSafeTargetPath, checkProtectedPath) & Stop hook circuit breaker
+│   │   ├── render.ts            # Bidirectional .asd/PLAN.md parser/renderer, foreground session control, live progressBoard, summary.md
 │   │   ├── redact.ts            # Automatic masking ([REDACTED]) of API keys, JWTs, PEM keys, and passwords
 │   │   ├── jsonc.ts             # Comment/trailing-comma safe JSONC parser & TOML fenced block manager
-│   │   ├── models.ts            # Parallel 5-harness model discovery + models-cache.json disk cache (migrated from cli/dashboard in v2.4.3)
-│   │   ├── session-services.ts  # Session memo persistence & unified dashboard snapshot collection (migrated in v2.4.3)
-│   │   ├── subagent-control.ts  # Subagent runtime control (kill/retry/fallback/custom/resume) (migrated in v2.4.3)
-│   │   └── subagent-logs.ts     # Subagent artifact log scanner (migrated from cli/index in v2.4.3)
-│   ├── adapters/                # 5 AI harness adapters & global installer
+│   │   ├── models.ts            # Parallel 5-harness model discovery + models-cache.json disk cache
+│   │   ├── session-services.ts  # Session memo persistence & unified dashboard snapshot collection
+│   │   ├── subagent-control.ts  # Subagent runtime control (kill/retry/fallback/custom/resume)
+│   │   └── subagent-logs.ts     # Subagent artifact log scanner
+│   ├── adapters/                # 5 AI harness adapters, registry & global installer
 │   │   ├── claude-code.ts       # Claude Code (@cc) adapter (~/.claude, ~/.claude.json)
-│   │   ├── opencode.ts          # OpenCode (@oc) adapter (~/.config/opencode)
+│   │   ├── opencode.ts          # OpenCode V2 (@oc) first-class adapter (~/.config/opencode)
+│   │   ├── opencode-v1.ts       # Frozen Legacy OpenCode V1 (1.x) compatibility module
 │   │   ├── codex.ts             # Codex CLI (@cx) adapter (~/.codex/config.toml)
 │   │   ├── antigravity.ts       # Antigravity (@ag) adapter (~/.gemini)
 │   │   ├── cursor.ts            # Cursor CLI (@cr) adapter (~/.cursor)
-│   │   └── installer.ts         # Global sync (sync), surgical removal (uninstall), 100ms health check (doctor)
-│   ├── mcp/                     # MCP protocol & orchestration handlers
-│   │   ├── server.ts            # handlePlan, handleDispatch, handleVerify, handleDebate core handlers & Subagent Isolation Guard
-│   │   └── stdio-rpc.ts         # Async JSON-RPC 2.0 stdio transport
+│   │   ├── registry.ts          # Harness runtime & provisioner plugin registry
+│   │   ├── installer.ts         # Global sync, surgical uninstall, ~10ms ACP-aware doctor facade
+│   │   └── installer/           # Modular skill-renderer, agent-renderer, mcp-sync submodules
+│   ├── orchestrator/            # Modular in-process CLI orchestration handlers
+│   │   ├── index.ts             # AsdOrchestrator & handlePlan/handleDispatch/handleVerify/handleDebate exports
+│   │   ├── plan-handler.ts      # Plan create/get/update/sync_from_md/schema & LIGHT overlap detector
+│   │   ├── dispatch-handler.ts  # Turn wave dispatch (claim_only / parallel_spawn / --async) & cross-scope auto-tasks
+│   │   ├── verify-handler.ts    # Gate verification, 3-Strike escalation hints, commit/merge, summary.md
+│   │   └── debate-handler.ts    # Debate broker orchestration wrapper
 │   ├── cli/                     # Unified terminal CLI & local web dashboard
-│   │   ├── index.ts             # Entrypoint for 14 CLI subcommands (plan, dispatch, verify, debate, resume, sync, ui, etc.)
-│   │   └── dashboard.ts         # English-default ('en') / Korean bilingual Zero-Dependency live web dashboard (http://127.0.0.1:3847) — data services migrated to core/ in v2.4.3, server+UI only
-│   └── skills/                  # Shared slash-skill templates deployed across all 5 harnesses (asd, asd-plan, asd-run, asd-debug, asd-debate, handoff)
-└── tests/                       # 97 test suites, 405 unit/integration tests
+│   │   ├── index.ts             # Entrypoint for CLI subcommands (plan, dispatch, wait, verify, debate, resume, sync, doctor, ui, etc.)
+│   │   └── dashboard.ts         # Feature-frozen Zero-Dependency local web dashboard (http://127.0.0.1:3847; subpath-only)
+│   └── skills/                  # Harness-conditioned slash-skill templates (asd, asd-plan, asd-run, asd-debug, asd-debate, handoff)
+└── tests/                       # Comprehensive unit & integration test suite (`npm test`)
 ```
 
 ---
@@ -115,9 +125,9 @@ The `<project>/.asd/` folder is automatically registered in `.git/info/exclude` 
 
 ## 4. Detailed File & Function Reference
 
-### 4.1 Public SDK Entrypoint — [`src/index.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/index.ts)
-Re-exports all modules so external applications (such as `asd-gui`) can reuse the full core functionality via a single `import { ... } from "agent-swarm-director"`.
-- Exposes all `src/core/*` modules, the 5 `src/adapters/*` adapters and installer, `src/mcp/server.ts` orchestration handlers (`handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate`), `src/cli/index.ts` helpers (`getAdapter`, `getLatestSession`, `runAsdLogs`, `runAsdClean`), and dashboard data services (`collectDashboardSnapshot`, `discoverHarnessModels`, `getModelsDiskCachePath`, `saveSessionMemo`, `saveProjectRoutingConfig`, `runSubagentControlAction`, `scanSubagentLogs`). `startDashboardServer` is excluded from the root entry (change T4.2) and is accessed only via the subpath `agent-swarm-director/cli/dashboard.ts`.
+### 4.1 Public SDK Entrypoint — [`src/index.ts`](./src/index.ts)
+Re-exports all modules so external applications (such as **ASD-Nexus**) can reuse the full core functionality via a single `import { ... } from "agent-swarm-director"`.
+- Exposes all `src/core/*` modules (including `acp-types`, `acp-client`), the 5 `src/adapters/*` adapters, registry & installer, `src/orchestrator/index.ts` handlers (`AsdOrchestrator`, `PLAN_SCHEMA_DEFINITION`, `handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate`), `src/cli/index.ts` helpers (`getAdapter`, `getLatestSession`, `runAsdLogs`, `runAsdClean`), and dashboard data services. `startDashboardServer` is excluded from the root entry and accessed only via the subpath `agent-swarm-director/cli/dashboard`.
 
 ---
 
@@ -126,12 +136,12 @@ Re-exports all modules so external applications (such as `asd-gui`) can reuse th
 #### 1. [`src/core/types.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts)
 Leaf module defining constant arrays (`as const`) and TypeScript interfaces across the system.
 - **Key Constants & Union Types**:
-  - [`ASD_VERSION`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L11) (`"2.5.0"`): Package and configuration version constant.
+  - [`ASD_VERSION`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L11) (`"2.7.0"`): Package and configuration version constant.
   - [`HARNESS_IDS`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L17-L23) / `HarnessId`: `"claude-code" | "opencode" | "codex" | "antigravity" | "cursor"`.
   - [`AGENT_ROLES`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L31-L37) / `AgentRole`: 5 core roles (`"planner" | "architect" | "worker" | "scout" | "critic"`).
   - [`TASK_CATEGORIES`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L42-L48) / `TaskCategory`: `"visual-ui" | "design" | "research" | "writing" | "general"`.
   - [`DIFFICULTY_TIERS`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L53-L57) / `DifficultyTier`: `"low" | "medium" | "high"`.
-  - [`TASK_TRACKS`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L61) / `TaskTrack`: `"LIGHT" | "HEAVY"`.
+  - [`TASK_TRACKS`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L61) / `TaskTrack`: `"DIRECT" | "LIGHT" | "HEAVY"`.
   - [`TASK_STATUSES`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L65-L73) / `TaskStatus`: `"pending" | "running" | "verifying" | "awaiting_approval" | "done" | "escalated" | "failed" | "merge_conflict"`.
   - [`SESSION_PHASES`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L77) / `SessionPhase`: `"planning" | "running" | "paused" | "done"`.
   - [`DRIVER_SOURCES`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/types.ts#L85) / `DriverSource`: `"cli" | "gui" | "subagent"`.
@@ -241,63 +251,42 @@ Executes blind cross-model critique (Round 1) and arbiter consensus judgment (Ro
 
 ### 4.3 5-Harness Adapters & Installer (`src/adapters/`)
 
-- **[`claude-code.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/claude-code.ts), [`opencode.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/opencode.ts), [`codex.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/codex.ts), [`antigravity.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/antigravity.ts), [`cursor.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/cursor.ts)**:
-  - All adapters implement the common `HarnessAdapter` interface:
-    - `detectCli()`: Detects binary path (`claude`, `opencode`, `codex`, `agy`, `cursor-agent`/`agent`), version, and headless support.
-    - `buildHeadlessCommand(options)`: Generates CLI argument arrays and environment variables for non-interactive subagent execution.
-    - `getCapabilities()`: Returns built-in tool capabilities (`nativeLsp`, `nativeWebSearch`, `supportsHooks`, etc.) to prevent duplicate injection during Gap-Filling MCP sync.
-- **[`src/adapters/installer.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/installer.ts)**:
-  - [`syncGlobalHarnesses(options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/installer.ts#L1310-L1520): Idempotently synchronizes 7 skills, 5 agent personas, safety hooks (`PreToolUse`, `Stop`, Codex `notify`, Cursor nested `hooks.json`), missing MCP servers, and the global `PATH` `asd` execution shim into the global config directories of all 5 harnesses (`~/.claude`, `~/.config/opencode`, `~/.codex`, `~/.gemini`, `~/.cursor`).
-  - [`uninstallGlobalHarnesses(options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/installer.ts#L1525-L1690): Surgically removes only ASD-installed hooks, fenced blocks, `_asdManaged` MCP entries, agents, and skills while preserving the user's existing configuration 100%.
-  - [`runDoctor(options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/adapters/installer.ts#L1695-L1830): Diagnoses Node version, SQLite WAL, Git repository state, 5-harness binary status, and `PreToolUse` guard operation within 100ms.
+- **`claude-code.ts`, `opencode.ts` (+ frozen `opencode-v1.ts`), `codex.ts`, `antigravity.ts`, `cursor.ts` & `registry.ts`**:
+  - Adapters focus on hook translation (`formatPreToolUseDeny`, `formatStopBlock`), global config targets (`globalConfigTargets`), CLI/capability detection, and OpenCode V2/V1 profile branching. Command assembly lives centrally in `src/core/session-tracker.ts` (`buildSpawnSpec`).
+- **`src/adapters/installer.ts` + `src/adapters/installer/{skill-renderer,agent-renderer,mcp-sync}.ts`**:
+  - `syncHarnessConfigs(options?)`: Idempotently deploys harness-conditioned skills (with dynamic `routing.jsonc` model injection), 5 specialist agent personas, safety hooks, missing external MCP catalog servers, and the global `PATH` `asd` shim across all 5 harnesses.
+  - `uninstallGlobalConfigs(options?)`: Surgically removes only ASD-installed hooks, fenced blocks, `_asdManaged` MCP entries, agents, and skills while restoring user configurations 100%.
+  - `runAsdDoctor(options?)`: ~10ms diagnostic checking Node version, SQLite WAL, Git repo, 5-harness binaries, OpenCode V1/V2 plugin drift, ACP readiness, and `PreToolUse` guard health.
 
 ---
 
-### 4.4 MCP Server & Orchestration Handlers (`src/mcp/`)
+### 4.4 Modular CLI Orchestrator (`src/orchestrator/`)
 
-- **[`src/mcp/server.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/mcp/server.ts)**:
-  - Core orchestration handlers shared by both the CLI (`asd plan`, `asd dispatch`, `asd verify`, `asd debate`) and the MCP server (`AsdMcpServer`).
-  - [`handlePlan(ctx, args)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/mcp/server.ts#L590-L820): Processes `create`, `get`, `update`, and `sync_from_md` actions, synchronizing SQLite `tasks` with `.asd/PLAN.md` and `.asd/sessions/<id>/main.json` while automatically linking the main harness session.
-  - [`handleDispatch(ctx, args)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/mcp/server.ts#L825-L1250):
-    - Performs orphaned task recovery (`recoverOrphanedTasks`) -> prerequisite task (`depends_on`) completion check -> atomic claiming (`tryClaimTask`).
-    - In `claim_only` mode (`LIGHT` mode default), returns per-task delegation prompts and allowed files (automatically including `tests/**`) and creates subagent log folders.
-    - In `parallel_spawn` mode (`HEAVY` mode), creates per-task Git worktrees, spawns external harness CLIs in parallel, and executes verification, merging, escalation (up to 3 attempts), and automatic Cross-Scope follow-up task creation (up to 2 per subagent).
-  - [`handleVerify(ctx, args)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/mcp/server.ts#L1255-L1520): Verifies task file boundaries, secrets, and test commands, performing a checkpoint commit (`LIGHT`) or worktree merge (`HEAVY`) upon pass, and generates `.asd/summary.md` once all tasks are `done`.
-  - [`handleDebate(ctx, args)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/mcp/server.ts#L1525-L1660): Runs `runDebateBroker`, stores heterogeneous model blind debate results in the DB, and injects constraints into the target task's `acceptance`.
-- **[`src/mcp/stdio-rpc.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/mcp/stdio-rpc.ts)**:
-  - `StdioRpcServer`: Newline-delimited JSON-RPC 2.0 stdio server implementation.
+- **`src/orchestrator/index.ts`, `plan-handler.ts`, `dispatch-handler.ts`, `verify-handler.ts`, `debate-handler.ts`**:
+  - Core in-process orchestration handlers powering `asd plan`, `asd dispatch`, `asd verify`, and `asd debate` (`AsdOrchestrator`, `PLAN_SCHEMA_DEFINITION`, `handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate`).
+  - Supports `DIRECT` / `LIGHT` / `HEAVY` 3-track routing, `LIGHT` target-file overlap detection (`findOverlappingLightTargetFiles`), detached `--async` wave execution, 3-Strike verification escalation hints (`buildEscalationHint`), automatic Cross-Scope follow-up tasks (up to 2 per subagent), and `.asd/summary.md` generation.
 
 ---
 
 ### 4.5 CLI & Local Web Dashboard (`src/cli/`)
 
-#### 1. [`src/cli/index.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts)
+#### 1. `src/cli/index.ts`
 Entrypoint for the `asd` terminal command.
-- Supported subcommands: `sync`, `update`, `status`, `resume`, `handoff`, `migrate`, `plan`, `dispatch`, `verify`, `debate`, `logs`, `ui`, `doctor`, `clean`, `uninstall`, `hook`, `mcp`.
-- [`runHookCli(hookType, flags)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts#L530-L710): Receives `session-start`, `pre-invocation`, `pre-tool-use`, and `stop` hook calls from the 5 harnesses, updates `cli-recent.json`, and returns policy evaluation results in each harness's expected JSON schema.
-- [`runAsdResume(projectRoot, flags)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts#L715-L790): Demotes (`demoteAsdSession`) the active ASD session and immediately launches (or outputs with `--print`/`--json`) the original harness's interactive CLI.
-- [`runAsdHandoff(projectRoot, options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts): Generates (or prints with `--print`) a secret-redacted `handoff.md` document containing active session state and Git/task context.
-- [`runAsdMigrate(options?)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/index.ts): Automatically consolidates legacy per-hash `core.db` files into the single shared `~/.asd/state/core.db` (supports `--clean-legacy`).
+- Supported subcommands: `sync`, `update`, `status`, `resume`, `handoff`, `migrate`, `plan`, `dispatch`, `wait`, `verify`, `debate`, `logs`, `ui`, `doctor`, `clean`, `uninstall`, `hook`.
+- Handles hook evaluation (`session-start`, `pre-invocation`, `pre-tool-use`, `stop`), session demotion (`asd resume`), secret-redacted handoff (`asd handoff`), and legacy DB consolidation (`asd migrate`).
 
-#### 2. [`src/cli/dashboard.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/dashboard.ts) (`asd ui` Specification)
-Real-time local web dashboard (`http://127.0.0.1:3847`, SSR fallback `'en'`, auto-detects Korean browser locale `'ko'` with English default for all other locales and persistent `EN`/`KO` toggle via `localStorage`) powered purely by `node:http` and a single inline HTML/CSS/JS bundle without external frontend build tools. Starting in v2.4.3, data services (`collectDashboardSnapshot`, `discoverHarnessModels`, `saveSessionMemo`, `saveProjectRoutingConfig`, `runSubagentControlAction`, `scanSubagentLogs`) were migrated to `src/core/` (`models.ts`, `session-services.ts`, `subagent-control.ts`, `subagent-logs.ts`, `router.ts`), leaving this module dedicated solely to the HTTP server and UI rendering.
-- **HTTP Endpoint -> Core Service Mapping**:
-  - `GET /api/state` -> [`collectDashboardSnapshot()`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/session-services.ts) (`core/session-services.ts`): Unified snapshot of sessions, tasks, debates, drivers, subagent logs, routing, and harness states (`worktreeStatusCache` 3.5s TTL, supports `skipCliSpawn` option).
-  - `GET /api/models`, `POST /api/models/refresh` -> [`discoverHarnessModels()`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/core/models.ts) (`core/models.ts`): Parallel 5-harness model discovery + `~/.asd/state/models-cache.json` (10m TTL).
-  - `POST /api/session-memo` -> `saveSessionMemo()` (`core/session-services.ts`): Simultaneously updates `sessions.memo` and `main.json`.
-  - `POST /api/routing` -> `saveProjectRoutingConfig()` (`core/router.ts`): Saves or resets project-scoped `.asd/routing.jsonc`.
-  - `POST /api/subagent-action` -> `runSubagentControlAction()` (`core/subagent-control.ts`): Runtime control (`kill`/`retry`/`fallback`/`custom`).
-  - [`startDashboardServer(options)`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/cli/dashboard.ts): Starts the local HTTP server (not exported from the root SDK entry; dedicated to subpath `cli/dashboard`).
+#### 2. `src/cli/dashboard.ts` (`asd ui` Specification)
+Feature-frozen local web dashboard (`http://127.0.0.1:3847`, `EN`/`KO` toggle) backed purely by `node:http` and core data services (`models.ts`, `session-services.ts`, `subagent-control.ts`, `subagent-logs.ts`, `router.ts`). `startDashboardServer` is exported only from subpath `agent-swarm-director/cli/dashboard`.
 
 ---
 
 ## 5. Known Architectural Notes & Operational Caveats
 
 1. **Cursor CLI Local Transcript Limitation**:
-   - Unlike other harnesses, Cursor CLI (`agent` / `cursor-agent`) does not expose plaintext JSONL transcript files on disk. Consequently, `readHarnessTranscript` returns `{ unsupported: true, messages: [] }` for Cursor, and ASD instead controls Cursor sessions via `~/.cursor/hooks.json`-based session ID tracking (`cli-recent.json`), live streaming turns (`runDriverTurn` `--output-format stream-json`), and session promotion/demotion (`promoteCliSessionToAsd` / `demoteAsdSession`).
+   - Cursor CLI (`agent` / `cursor-agent`) stores chats in an undocumented SQLite blob (`store.db`), so `readHarnessTranscript` returns `{ unsupported: true, messages: [] }` unless a headless JSONL fallback log exists under `~/.asd/transcripts/cursor/<sessionId>.jsonl`.
 2. **Concurrent Multiple Directors Within a Single Project**:
-   - Although the SQLite DB is safe under concurrent access via WAL + `BEGIN IMMEDIATE` and the `session_drivers` table, and `HEAVY` merges are protected by `.asd/merge.lock`, running two `LIGHT`-track directors that directly edit files simultaneously in the same working tree can cause Git working-tree contention. Use the `HEAVY` track (worktree isolation) for parallel execution.
+   - SQLite WAL + `BEGIN IMMEDIATE` and `.asd/merge.lock` protect DB and `HEAVY` merges, but concurrent `DIRECT`/`LIGHT` edits in the same working tree can conflict; use `HEAVY` (worktree isolation) for parallel edits.
 3. **JSDoc Comments Under Node.js Native TypeScript Execution**:
-   - Because harness `PreToolUse` hooks directly invoke `node --no-warnings src/cli/index.ts hook pre-tool-use`, writing path globs containing `/*` or `*/` (e.g., `projects/*/*.jsonl`) inside `/** ... */` block comments in `src/` files can prematurely terminate the comment and trigger syntax errors. Use placeholders such as `projects/<dir>/*.jsonl` inside block comments.
-4. **Core-GUI Boundary Principle (v2.4.3)**:
-   - Core retains only **CLI + core management (planning, `asd ui` dashboard, git worktree, etc.) + minimal SDK/API**, while all rich UI, server, and rendering development belongs in the GUI repository (`asd-gui`). `asd ui` is feature-frozen (no expansion), and new UI features are implemented in the GUI repository. See [`docs/CORE_GUI_BOUNDARY_AUDIT.md`](./docs/CORE_GUI_BOUNDARY_AUDIT.md) for boundary violation cleanup details and rationale.
+   - Avoid `/*` or `*/` inside `/** ... */` block comments in `src/` (e.g., use `projects/<dir>/*.jsonl`) because hooks run TypeScript directly via Node.js.
+4. **Core–Client Boundary Principle**:
+   - Core retains **CLI + core orchestration/state management + minimal SDK/API** (`dependencies: {}`). `asd ui` is feature-frozen; all rich UI development lives in **ASD-Nexus**. See [`EXTERNAL_SDK_REFERENCE.md`](./EXTERNAL_SDK_REFERENCE.md) for SDK and harness contracts.

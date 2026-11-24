@@ -8,11 +8,13 @@ Complete chronological patch history for **Agent Swarm Director (ASD v2.7.0)**, 
 
 ## 0. Pure Zero-Dependency ACP Engine & Async OpenCode Orchestration (v2.7.0)
 
-### `v2.7.0` — Hybrid ACP v1/v2 Client, Non-Blocking OpenCode Dispatch, Catalog Model Mapping & Core Hardening
+### `v2.7.0` — Hybrid ACP v1/v2 Client, OpenCode V2 First-Class Support, Debate Engine Hardening & Core Upgrades
 - **Zero-Dependency ACP Client (`src/core/acp-types.ts`, `src/core/acp-client.ts`)**: Added pure Node.js stdio JSON-RPC 2.0 ACP v1 client with ACP v2 draft compatibility, bidirectional `session/request_permission` security enforcement via `policy.ts`, in-place `session/load` stall recovery, and automatic catalog-aware model ID mapping (`resolveBestAcpModelId` across OpenCode provider-prefixed IDs, Antigravity tiers, and Cursor bracketed model IDs).
-- **Hybrid Dispatch & Debate (`ACP Primary + Streaming CLI Fallback`)**: Wired ACP-first execution with automatic hardened streaming CLI fallback across `asd dispatch`, `asd debate`, and `runSubagentControlAction` (`--transport <auto|acp|cli>`).
-- **Non-Blocking OpenCode Async Dispatch (`--async` + `asd-guard.js`)**: Added `asd dispatch --async` / `asd wait` and upgraded `asd-guard.js` to push wave completion reports back into idle OpenCode sessions via `client.session.prompt`.
-- **Diagnostics & Core Hardening**: Single-pass ~10ms `asd doctor` ACP readiness & bridge guidance, indented `.asd/PLAN.md` metadata format immune to `|`/`()` corruption, `LIGHT`-mode working-tree preservation on test failure, 300s default `verifyCmd` timeout, and clean task-ID-free commit messages.
+- **First-Class OpenCode V2 & Frozen V1 Isolation (`src/core/opencode-profile.ts`, `src/adapters/opencode.ts`, `src/adapters/opencode-v1.ts`)**: Added `opencode --version` capability profiling, native `opencode acp` / `--auto` / `session_v2` transcript parsing, zero-dependency V2 policy guard (`plugins/asd-guard/index.js`), and isolated frozen V1 compatibility (`plugin/asd-guard.js` + Legacy V1 `--async` callback).
+- **Hybrid Dispatch & Debate Engine Hardening (`src/core/debate.ts`, `src/core/router.ts`, `src/skills/asd-debate/SKILL.md`)**:
+  - Wired ACP-first execution with hardened streaming CLI fallback (`--transport <auto|acp|cli>`) and generic `asd dispatch --async` / `asd wait`.
+  - Guarded Step 5 task acceptance injection & `.asd/PLAN.md` sync with `verdict !== "REJECT"` (including `r2-arbiter-fallback`), enforced Round 2 Arbiter sole authority for `hard_constraints`/`decisions`, fixed mid-token NDJSON delta joining (`join("")`) & capped parse-failure retries (`maxRetries`), added cumulative `excludedFamilies` diversity routing + post-run `diversityDegraded` recomputation, per-role orthogonal review rubrics, `git diff --stat` + truncation markers, and policy-verified bounded Round 2 `file:line` citation expansion.
+- **Diagnostics, Docs & Core Hardening**: Single-pass ~10ms `asd doctor` ACP readiness & OpenCode V1/V2 drift check, modular `src/orchestrator/` & `src/adapters/installer/` layout, 3-track `DIRECT`/`LIGHT`/`HEAVY` execution, `LIGHT`-mode working-tree preservation on test failure, 300s default `verifyCmd` timeout, and consolidated v2.7.0 documentation (merged harness storage/streaming specs into `EXTERNAL_SDK_REFERENCE.md` and pruned completed legacy planning docs).
 
 ---
 

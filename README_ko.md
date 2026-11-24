@@ -147,8 +147,7 @@ OpenCode **V2(`2.x`)**가 정식 지원 대상(`plugins/asd-guard/index.js`, `op
 - 🔄 **[OpenCode V1/V2 지원 정책 및 이주 계획 (`docs/OPENCODE_V1_V2_MIGRATION_PLAN_ko.md`)](./docs/OPENCODE_V1_V2_MIGRATION_PLAN_ko.md)** — V2 정식 지원 구조, 동결된 V1 격리 범위, EOL/사용률 기반 V1 제거 트리거
 - 🧭 **[모델 라우팅 가이드 (`ROUTING_GUIDE_ko.md`)](./ROUTING_GUIDE_ko.md)** — `~/.asd/routing.jsonc`의 `lightSubagents`, `agents`, `categories`, 폴백 체인, `thinkingEffort` 설정법
 - 🏛️ **[프로젝트 아키텍처 및 코드 레퍼런스 (`PROJECT_STATUS_ko.md`)](./PROJECT_STATUS_ko.md)** — 디렉토리 구조, 단일 SQLite DB 스키마, 모듈·함수별 상세 해설
-- 🔌 **[외부 SDK 및 DB 레퍼런스 (`EXTERNAL_SDK_REFERENCE_ko.md`)](./EXTERNAL_SDK_REFERENCE_ko.md)** — **ASD-Nexus** 등 외부 클라이언트 연동을 위한 Node.js SDK 및 DB 명세
-- 🔗 **[하네스 통합 레퍼런스 (`HARNESS_INTEGRATION_REFERENCE_ko.md`)](./HARNESS_INTEGRATION_REFERENCE_ko.md)** — 5대 하네스별 세션 저장소, 스트리밍 이벤트 실측 스키마 및 주의사항
+- 🔌 **[외부 SDK, 하네스 저장소 및 DB 레퍼런스 (`EXTERNAL_SDK_REFERENCE_ko.md`)](./EXTERNAL_SDK_REFERENCE_ko.md)** — **ASD-Nexus** 등 외부 클라이언트 연동을 위한 Node.js SDK 계약, 단일 DB 명세 및 5대 하네스 실측 스트리밍·저장소 스펙
 - 🤖 **[AI 에이전트 작업 프롬프트 (`AI_WORKFLOW_PROMPT_ko.md`)](./AI_WORKFLOW_PROMPT_ko.md)** — AI 코딩 에이전트 온보딩용 복사·붙여넣기 규칙 프롬프트
 - 📋 **[패치 노트 (한국어)](./PATCH_NOTES_ko.md)** · **[Patch Notes (EN)](./PATCH_NOTES.md)** — `v2.7.0`까지의 전체 버전별 변경 이력
 

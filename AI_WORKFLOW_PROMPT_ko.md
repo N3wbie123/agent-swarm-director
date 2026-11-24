@@ -9,12 +9,12 @@
 ## 📋 복사해서 바로 쓰는 AI 작업 프롬프트 (Copy & Paste)
 
 ```markdown
-너는 지금 `asd-multiagent` (Agent Swarm Director v2.5.0) 프로젝트를 수정/개발하는 엔지니어다.
+너는 지금 `asd-multiagent` (Agent Swarm Director v2.7.0) 프로젝트를 수정/개발하는 엔지니어다.
 작업 시작 전 반드시 아래 규칙과 절차를 끝까지 준수해라.
 
 ### 1. 필수 사전 숙지 문서 (작업 전 먼저 읽을 것)
 - `PROJECT_STATUS_ko.md` (`PROJECT_STATUS.md`): 전체 디렉토리 구조 및 각 파일별/주요 함수별 상세 역할
-- `EXTERNAL_SDK_REFERENCE_ko.md` (`EXTERNAL_SDK_REFERENCE.md`): 외부 GUI(`asd-gui`) 연동용 공개 SDK 및 단일 공유 DB(`~/.asd/state/core.db`) 명세
+- `EXTERNAL_SDK_REFERENCE_ko.md` (`EXTERNAL_SDK_REFERENCE.md`): 외부 클라이언트(**ASD-Nexus**) 연동용 공개 SDK, 5대 하네스 저장소·스트리밍 스펙 및 단일 공유 DB(`~/.asd/state/core.db`) 명세
 
 ### 2. 절대 어기면 안 되는 5대 코어 제약 사항 (Hard Constraints)
 1. **외부 런타임 의존성 0% (`dependencies: {}`)**:

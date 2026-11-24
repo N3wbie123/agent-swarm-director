@@ -1,11 +1,11 @@
-# ASD v2.5.0 외부 SDK 및 단일 DB 전환 통합 레퍼런스 (`EXTERNAL_SDK_REFERENCE_ko.md`)
+# ASD v2.7.0 외부 SDK, 하네스 저장소 및 DB 통합 레퍼런스 (`EXTERNAL_SDK_REFERENCE_ko.md`)
 
-> **버전**: `2.5.0` (v2.4.0 단일 공유 DB 기반 — 전 하네스 네이티브 JSONL 스트리밍, Core–GUI 경계 리팩터링, `ses_` 세션 속성 보정 반영 — `2.3.x` 이하와 DB 비호환)  
+> **버전**: `2.7.0` (단일 공유 DB `~/.asd/state/core.db` 기반 — 무의존성 ACP v1/v2 클라이언트, OpenCode V2 정식 지원 + 레거시 V1 동결 격리, 모듈형 `src/orchestrator/`, v2.6.0 SDK 정리, 토론 엔진 하드닝 반영 — `2.3.x` 이하와 DB 비호환)  
 > **대상**: [**ASD-Nexus (`asd-gui`)**](https://github.com/N3wbie123/ASD-Nexus) 등 외부 애플리케이션 및 라이브러리 연동 개발자  
 > **런타임 의존성**: `0개` (`dependencies: {}`, 순수 Node.js `>=22.13.0` 내장 모듈만 사용)  
-> **메인 엔트리포인트**: [`src/index.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/index.ts) (`import { ... } from "agent-swarm-director"`)
+> **메인 엔트리포인트**: [`src/index.ts`](./src/index.ts) (`import { ... } from "agent-swarm-director"`)
 
-[English](./EXTERNAL_SDK_REFERENCE.md) | **한국어** | [📖 README (한국어)](./README_ko.md) | [📖 README (EN)](./README.md) | [🖥️ ASD-Nexus (공식 GUI)](https://github.com/N3wbie123/ASD-Nexus) | [🏛️ 프로젝트 아키텍처 및 파일·함수 상세](./PROJECT_STATUS_ko.md) | [🤖 AI 작업 지침 프롬프트](./AI_WORKFLOW_PROMPT_ko.md) | [📋 패치 노트 (KR)](./PATCH_NOTES_ko.md)
+[English](./EXTERNAL_SDK_REFERENCE.md) | **한국어** | [📖 README (한국어)](./README_ko.md) | [🖥️ ASD-Nexus (공식 GUI)](https://github.com/N3wbie123/ASD-Nexus) | [⚡ ACP 로드맵](./docs/ACP_ROADMAP_ko.md) | [🏛️ 아키텍처](./PROJECT_STATUS_ko.md) | [🤖 AI 작업 프롬프트](./AI_WORKFLOW_PROMPT_ko.md) | [📋 패치 노트](./PATCH_NOTES_ko.md)
 
 ---
 
@@ -291,35 +291,37 @@ const cachePath = getModelsDiskCachePath();
 ### 3.1 Node.js 라이브러리 서브패스 Export (`package.json` `exports`)
 
 ```ts
-import * as asd from "agent-swarm-director";               // 전체 코어 통합 엔트리 (src/index.ts)
-import * as db from "agent-swarm-director/core/db";        // 개별 서브모듈 직접 import 가능
-import * as mcp from "agent-swarm-director/mcp/server";
-import * as dashboard from "agent-swarm-director/cli/dashboard";
+import * as asd from "agent-swarm-director";                       // 전체 코어 통합 엔트리 (src/index.ts)
+import * as db from "agent-swarm-director/core/db";                // 개별 코어 서브모듈 직접 import
+import * as orch from "agent-swarm-director/orchestrator/index";   // 모듈형 CLI 오케스트레이터
+import * as dashboard from "agent-swarm-director/cli/dashboard";   // 로컬 `asd ui` 서버 (서브패스 전용)
 ```
 
 | 모듈 경로 | 대표 공개 함수 및 클래스 |
 | :--- | :--- |
-| **`core/types`** | `ASD_VERSION` (`"2.5.0"` — package.json에서 런타임 파생), `HARNESS_IDS`, `AGENT_ROLES`, `TASK_CATEGORIES`, `DIFFICULTY_TIERS`, `TASK_TRACKS`, `TASK_STATUSES`, `SESSION_PHASES`, `DRIVER_SOURCES` 및 전체 타입 |
+| **`core/types`** | `ASD_VERSION` (`"2.7.0"` — `package.json`에서 런타임 파생), `HARNESS_IDS`, `AGENT_ROLES`, `TASK_CATEGORIES`, `DIFFICULTY_TIERS`, `TASK_TRACKS` (`"DIRECT" \| "LIGHT" \| "HEAVY"`), `TASK_STATUSES`, `SESSION_PHASES`, `DRIVER_SOURCES` 및 전체 타입 |
+| **`core/acp-types` & `core/acp-client`** *(v2.7.0)* | 무의존성 ACP v1/v2 JSON-RPC stdio 클라이언트: `AcpStdioClient`, `probeAcpCapability`, `executeAcpSubagentTurn`, `resolveBestAcpModelId`, `checkInteractivePermissionSafety` |
 | **`core/config`** | `resolveAsdPaths(root, home?)`, `resolveHomeDir(explicit?)`, `ensureProjectInitialized`, `loadRoutingConfig`, `loadMcpCatalog`, `checkForRemoteUpdate`, `computeProjectHash` |
-| **`core/db`** | `openProjectDb(root, home?)`, `SqliteDriver(dbPath, projectRoot?)`, `generateAsdSessionId`, `isValidAsdSessionId` — `findSessionByHarnessSessionId(sid, harness?)` *(v2.4.0)*, `deleteSession(sessionId)` *(v2.4.0)* 및 `sessions` / `tasks` / `debates` / `session_drivers` 전체 CRUD |
-| **`core/session-tracker`** | `discoverProjectCliSessions` *(v2.4.0)*, `promoteCliSessionToAsd` *(v2.4.0)*, `unlinkHarnessSessionFromAsdSession` *(v2.4.0)*, `buildSessionDemotion`, `listKnownProjects` *(v2.4.0 캐시 최적화)*, `syncLocalHarnessTranscripts` *(v2.4.0 4하네스 확장 + `mtimeMs` 캐시, v2.4.3 cli-recent 자가 치유)*, `linkHarnessSessionToAsdSession`, `readCliRecentSessions`, `recordCliRecentSession`, `buildHeadlessHarnessCommand`, `buildResumeHarnessCommand` *(v2.4.3 `streaming` 옵션)*, `buildInteractiveResumeHarnessCommand`, `extractHookSessionInfo` *(v2.4.3 `ses_` 하네스 보정)* |
-| **`core/drivers`** | `runDriverTurn` *(v2.4.3 전 하네스 네이티브 JSONL 스트리밍 — `onEvent` + `streaming`)*, `parseDriverStreamLine` *(v2.4.3 agy `step_update`/cursor `tool_call` 실측 스키마)*, `attachDriver`, `detachDriver` *(driverId 또는 sessionId 지원)*, `getActiveDriver`, `listDrivers`, `buildDriverBriefing` *(기본 로케일 `'en'`, `'ko'` 지원)*, `syncSessionDriversToMainJson` |
-| **`core/transcripts`** | `readHarnessTranscript` *(v2.4.0 4분류 고도화)*, `locateHarnessTranscript` |
+| **`core/opencode-profile`** *(v2.7.0)* | `detectOpenCodeProfile` — OpenCode V2(`2.x`, 정식 지원) vs 레거시 V1(`1.x`, 동결) 프로파일 자동 감지 |
+| **`core/db`** | `openProjectDb(root, home?)`, `SqliteDriver(dbPath, projectRoot?)`, `generateAsdSessionId`, `isValidAsdSessionId` — `findSessionByHarnessSessionId`, `deleteSession`, `injectDebateAcceptance` 및 `sessions` / `tasks` / `debates` / `session_drivers` 전체 CRUD |
+| **`core/session-tracker`** | `discoverProjectCliSessions`, `promoteCliSessionToAsd`, `unlinkHarnessSessionFromAsdSession`, `buildSessionDemotion`, `listKnownProjects`, `syncLocalHarnessTranscripts`, `linkHarnessSessionToAsdSession`, `readCliRecentSessions`, `recordCliRecentSession`, `buildSpawnSpec`, `buildHeadlessHarnessCommand`, `buildResumeHarnessCommand` *(v2.6.0부터 options 객체 형태 전용)*, `buildInteractiveResumeHarnessCommand`, `extractHookSessionInfo` |
+| **`core/drivers`** | `runDriverTurn` *(상주 ACP 세션 풀 + 네이티브 JSONL CLI 폴백)*, `cancelDriverTurn`, `closeDriverSession`, `closeAllDriverSessions`, `parseDriverStreamLine`, `attachDriver`, `detachDriver`, `getActiveDriver`, `listDrivers`, `buildDriverBriefing`, `syncSessionDriversToMainJson` |
+| **`core/transcripts`** | `readHarnessTranscript` *(Claude, OpenCode V1/V2 `session_v2`, Codex `.jsonl`/`.jsonl.zst`, Antigravity, Cursor lossy 폴백 4분류 파서)*, `locateHarnessTranscript` |
 | **`core/spawner`** | `spawnSubagent`, `executeHarnessProcess`, `killProcessTree`, `resolveSpawnCommand`, `finalizeSubagentArtifacts` |
-| **`core/router`** | `resolveRoute`, `runWithFallbacks`, `escalateTaskRoute`, `resolveFallback`, `detectAvailableCliHarnesses`, `selectDiverseReviewer`, `saveProjectRoutingConfig` *(v2.4.3 cli/dashboard에서 이관)* |
-| **`core/models`** *(v2.4.3)* | `discoverHarnessModels`, `getModelsDiskCachePath` |
-| **`core/session-services`** *(v2.4.3)* | `saveSessionMemo`, `collectDashboardSnapshot` |
-| **`core/subagent-control`** *(v2.4.3)* | `runSubagentControlAction` |
-| **`core/subagent-logs`** *(v2.4.3)* | `scanSubagentLogs`, `SubagentLogRecord` |
-| **`core/workspace`** | `prepareBaseline`, `createTaskWorktree`, `verifyAndCommitLightTask`, `verifyAndMergeHeavyTask`, `approvePendingTask`, `rejectPendingTask`, `rollbackLightChanges`, `recoverOrphanedTasks`, `isPidAlive`, `getChangedFiles`, `checkChangedFilesAndSecrets`, `withMergeLock`, `runGit` |
-| **`core/render`** | `renderPlanMd`, `parsePlanMd`, `syncPlanFromMd`, `setForegroundSession`, `getForegroundSessionId`, `renderProgressBoard` *(영문 기본 `progressBoard` 출력)*, `renderSessionSummaryMd`, `atomicWriteFileSync` |
-| **`core/debate`** | `runDebateBroker`, `synthesizeInsightVerdict`, `buildRound1Prompt`, `buildRound2Prompt`, `formatDebateAcceptance` |
-| **`core/policy`** | `evaluatePreToolUse`, `evaluateStopHook`, `isPathAllowed`, `checkProtectedPath`, `verifyChangedFilesBoundary` |
+| **`core/router`** | `resolveRoute`, `runWithFallbacks` *(optional `maxRetries` 상한)*, `escalateTaskRoute`, `resolveFallback`, `detectAvailableCliHarnesses`, `detectLiveRuntimeCapabilities`, `selectDiverseReviewer` *(optional 누적 `excludedFamilies`)*, `resolveLightSubagentRoute`, `saveProjectRoutingConfig` |
+| **`core/models`** | `discoverHarnessModels`, `getModelsDiskCachePath` |
+| **`core/session-services`** | `saveSessionMemo`, `collectDashboardSnapshot` |
+| **`core/subagent-control`** | `runSubagentControlAction` |
+| **`core/subagent-logs`** | `scanSubagentLogs`, `SubagentLogRecord` |
+| **`core/workspace`** | `prepareBaseline`, `createTaskWorktree`, `verifyAndCommitLightTask`, `verifyAndMergeHeavyTask`, `approvePendingTask`, `rejectPendingTask`, `rollbackLightChanges`, `recoverOrphanedTasks`, `isPidAlive`, `verifyPidIdentity`, `getChangedFiles`, `checkChangedFilesAndSecrets`, `withMergeLock`, `runGit` |
+| **`core/render`** | `renderPlanMd`, `parsePlanMd`, `syncPlanFromMd`, `setForegroundSession`, `getForegroundSessionId`, `renderProgressBoard`, `renderSessionSummaryMd`, `atomicWriteFileSync` |
+| **`core/debate`** | `runDebateBroker` *(하이브리드 ACP + 스트리밍 CLI, `REJECT` DB/PLAN 오염 차단, Arbiter 단독 권위, 사후 `diversityDegraded` 재산출)*, `parseReviewerOpening`, `synthesizeInsightVerdict`, `buildDebateCodeContext`, `buildRound2CitedCodeContext`, `buildRound1Prompt` *(optional `role`)*, `buildRound2Prompt`, `formatDebateAcceptance` |
+| **`core/policy`** | `evaluatePreToolUse`, `evaluateStopHook`, `resolveSafeTargetPath`, `isPathAllowed`, `checkProtectedPath`, `verifyChangedFilesBoundary` |
 | **`core/redact` & `jsonc`** | `redactSecrets`, `containsSecrets`, `parseJsonc`, `stripJsoncComments`, `upsertTomlFencedBlock`, `removeTomlFencedBlock` |
-| **`adapters/*`** | `ClaudeCodeAdapter`, `OpenCodeAdapter`, `CodexAdapter`, `AntigravityAdapter`, `CursorAdapter`, `syncGlobalHarnesses`, `uninstallGlobalHarnesses`, `runDoctor` |
-| **`mcp/server`** | `AsdMcpServer`, `ASD_MCP_TOOLS`, `handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate` |
-| **`cli/dashboard`** | `startDashboardServer` *(v2.4.3부터 루트 엔트리 미노출 — `asd ui` 서버+UI 전용, 기본 언어 `'en'`, 데이터 서비스는 core/로 이관)* |
-| **`cli/index`** | `getAdapter`, `getLatestSession`, `scanSubagentLogs` *(v2.4.3 core/subagent-logs re-export)*, `runAsdLogs`, `runAsdClean` |
+| **`adapters/*`** | `ClaudeCodeAdapter`, `OpenCodeAdapter` (V2 기본 + 동결 `opencode-v1.ts`), `CodexAdapter`, `AntigravityAdapter`, `CursorAdapter`, `syncHarnessConfigs`, `uninstallGlobalConfigs`, `runAsdDoctor`, `createHarnessProvisionerPlugin`, `createHarnessRuntimePlugin`, `registerDefaultHarnessPlugins` |
+| **`orchestrator/*`** *(v2.7.0)* | `AsdOrchestrator`, `PLAN_SCHEMA_DEFINITION`, `handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate`, `buildEscalationHint`, `detectRoleCategoryWarnings`, `findOverlappingLightTargetFiles`, `parseSubagentReport` |
+| **`cli/dashboard`** | `startDashboardServer` *(서브패스 `agent-swarm-director/cli/dashboard` 전용 — `asd ui` 서버+UI, 기능 동결)* |
+| **`cli/index`** | `getAdapter`, `getLatestSession`, `runAsdLogs`, `runAsdClean` |
 
 ---
 
@@ -329,18 +331,20 @@ import * as dashboard from "agent-swarm-director/cli/dashboard";
 
 | 명령어 | 설명 | 주요 플래그 |
 | :--- | :--- | :--- |
-| `asd plan [create\|get\|update\|sync_from_md]` | `.asd/PLAN.md` 및 SQLite 태스크 생성·조회·역동기화 | `--tasks <json>`, `--payload <json\|->`, `--file <path>` |
-| `asd dispatch` | Turn(Wave) 태스크 병렬 실행 또는 클레임 | `--turn <n>`, `--mode parallel_spawn\|claim_only`, `--task T1.1` |
-| `asd verify --task <id>` | 파일 경계·시크릿·테스트 검증 후 커밋(`LIGHT`) 또는 워크트리 병합(`HEAVY`) | `--summary`, `--files`, `--cmd`, `--payload` |
-| `asd debate --topic <t> --proposal <p>` | 교차 모델 블라인드 적대적 토론 및 `acceptance` 제약 자동 주입 | `--proposal-file`, `--diff`, `--files path:start-end` |
+| `asd plan [create\|get\|update\|sync_from_md\|schema]` | `.asd/PLAN.md` 및 SQLite 태스크 생성·조회·수정·역동기화 및 공식 JSON 스키마 출력 | `--tasks <json>`, `--payload <json\|->`, `--file <path>`, `--track <DIRECT\|LIGHT\|HEAVY>` |
+| `asd dispatch` | Turn(Wave) 태스크 병렬 실행 또는 클레임 (ACP 우선 + CLI 폴백) | `--turn <n>`, `--mode parallel_spawn\|claim_only`, `--async`, `--transport <auto\|acp\|cli>`, `--task T1.1` |
+| `asd wait` | 실행 중인 `asd dispatch --async` Wave 완료까지 대기 | `--session <id>`, `--timeout <ms>`, `--json` |
+| `asd verify --task <id>` | 파일 경계·시크릿·테스트 검증 후 커밋(`DIRECT`/`LIGHT`) 또는 워크트리 병합(`HEAVY`) | `--summary`, `--files`, `--cmd`, `--file <path>` |
+| `asd debate --topic <t> --proposal <p>` | 교차 모델 블라인드 적대적 토론 및 비-`REJECT` 제약 `acceptance` 자동 주입 | `--proposal-file`, `--task` / `--task-id`, `--harnesses`, `--roles`, `--count`, `--diff`, `--files path:start-end` |
 | `asd resume` | 활성 ASD 세션을 하강(`demote`)하고 원래 하네스의 대화형 CLI로 즉시 복귀 | `--session <id>`, `--print`, `--json` |
 | `asd status` | 현재 프로젝트의 전경 세션 진행 현황 보드(`progressBoard`, 영문 기본) 출력 | `--json` |
 | `asd logs [taskId]` | 최근 또는 특정 태스크의 서브에이전트 프롬프트·출력 로그 조회 | `--json` |
-| `asd ui` | 로컬 실시간 웹 대시보드 서버 실행 (기본 포트 `3847`, 기본 언어 `'en'`) | `--port <num>`, `--no-open` |
-| `asd sync` | 5대 하네스 글로벌 스킬·에이전트·훅·MCP 동기화 및 전역 `PATH` 등록 | `--force`, `--no-path` |
+| `asd ui` | 로컬 실시간 웹 대시보드 서버 실행 (기본 포트 `3847`, 기능 동결) | `--port <num>`, `--no-open` |
+| `asd sync` | 5대 하네스 글로벌 스킬·에이전트·훅·외부 MCP 카탈로그 동기화 및 전역 `PATH` 등록 | `--force`, `--refresh-models`, `--no-model-probe`, `--no-path` |
 | `asd update` | GitHub 최신 버전 pull 및 `asd sync` 자동 실행 | — |
-| `asd doctor` | 100ms 이내 환경·하네스·보안 훅 헬스체크 | `--json` |
-| `asd clean` | 잔여 `.asd/wt/*` 워크트리 정리 및 auto-stash 복원 | `--pop`, `--all` |
+| `asd doctor` | ~10ms 환경·하네스·ACP 준비 상태·보안 훅 헬스체크 | `--json` |
+| `asd migrate` | 구버전 분산 `core.db`(`<= v2.3.2`)를 `~/.asd/state/core.db`로 통합 이관 | `--clean-legacy`, `--json` |
+| `asd clean` | 잔여 `.asd/wt/*` 워크트리 정리, auto-stash 복원, 고아 세션 정리 | `--pop`, `--all`, `--purge-orphans` |
 | `asd uninstall` | ASD가 설치한 글로벌 설정만 외과적으로 원복 | `--home <dir>` |
 | `asd hook <type>` | 하네스 훅 평가기 (`session-start`, `pre-invocation`, `pre-tool-use`, `stop`) | stdin JSON → stdout JSON |
 
@@ -356,3 +360,24 @@ import * as dashboard from "agent-swarm-director/cli/dashboard";
 | `/api/session-memo` | `POST` | 세션 한 줄 메모 저장 (`{ sessionId, memo }`) |
 | `/api/routing` | `POST` | 프로젝트 로컬 라우팅(`.asd/routing.jsonc`) 저장 또는 초기화 (`{ action: "save" \| "reset", routingConfig }`) |
 | `/api/subagent-action` | `POST` | 서브에이전트 실시간 제어 (`{ sessionId, subSessionId, action: "kill" \| "retry" \| "fallback" \| "custom", harness?, model? }`) |
+
+---
+
+## 4. 5대 하네스 저장소, 스트리밍 스키마 및 운영 주의사항
+
+5대 하네스는 모두 동일한 3단계 SDK 파이프라인(`discoverProjectCliSessions` → `readHarnessTranscript` → `runDriverTurn` + `parseDriverStreamLine`)으로 추상화되며, 통일된 `DriverStreamEvent`(`thinking` / `tool_use` / `tool_result` / `text` / `raw`)를 방출합니다. 클라이언트 앱은 하네스별 분기나 CLI 플래그 직접 조립 대신 SDK 정규화 이벤트를 소비해야 합니다.
+
+### 4.1 하네스별 실측 통합 매트릭스
+
+| 하네스 | 로컬 세션 저장소 | 기본 통신 / 스트리밍 경로 | 실측 이벤트 흐름 및 주요 주의사항 |
+| :--- | :--- | :--- | :--- |
+| **Claude Code (`@cc`)** | `~/.claude/projects/<cwd-인코딩>/<uuid>.jsonl` *(포맷 변동 가능 — 반드시 `readHarnessTranscript` 경유)* | ACP 브리지(`@agentclientprotocol/claude-agent-acp`) 또는 CLI `claude -p ... --output-format stream-json --verbose --include-partial-messages` | `system/init` → `stream_event`(`content_block_delta`: `text_delta`/`thinking_delta`/`input_json_delta`) → `assistant` → `user`(`tool_result`) → `result`. 긴 프롬프트는 `stdin` 전달; JSONL 스키마 드리프트 방어 내장. |
+| **OpenCode (`@oc`)** | `~/.local/share/opencode/opencode.db` (SQLite WAL — V2: `session_v2`/`session_message`/`session_part`, 동결 V1: `session`/`message`/`part`). 경로 확인: `opencode debug paths db`. | **네이티브 ACP** (V2: `opencode acp`, 레거시 V1: `--pure`) 또는 CLI `opencode run ... --format json` (V2 `--auto` 지원) | 파트 완료 단위 이벤트(`step_start` → `text` → `step_finish`) 또는 ACP `session/update` 델타. 수 GB DB 전체 스캔 금지(세션 ID 스코프 쿼리만); 세션 ID는 항상 `ses_` 접두사(Claude 훅 미러 오표기 자가 치유 내장). |
+| **Codex CLI (`@cx`)** | `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl` (구세션 `.jsonl.zst`는 `node:zlib` / `zstd`로 자동 투명 복원) | ACP 브리지(`@agentclientprotocol/codex-acp`) 또는 CLI `codex exec ... --json` | `thread.started` → `turn.started` → `item.started\|completed`(`agent_message`, `reasoning`, `command_execution`, `file_change`, `mcp_tool_call`) → `turn.completed`. 파이프 환경에서 **반드시 `stdin`을 닫아야** 대기 멈춤 방지. |
+| **Antigravity (`@ag`)** | `~/.gemini/antigravity-cli/conversations/<id>.db` + `brain/<id>/.system_generated/logs/transcript.jsonl` (`truncated_fields` 시 `transcript_full.jsonl` 자동 복원) | **네이티브 ACP** (`agy acp`) 또는 CLI `agy -p ... --output-format stream-json` | `init` → `step_update`(`text_delta`, ~25ms 토큰 델타) → `result`(`result.response`). 누적 델타와 `result.response` 중복 제거 필요(ASD 내장). 재개는 `--conversation <id>` 사용. |
+| **Cursor CLI (`@cr`)** | `~/.cursor/chats/<workspace-md5>/<chat-uuid>/store.db` *(비공개 blob — 네이티브는 `unsupported` 반환, `~/.asd/transcripts/cursor/<id>.jsonl` lossy 스트림 폴백 지원)* | **네이티브 ACP** (`cursor-agent acp`) 또는 CLI `cursor-agent -p ... --force --output-format stream-json` | `system/init` → **`user` 프롬프트 에코(자동 스킵)** → `thinking`(`subtype: "delta"`) → `tool_call`(`started\|completed`, `tool_call.<family>ToolCall.result.success\|error.errorMessage`) → `assistant` → `result`. Windows `.ps1` 래퍼는 `powershell -File` / `.cmd` 심으로 자동 스폰. |
+
+### 4.2 코어–클라이언트 경계 원칙
+- **클라이언트 앱에서 하네스 CLI 플래그 직접 조립 금지** — `runDriverTurn` / `buildSpawnSpec`에 위임.
+- **`.asd/` 디렉토리 직접 파일 수정 금지** — 공식 SDK / `asd` CLI(`openProjectDb`, `asd plan`, `asd verify` 등)만 사용.
+- **하네스 로컬 트랜스크립트 직접 파싱 금지** — `readHarnessTranscript`가 스키마 드리프트, `.jsonl.zst` 해제, `transcript_full.jsonl` 복원, `ses_` 속성 보정을 일괄 흡수.

@@ -147,8 +147,7 @@ OpenCode **V2 (`2.x`)** is the primary supported target (`plugins/asd-guard/inde
 - 🔄 **[OpenCode V1/V2 Support Policy & Migration Plan (`docs/OPENCODE_V1_V2_MIGRATION_PLAN.md`)](./docs/OPENCODE_V1_V2_MIGRATION_PLAN.md)** — V2 first-class architecture, frozen V1 compatibility scope, and V1 EOL/single-digit removal trigger.
 - 🧭 **[Model Routing Guide (`ROUTING_GUIDE.md`)](./ROUTING_GUIDE.md)** — Configuring `lightSubagents`, `agents`, `categories`, fallbacks, and `thinkingEffort` in `~/.asd/routing.jsonc`.
 - 🏛️ **[Architecture & Code Reference (`PROJECT_STATUS.md`)](./PROJECT_STATUS.md)** — Repository layout, SQLite SSOT schema, and module-by-module reference.
-- 🔌 **[External SDK & DB Reference (`EXTERNAL_SDK_REFERENCE.md`)](./EXTERNAL_SDK_REFERENCE.md)** — Node.js SDK contracts and database schema for **ASD-Nexus** and external tools.
-- 🔗 **[Harness Integration Reference (`HARNESS_INTEGRATION_REFERENCE.md`)](./HARNESS_INTEGRATION_REFERENCE.md)** — Empirical stream formats, session storage paths, and caveats across all 5 harnesses.
+- 🔌 **[External SDK, Harness Storage & DB Reference (`EXTERNAL_SDK_REFERENCE.md`)](./EXTERNAL_SDK_REFERENCE.md)** — Node.js SDK contracts, single shared DB schema, and empirical 5-harness storage/streaming specs for **ASD-Nexus** and external tools.
 - 🤖 **[AI Workflow Prompt (`AI_WORKFLOW_PROMPT.md`)](./AI_WORKFLOW_PROMPT.md)** — Ready-to-use onboarding prompt for AI coding agents.
 - 📋 **[Patch Notes (EN)](./PATCH_NOTES.md)** · **[패치 노트 (KO)](./PATCH_NOTES_ko.md)** — Full version history through `v2.7.0`.
 

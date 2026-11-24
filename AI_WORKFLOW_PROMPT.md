@@ -9,12 +9,12 @@
 ## 📋 Ready-to-Use AI Workflow Prompt (Copy & Paste)
 
 ```markdown
-You are an engineer developing and maintaining the `asd-multiagent` (Agent Swarm Director v2.5.0) project.
+You are an engineer developing and maintaining the `asd-multiagent` (Agent Swarm Director v2.7.0) project.
 Before starting any work, you must strictly follow all rules and procedures below from start to finish.
 
 ### 1. Required Prerequisite Documents (Read Before Starting)
 - `PROJECT_STATUS.md`: Full directory structure and detailed responsibilities of every file and core function
-- `EXTERNAL_SDK_REFERENCE.md`: Public SDK specification for external GUI (`asd-gui`) integration and the single shared DB (`~/.asd/state/core.db`)
+- `EXTERNAL_SDK_REFERENCE.md`: Public SDK specification, 5-harness storage/streaming matrix, and single shared DB (`~/.asd/state/core.db`) reference for external clients (**ASD-Nexus**)
 
 ### 2. Five Non-Negotiable Core Constraints (Hard Constraints)
 1. **Zero External Runtime Dependencies (`dependencies: {}`)**:

@@ -8,11 +8,13 @@
 
 ## 0. 무의존성 ACP 엔진 및 OpenCode 비동기 오케스트레이션 (v2.7.0)
 
-### `v2.7.0` — 하이브리드 ACP v1/v2 클라이언트, OpenCode 비동기 완료 콜백, 카탈로그 모델 자동 매핑 및 코어 안정화
+### `v2.7.0` — 하이브리드 ACP v1/v2 클라이언트, OpenCode V2 정식 지원, 토론 엔진 하드닝 및 코어 고도화
 - **무의존성 ACP 클라이언트 (`src/core/acp-types.ts`, `src/core/acp-client.ts`)**: 외부 런타임 의존성 추가 없이(`dependencies: {}`) 순수 Node.js stdio JSON-RPC 2.0 기반 ACP v1 + v2 초안 호환 클라이언트, `session/request_permission` ↔ `policy.ts` 양방향 보안 검증, 일시적 멈춤 시 `session/load` 제자리 재개, `session/new` 카탈로그 기반 하네스별 모델 ID 자동 매핑(`resolveBestAcpModelId`) 구현.
-- **하이브리드 Dispatch & Debate (`ACP 우선 + 스트리밍 CLI 자동 폴백`)**: `asd dispatch`, `asd debate`, 서브에이전트 제어 전반에 ACP 우선 실행 및 강화된 스트리밍 CLI 폴백(`--transport <auto|acp|cli>`) 적용.
-- **OpenCode 메인 세션 멈춤 해결 (`--async` + `asd-guard.js`)**: `asd dispatch --async` / `asd wait`를 추가하고, 백그라운드 Wave 완료 시 `asd-guard.js`가 `client.session.prompt`로 OpenCode 메인 세션에 결과를 자동 주입하도록 개선.
-- **진단 및 코어 안정성 개선**: ~10ms 단일 패스 `asd doctor` ACP 준비 상태·외부 브리지 설치 안내, `|`·`()` 손상에 면역인 `.asd/PLAN.md` 들여쓰기 메타 포맷, `LIGHT` 모드 테스트 실패 시 작업 파일 보존, `verifyCmd` 기본 타임아웃 300초 상향, Task 번호 없는 순수 내용 커밋 메시지 적용.
+- **OpenCode V2 정식 지원 및 레거시 V1 격리 (`src/core/opencode-profile.ts`, `src/adapters/opencode.ts`, `src/adapters/opencode-v1.ts`)**: `opencode --version` 기반 프로파일 감지, 네이티브 `opencode acp` / `--auto` / `session_v2` 트랜스크립트 파싱, 무의존성 V2 정책 가드(`plugins/asd-guard/index.js`)를 기본화하고, 동결된 V1 호환 경로(`plugin/asd-guard.js` + `--async` 콜백)를 별도 격리.
+- **하이브리드 Dispatch 및 토론 엔진 하드닝 (`src/core/debate.ts`, `src/core/router.ts`, `src/skills/asd-debate/SKILL.md`)**:
+  - ACP 우선 + 스트리밍 CLI 자동 폴백(`--transport <auto|acp|cli>`) 및 공용 `asd dispatch --async` / `asd wait` 적용.
+  - `REJECT`(및 `r2-arbiter-fallback`) 판정 시 `tasks.acceptance`·`.asd/PLAN.md` 오염 차단 가드, Round 2 Arbiter 단독 권위 보장, 중간 토큰 분할 NDJSON 델타 `join("")` 복원 및 `maxRetries` 상한 기반 파싱 재시도, 누적 `excludedFamilies` 교차 모델 라우팅 + 사후 `diversityDegraded` 재산출, 역할별 직교 리뷰 루브릭, `git diff --stat`·절단 마커 및 `policy.ts` 보안 검증 기반 Round 2 `file:line` 인용 자동 확장 구현.
+- **진단, 문서 정리 및 코어 안정성 개선**: ~10ms 단일 패스 `asd doctor` ACP 준비 상태·OpenCode V1/V2 드리프트 점검, `src/orchestrator/` 및 `src/adapters/installer/` 모듈화, `DIRECT`/`LIGHT`/`HEAVY` 3트랙 실행, `LIGHT` 테스트 실패 시 작업 파일 보존, `verifyCmd` 300초 기본 타임아웃, 완료된 구형 문서 정리 및 하네스 스펙 `EXTERNAL_SDK_REFERENCE_ko.md` 통합.
 
 ---
 

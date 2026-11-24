@@ -1,11 +1,11 @@
-# ASD v2.5.0 External SDK & Single-DB Migration Reference (`EXTERNAL_SDK_REFERENCE.md`)
+# ASD v2.7.0 External SDK, Harness Storage & DB Reference (`EXTERNAL_SDK_REFERENCE.md`)
 
-> **Version**: `2.5.0` (built on the v2.4.0 single shared DB — incorporates full-harness native JSONL streaming, Core-GUI boundary refactoring, and `ses_` session attribution fix — DB-incompatible with `<= 2.3.x`)  
+> **Version**: `2.7.0` (built on the single shared DB `~/.asd/state/core.db` — includes zero-dependency ACP v1/v2 client, first-class OpenCode V2 support + frozen V1 isolation, modular `src/orchestrator/`, v2.6.0 SDK dead-surface cleanup, and hardened blind debate engine — DB-incompatible with `<= 2.3.x`)  
 > **Audience**: External application and library integration developers, including [**ASD-Nexus (`asd-gui`)**](https://github.com/N3wbie123/ASD-Nexus)  
 > **Runtime Dependencies**: `0` (`dependencies: {}`, uses only pure Node.js `>=22.13.0` built-in modules)  
-> **Main Entrypoint**: [`src/index.ts`](file:///C:/Users/yjsjs0987/Desktop/Projects/asd-multiagent/src/index.ts) (`import { ... } from "agent-swarm-director"`)
+> **Main Entrypoint**: [`src/index.ts`](./src/index.ts) (`import { ... } from "agent-swarm-director"`)
 
-**English** | [한국어](./EXTERNAL_SDK_REFERENCE_ko.md) | [📖 README](./README.md) | [🖥️ ASD-Nexus (Official GUI)](https://github.com/N3wbie123/ASD-Nexus) | [🏛️ Project Architecture & File/Function Reference](./PROJECT_STATUS.md) | [🤖 AI Workflow Prompt](./AI_WORKFLOW_PROMPT.md) | [📋 Patch Notes](./PATCH_NOTES.md)
+**English** | [한국어](./EXTERNAL_SDK_REFERENCE_ko.md) | [📖 README](./README.md) | [🖥️ ASD-Nexus (Official GUI)](https://github.com/N3wbie123/ASD-Nexus) | [⚡ ACP Roadmap](./docs/ACP_ROADMAP.md) | [🏛️ Architecture](./PROJECT_STATUS.md) | [🤖 AI Workflow Prompt](./AI_WORKFLOW_PROMPT.md) | [📋 Patch Notes](./PATCH_NOTES.md)
 
 ---
 
@@ -291,35 +291,37 @@ const cachePath = getModelsDiskCachePath();
 ### 3.1 Node.js Library Subpath Exports (`package.json` `exports`)
 
 ```ts
-import * as asd from "agent-swarm-director";               // Unified root core entry (src/index.ts)
-import * as db from "agent-swarm-director/core/db";        // Direct submodule imports also supported
-import * as mcp from "agent-swarm-director/mcp/server";
-import * as dashboard from "agent-swarm-director/cli/dashboard";
+import * as asd from "agent-swarm-director";                       // Unified root core entry (src/index.ts)
+import * as db from "agent-swarm-director/core/db";                // Direct core submodule import
+import * as orch from "agent-swarm-director/orchestrator/index";   // Modular CLI orchestrator
+import * as dashboard from "agent-swarm-director/cli/dashboard";   // Local `asd ui` server (subpath-only)
 ```
 
 | Module Path | Key Exported Functions & Classes |
 | :--- | :--- |
-| **`core/types`** | `ASD_VERSION` (`"2.5.0"` — derived at runtime from `package.json`), `HARNESS_IDS`, `AGENT_ROLES`, `TASK_CATEGORIES`, `DIFFICULTY_TIERS`, `TASK_TRACKS`, `TASK_STATUSES`, `SESSION_PHASES`, `DRIVER_SOURCES`, and all core TypeScript interfaces |
+| **`core/types`** | `ASD_VERSION` (`"2.7.0"` — derived at runtime from `package.json`), `HARNESS_IDS`, `AGENT_ROLES`, `TASK_CATEGORIES`, `DIFFICULTY_TIERS`, `TASK_TRACKS` (`"DIRECT" \| "LIGHT" \| "HEAVY"`), `TASK_STATUSES`, `SESSION_PHASES`, `DRIVER_SOURCES`, and all core TypeScript interfaces |
+| **`core/acp-types` & `core/acp-client`** *(v2.7.0)* | Zero-dependency ACP v1/v2 JSON-RPC stdio client: `AcpStdioClient`, `probeAcpCapability`, `executeAcpSubagentTurn`, `resolveBestAcpModelId`, `checkInteractivePermissionSafety` |
 | **`core/config`** | `resolveAsdPaths(root, home?)`, `resolveHomeDir(explicit?)`, `ensureProjectInitialized`, `loadRoutingConfig`, `loadMcpCatalog`, `checkForRemoteUpdate`, `computeProjectHash` |
-| **`core/db`** | `openProjectDb(root, home?)`, `SqliteDriver(dbPath, projectRoot?)`, `generateAsdSessionId`, `isValidAsdSessionId` — `findSessionByHarnessSessionId(sid, harness?)` *(v2.4.0)*, `deleteSession(sessionId)` *(v2.4.0)*, and full CRUD across `sessions` / `tasks` / `debates` / `session_drivers` |
-| **`core/session-tracker`** | `discoverProjectCliSessions` *(v2.4.0)*, `promoteCliSessionToAsd` *(v2.4.0)*, `unlinkHarnessSessionFromAsdSession` *(v2.4.0)*, `buildSessionDemotion`, `listKnownProjects` *(v2.4.0 cache optimization)*, `syncLocalHarnessTranscripts` *(v2.4.0 4-harness expansion + `mtimeMs` cache, v2.4.3 `cli-recent` self-healing)*, `linkHarnessSessionToAsdSession`, `readCliRecentSessions`, `recordCliRecentSession`, `buildHeadlessHarnessCommand`, `buildResumeHarnessCommand` *(v2.4.3 `streaming` option)*, `buildInteractiveResumeHarnessCommand`, `extractHookSessionInfo` *(v2.4.3 `ses_` harness attribution fix)* |
-| **`core/drivers`** | `runDriverTurn` *(v2.4.3 full-harness native JSONL streaming — `onEvent` + `streaming`)*, `parseDriverStreamLine` *(v2.4.3 empirical `agy` `step_update` / `cursor` `tool_call` schema)*, `attachDriver`, `detachDriver` *(supports `driverId` or `sessionId`)*, `getActiveDriver`, `listDrivers`, `buildDriverBriefing` *(default locale `'en'`, optional `'ko'`)*, `syncSessionDriversToMainJson` |
-| **`core/transcripts`** | `readHarnessTranscript` *(v2.4.0 4-category parser)*, `locateHarnessTranscript` |
+| **`core/opencode-profile`** *(v2.7.0)* | `detectOpenCodeProfile` — OpenCode V2 (`2.x`, first-class) vs Legacy V1 (`1.x`, frozen) capability detection |
+| **`core/db`** | `openProjectDb(root, home?)`, `SqliteDriver(dbPath, projectRoot?)`, `generateAsdSessionId`, `isValidAsdSessionId` — `findSessionByHarnessSessionId`, `deleteSession`, `injectDebateAcceptance`, and full CRUD across `sessions` / `tasks` / `debates` / `session_drivers` |
+| **`core/session-tracker`** | `discoverProjectCliSessions`, `promoteCliSessionToAsd`, `unlinkHarnessSessionFromAsdSession`, `buildSessionDemotion`, `listKnownProjects`, `syncLocalHarnessTranscripts`, `linkHarnessSessionToAsdSession`, `readCliRecentSessions`, `recordCliRecentSession`, `buildSpawnSpec`, `buildHeadlessHarnessCommand`, `buildResumeHarnessCommand` *(options-object form only since v2.6.0)*, `buildInteractiveResumeHarnessCommand`, `extractHookSessionInfo` |
+| **`core/drivers`** | `runDriverTurn` *(resident ACP session pool + native JSONL CLI fallback)*, `cancelDriverTurn`, `closeDriverSession`, `closeAllDriverSessions`, `parseDriverStreamLine`, `attachDriver`, `detachDriver`, `getActiveDriver`, `listDrivers`, `buildDriverBriefing`, `syncSessionDriversToMainJson` |
+| **`core/transcripts`** | `readHarnessTranscript` *(4-category parser across Claude, OpenCode V1/V2 `session_v2`, Codex `.jsonl`/`.jsonl.zst`, Antigravity, and Cursor lossy fallback)*, `locateHarnessTranscript` |
 | **`core/spawner`** | `spawnSubagent`, `executeHarnessProcess`, `killProcessTree`, `resolveSpawnCommand`, `finalizeSubagentArtifacts` |
-| **`core/router`** | `resolveRoute`, `runWithFallbacks`, `escalateTaskRoute`, `resolveFallback`, `detectAvailableCliHarnesses`, `selectDiverseReviewer`, `saveProjectRoutingConfig` *(migrated from `cli/dashboard` in v2.4.3)* |
-| **`core/models`** *(v2.4.3)* | `discoverHarnessModels`, `getModelsDiskCachePath` |
-| **`core/session-services`** *(v2.4.3)* | `saveSessionMemo`, `collectDashboardSnapshot` |
-| **`core/subagent-control`** *(v2.4.3)* | `runSubagentControlAction` |
-| **`core/subagent-logs`** *(v2.4.3)* | `scanSubagentLogs`, `SubagentLogRecord` |
-| **`core/workspace`** | `prepareBaseline`, `createTaskWorktree`, `verifyAndCommitLightTask`, `verifyAndMergeHeavyTask`, `approvePendingTask`, `rejectPendingTask`, `rollbackLightChanges`, `recoverOrphanedTasks`, `isPidAlive`, `getChangedFiles`, `checkChangedFilesAndSecrets`, `withMergeLock`, `runGit` |
-| **`core/render`** | `renderPlanMd`, `parsePlanMd`, `syncPlanFromMd`, `setForegroundSession`, `getForegroundSessionId`, `renderProgressBoard` *(English-default live `progressBoard`)*, `renderSessionSummaryMd`, `atomicWriteFileSync` |
-| **`core/debate`** | `runDebateBroker`, `synthesizeInsightVerdict`, `buildRound1Prompt`, `buildRound2Prompt`, `formatDebateAcceptance` |
-| **`core/policy`** | `evaluatePreToolUse`, `evaluateStopHook`, `isPathAllowed`, `checkProtectedPath`, `verifyChangedFilesBoundary` |
+| **`core/router`** | `resolveRoute`, `runWithFallbacks` *(optional `maxRetries` cap)*, `escalateTaskRoute`, `resolveFallback`, `detectAvailableCliHarnesses`, `detectLiveRuntimeCapabilities`, `selectDiverseReviewer` *(optional cumulative `excludedFamilies`)*, `resolveLightSubagentRoute`, `saveProjectRoutingConfig` |
+| **`core/models`** | `discoverHarnessModels`, `getModelsDiskCachePath` |
+| **`core/session-services`** | `saveSessionMemo`, `collectDashboardSnapshot` |
+| **`core/subagent-control`** | `runSubagentControlAction` |
+| **`core/subagent-logs`** | `scanSubagentLogs`, `SubagentLogRecord` |
+| **`core/workspace`** | `prepareBaseline`, `createTaskWorktree`, `verifyAndCommitLightTask`, `verifyAndMergeHeavyTask`, `approvePendingTask`, `rejectPendingTask`, `rollbackLightChanges`, `recoverOrphanedTasks`, `isPidAlive`, `verifyPidIdentity`, `getChangedFiles`, `checkChangedFilesAndSecrets`, `withMergeLock`, `runGit` |
+| **`core/render`** | `renderPlanMd`, `parsePlanMd`, `syncPlanFromMd`, `setForegroundSession`, `getForegroundSessionId`, `renderProgressBoard`, `renderSessionSummaryMd`, `atomicWriteFileSync` |
+| **`core/debate`** | `runDebateBroker` *(hybrid ACP + streaming CLI, `REJECT` DB/PLAN isolation, Arbiter sole authority, post-run `diversityDegraded` recomputation)*, `parseReviewerOpening`, `synthesizeInsightVerdict`, `buildDebateCodeContext`, `buildRound2CitedCodeContext`, `buildRound1Prompt` *(optional `role`)*, `buildRound2Prompt`, `formatDebateAcceptance` |
+| **`core/policy`** | `evaluatePreToolUse`, `evaluateStopHook`, `resolveSafeTargetPath`, `isPathAllowed`, `checkProtectedPath`, `verifyChangedFilesBoundary` |
 | **`core/redact` & `jsonc`** | `redactSecrets`, `containsSecrets`, `parseJsonc`, `stripJsoncComments`, `upsertTomlFencedBlock`, `removeTomlFencedBlock` |
-| **`adapters/*`** | `ClaudeCodeAdapter`, `OpenCodeAdapter`, `CodexAdapter`, `AntigravityAdapter`, `CursorAdapter`, `syncGlobalHarnesses`, `uninstallGlobalHarnesses`, `runDoctor` |
-| **`mcp/server`** | `AsdMcpServer`, `ASD_MCP_TOOLS`, `handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate` |
-| **`cli/dashboard`** | `startDashboardServer` *(not exported from root entry since v2.4.3 — dedicated to `asd ui` server+UI with default language `'en'`, data services migrated to `core/`)* |
-| **`cli/index`** | `getAdapter`, `getLatestSession`, `scanSubagentLogs` *(v2.4.3 `core/subagent-logs` re-export)*, `runAsdLogs`, `runAsdClean` |
+| **`adapters/*`** | `ClaudeCodeAdapter`, `OpenCodeAdapter` (V2 default + frozen `opencode-v1.ts`), `CodexAdapter`, `AntigravityAdapter`, `CursorAdapter`, `syncHarnessConfigs`, `uninstallGlobalConfigs`, `runAsdDoctor`, `createHarnessProvisionerPlugin`, `createHarnessRuntimePlugin`, `registerDefaultHarnessPlugins` |
+| **`orchestrator/*`** *(v2.7.0)* | `AsdOrchestrator`, `PLAN_SCHEMA_DEFINITION`, `handlePlan`, `handleDispatch`, `handleVerify`, `handleDebate`, `buildEscalationHint`, `detectRoleCategoryWarnings`, `findOverlappingLightTargetFiles`, `parseSubagentReport` |
+| **`cli/dashboard`** | `startDashboardServer` *(subpath-only `agent-swarm-director/cli/dashboard` — `asd ui` local server+UI; feature-frozen)* |
+| **`cli/index`** | `getAdapter`, `getLatestSession`, `runAsdLogs`, `runAsdClean` |
 
 ---
 
@@ -329,18 +331,20 @@ Common flags: `--json`, `--project-root <dir>`, `--home <dir>`, `--session <id>`
 
 | Command | Description | Key Flags |
 | :--- | :--- | :--- |
-| `asd plan [create\|get\|update\|sync_from_md]` | Create, query, update, or reverse-sync `.asd/PLAN.md` and SQLite tasks | `--tasks <json>`, `--payload <json\|->`, `--file <path>` |
-| `asd dispatch` | Execute or claim Turn (Wave) tasks in parallel | `--turn <n>`, `--mode parallel_spawn\|claim_only`, `--task T1.1` |
-| `asd verify --task <id>` | Verify file boundaries, secrets, and tests, then commit (`LIGHT`) or merge worktree (`HEAVY`) | `--summary`, `--files`, `--cmd`, `--payload` |
-| `asd debate --topic <t> --proposal <p>` | Run cross-model blind adversarial debate and auto-inject `acceptance` constraints | `--proposal-file`, `--diff`, `--files path:start-end` |
+| `asd plan [create\|get\|update\|sync_from_md\|schema]` | Create, query, update, reverse-sync `.asd/PLAN.md` and SQLite tasks, or print canonical JSON schema | `--tasks <json>`, `--payload <json\|->`, `--file <path>`, `--track <DIRECT\|LIGHT\|HEAVY>` |
+| `asd dispatch` | Execute or claim Turn (Wave) tasks in parallel (ACP-first + CLI fallback) | `--turn <n>`, `--mode parallel_spawn\|claim_only`, `--async`, `--transport <auto\|acp\|cli>`, `--task T1.1` |
+| `asd wait` | Wait for an active `asd dispatch --async` wave to complete | `--session <id>`, `--timeout <ms>`, `--json` |
+| `asd verify --task <id>` | Verify file boundaries, secrets, and tests, then commit (`DIRECT`/`LIGHT`) or merge worktree (`HEAVY`) | `--summary`, `--files`, `--cmd`, `--file <path>` |
+| `asd debate --topic <t> --proposal <p>` | Run cross-model blind adversarial debate and auto-inject non-`REJECT` constraints into `acceptance` | `--proposal-file`, `--task` / `--task-id`, `--harnesses`, `--roles`, `--count`, `--diff`, `--files path:start-end` |
 | `asd resume` | Demote active ASD session and return immediately to the original harness's interactive CLI | `--session <id>`, `--print`, `--json` |
 | `asd status` | Print the current project's foreground session live `progressBoard` (English default) | `--json` |
 | `asd logs [taskId]` | Inspect subagent prompt and output logs for the latest or specified task | `--json` |
-| `asd ui` | Launch the local real-time web dashboard server (default port `3847`, default language `'en'`) | `--port <num>`, `--no-open` |
-| `asd sync` | Synchronize global skills, agents, hooks, and MCP across all 5 harnesses and register on global `PATH` | `--force`, `--no-path` |
+| `asd ui` | Launch the local real-time web dashboard server (default port `3847`, feature-frozen) | `--port <num>`, `--no-open` |
+| `asd sync` | Synchronize global skills, agents, hooks, and external MCP catalog across all 5 harnesses and register on `PATH` | `--force`, `--refresh-models`, `--no-model-probe`, `--no-path` |
 | `asd update` | Pull latest version from GitHub and automatically run `asd sync` | — |
-| `asd doctor` | Sub-100ms environment, harness, and security hook health check | `--json` |
-| `asd clean` | Clean leftover `.asd/wt/*` worktrees and restore auto-stashed changes | `--pop`, `--all` |
+| `asd doctor` | ~10ms environment, harness, ACP readiness, and security hook health check | `--json` |
+| `asd migrate` | Import legacy per-hash `core.db` files (`<= v2.3.2`) into `~/.asd/state/core.db` | `--clean-legacy`, `--json` |
+| `asd clean` | Clean leftover `.asd/wt/*` worktrees, restore auto-stashed changes, or purge orphans | `--pop`, `--all`, `--purge-orphans` |
 | `asd uninstall` | Surgically revert only ASD-installed global configurations | `--home <dir>` |
 | `asd hook <type>` | Harness hook evaluator (`session-start`, `pre-invocation`, `pre-tool-use`, `stop`) | stdin JSON -> stdout JSON |
 
@@ -356,3 +360,24 @@ Common flags: `--json`, `--project-root <dir>`, `--home <dir>`, `--session <id>`
 | `/api/session-memo` | `POST` | Save a short session memo (`{ sessionId, memo }`) |
 | `/api/routing` | `POST` | Save or reset project-local routing (`.asd/routing.jsonc`) (`{ action: "save" \| "reset", routingConfig }`) |
 | `/api/subagent-action` | `POST` | Real-time subagent control (`{ sessionId, subSessionId, action: "kill" \| "retry" \| "fallback" \| "custom", harness?, model? }`) |
+
+---
+
+## 4. 5-Harness Storage, Streaming Schemas & Operational Caveats
+
+All 5 harnesses are normalized behind the same 3-stage SDK pipeline (`discoverProjectCliSessions` → `readHarnessTranscript` → `runDriverTurn` + `parseDriverStreamLine`), emitting unified `DriverStreamEvent` objects (`thinking` / `tool_use` / `tool_result` / `text` / `raw`). Client applications should consume these normalized events rather than branching per harness or assembling CLI flags manually.
+
+### 4.1 Per-Harness Reference Matrix
+
+| Harness | Local Session Storage | Primary Transport / Streaming | Empirical Event Flow & Key Caveats |
+| :--- | :--- | :--- | :--- |
+| **Claude Code (`@cc`)** | `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` *(unstable schema — always use `readHarnessTranscript`)* | ACP bridge (`@agentclientprotocol/claude-agent-acp`) or CLI `claude -p ... --output-format stream-json --verbose --include-partial-messages` | `system/init` → `stream_event` (`content_block_delta`: `text_delta`/`thinking_delta`/`input_json_delta`) → `assistant` → `user` (`tool_result`) → `result`. Pass long prompts via `stdin`; built-in defense against JSONL schema drift. |
+| **OpenCode (`@oc`)** | `~/.local/share/opencode/opencode.db` (SQLite WAL — `session_v2` / `session_message` / `session_part` on V2; `session` / `message` / `part` on frozen V1). Check via `opencode debug paths db`. | **Native ACP** (`opencode acp` on V2; `--pure` on Legacy V1) or CLI `opencode run ... --format json` (V2 adds `--auto`) | Block/part events (`step_start` → `text` → `step_finish`) or ACP `session/update` deltas. Always run session-ID-scoped queries on the multi-GB DB; session IDs always use `ses_` prefix (self-healed against Claude hook mirror misattribution). |
+| **Codex CLI (`@cx`)** | `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl` (older `.jsonl.zst` transparently decompressed via `node:zlib` / `zstd`) | ACP bridge (`@agentclientprotocol/codex-acp`) or CLI `codex exec ... --json` | `thread.started` → `turn.started` → `item.started\|completed` (`agent_message`, `reasoning`, `command_execution`, `file_change`, `mcp_tool_call`) → `turn.completed`. **Always close `stdin`** in piped environments to avoid hanging. |
+| **Antigravity (`@ag`)** | `~/.gemini/antigravity-cli/conversations/<id>.db` + `brain/<id>/.system_generated/logs/transcript.jsonl` (auto-restores `truncated_fields` from `transcript_full.jsonl`) | **Native ACP** (`agy acp`) or CLI `agy -p ... --output-format stream-json` | `init` → `step_update` (`text_delta`, ~25ms token deltas) → `result` (`result.response`). Deduplicate `result.response` against accumulated `text_delta` (built into ASD). Resume via `--conversation <id>`. |
+| **Cursor CLI (`@cr`)** | `~/.cursor/chats/<workspace-md5>/<chat-uuid>/store.db` *(proprietary blob — native store returns `unsupported`, backed by lossy JSONL fallback at `~/.asd/transcripts/cursor/<id>.jsonl`)* | **Native ACP** (`cursor-agent acp`) or CLI `cursor-agent -p ... --force --output-format stream-json` | `system/init` → **`user` prompt echo (skipped automatically)** → `thinking` (`subtype: "delta"`) → `tool_call` (`started\|completed`, `tool_call.<family>ToolCall.result.success\|error.errorMessage`) → `assistant` → `result`. On Windows, `.ps1` wrappers are spawned via `powershell -File` / `.cmd` shims automatically. |
+
+### 4.2 Core–Client Boundary Rules
+- **Do not assemble harness CLI flags in client apps** — delegate to `runDriverTurn` / `buildSpawnSpec`.
+- **Do not mutate `.asd/` directly** — use official SDK / `asd` CLI commands (`openProjectDb`, `asd plan`, `asd verify`, etc.).
+- **Do not parse raw harness transcript files directly** — `readHarnessTranscript` absorbs schema drift, `.jsonl.zst` decompression, `transcript_full.jsonl` restoration, and `ses_` attribution guards.

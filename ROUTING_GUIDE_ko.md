@@ -1,8 +1,8 @@
-# ASD v2.4.2 모델 라우팅 설정 가이드 (`routing.jsonc`)
+# ASD v2.7.0 모델 라우팅 설정 가이드 (`routing.jsonc`)
 
 [English](./ROUTING_GUIDE.md) | **한국어** | [📖 README로 돌아가기](./README_ko.md)
 
-ASD(Agent Swarm Director)는 작업 실행 방식에 따라 **`LIGHT` 모드(현재 하네스 내부 서브에이전트 위임)**와 **`HEAVY` 모드(외부 하네스 CLI 병렬 프로세스 스폰 & 블라인드 디베이트)**를 구분하여 모델을 라우팅합니다.
+ASD(Agent Swarm Director v2.7.0)는 3트랙 실행 체계에 따라 모델을 라우팅합니다: **`DIRECT`**(메인 세션 직접 수행), **`LIGHT` 모드**(`lightSubagents` — 현재 하네스 내부 서브에이전트 위임), **`HEAVY` 모드**(`agents` & `categories` — 외부 ACP/CLI 병렬 프로세스 스폰 및 교차 모델 블라인드 디베이트).
 
 ---
 
@@ -77,7 +77,7 @@ ASD는 다음 순서로 `routing.jsonc`를 읽어 들입니다:
 
 ```jsonc
 {
-  "_asdVersion": "2.4.2",
+  "_asdVersion": "2.7.0",
   "lightSubagents": {
     // 1) Antigravity: 반드시 "flash_lite" | "flash" | "pro" 중 하나를 사용합니다.
     //    ("inherit"이나 "gemini-3.8-flash"를 적어도 ASD가 자동으로 위 3개 티어로 정규화하여
