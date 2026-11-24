@@ -51,13 +51,13 @@ Require this exact structured JSON verdict:
 }
 ```
 
-**`HEAVY` Mode** — Run `asd debate` CLI with `--files "path[:start-end],..."` and/or `--diff`, plus `--file <debate.json>` or `--proposal-file proposal.md` for cross-platform safety:
+**`HEAVY` Mode** — Run `asd debate` CLI with `--files "path[:start-end],..."` and/or `--diff`, plus `--file <debate.json>` or `--topic "<topic>" --proposal-file proposal.md` for cross-platform safety. When debating a planned task, pass `--task <taskId>` (alias `--task-id <taskId>`) to auto-inject non-`REJECT` constraints/decisions into `tasks.acceptance` and `.asd/PLAN.md`:
 ```bash
-asd debate --file <debate.json> --files "path[:start-end],..." --diff --harnesses "<h1,h2>" --count 3
-asd debate --proposal-file proposal.md --files "path[:start-end],..." --roles "critic,architect,planner"
+asd debate --file <debate.json> --files "path[:start-end],..." --diff --harnesses "<h1,h2>" --count 3 --task <taskId>
+asd debate --topic "<topic>" --proposal-file proposal.md --files "path[:start-end],..." --roles "critic,architect,planner" [--task <taskId>]
 ```
 
 ### Step 3 — Apply Verdict
 - **`APPROVE`**: Proceed with implementation and render `progressBoard`.
-- **`MINOR_AMEND`**: Incorporate `hard_constraints` and `decisions` via `asd plan`, then proceed.
-- **`REJECT`**: Halt, revise the proposal to address blocking `risks`, and re-confirm with the user.
+- **`MINOR_AMEND`**: If `HEAVY` ran with `--task` / `--task-id`, `hard_constraints` and `decisions` are already auto-injected into `tasks.acceptance` and `.asd/PLAN.md` (do not duplicate via `asd plan`); for `LIGHT` mode or taskless `HEAVY` debates, incorporate them via `asd plan`, then proceed.
+- **`REJECT`**: Halt (`tasks.acceptance` and `.asd/PLAN.md` are left untouched), revise the proposal to address blocking `risks`, and re-confirm with the user.

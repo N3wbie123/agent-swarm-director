@@ -1040,6 +1040,8 @@ export interface RunWithFallbacksOptions<T> {
   attempt: (route: ResolvedRoute, subSessionId: string) => Promise<T>;
   shouldRetry: (result: T) => boolean;
   allowDefaultModelRetry: boolean;
+  /** Optional upper bound on total retry attempts (fallback hops + default-model retry). */
+  maxRetries?: number;
 }
 
 export interface RunWithFallbacksResult<T> {
@@ -1056,8 +1058,12 @@ export async function runWithFallbacks<
   let route = options.initialRoute;
   let result = await options.attempt(route, options.baseSubSessionId);
   let fallbackCount = 0;
+  const maxRetries =
+    options.maxRetries !== undefined && Number.isFinite(options.maxRetries)
+      ? Math.max(0, Math.trunc(options.maxRetries))
+      : Number.POSITIVE_INFINITY;
 
-  while (options.shouldRetry(result)) {
+  while (options.shouldRetry(result) && fallbackCount < maxRetries) {
     const next = resolveFallback(
       route,
       options.routingConfig,
@@ -1072,7 +1078,12 @@ export async function runWithFallbacks<
     );
   }
 
-  if (options.shouldRetry(result) && route.model && options.allowDefaultModelRetry) {
+  if (
+    options.shouldRetry(result) &&
+    route.model &&
+    options.allowDefaultModelRetry &&
+    fallbackCount < maxRetries
+  ) {
     const retry = await options.attempt(
       { ...route, model: "default" },
       `${options.baseSubSessionId}-default`
@@ -1212,7 +1223,8 @@ export function selectDiverseReviewer(
   proposalRoute: ProposalRouteInput,
   reviewerRole: AgentRole | string = "critic",
   routingConfig?: RoutingConfig,
-  runtimeCapabilities?: RuntimeCapabilities
+  runtimeCapabilities?: RuntimeCapabilities,
+  excludedFamilies?: readonly string[]
 ): DiverseReviewerSelection {
   const cfg = routingConfig ?? loadRoutingConfig(process.cwd());
   const normalizedRole = normalizeAgentRole(reviewerRole) ?? "critic";
@@ -1338,11 +1350,26 @@ export function selectDiverseReviewer(
     singleFamilyInRuntime || uniqueFamilies.size <= 1 || !hasDifferentFamily;
 
   // 4. Rank candidates:
-  // - Priority 1: Different modelFamily (weight 100)
+  // - Priority 0: Outside cumulative excludedFamilies (weight 200, soft preference)
+  // - Priority 1: Different modelFamily from proposalRoute (weight 100)
   // - Priority 2: Different harness (weight 10)
   // - Priority 3: Different model within the same harness/family (weight 5)
+  const excludedFamilySet = new Set<string>(
+    (excludedFamilies ?? []).map((f) => f.trim().toLowerCase()).filter(Boolean)
+  );
+  if (propFamily) {
+    excludedFamilySet.add(propFamily.toLowerCase());
+  }
+  const hasExplicitExclusions = Boolean(excludedFamilies && excludedFamilies.length > 0);
+
   const scored = candidates.map((cand, index) => {
     let score = 0;
+    if (
+      hasExplicitExclusions &&
+      !excludedFamilySet.has(cand.modelFamily.toLowerCase())
+    ) {
+      score += 200;
+    }
     if (cand.modelFamily !== propFamily) {
       score += 100;
     }

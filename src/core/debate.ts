@@ -27,6 +27,7 @@ import { executeAcpSubagentTurn, probeAcpCapability } from "./acp-client.ts";
 import { loadRoutingConfig, resolveAsdPaths } from "./config.ts";
 import { openProjectDb } from "./db.ts";
 import type { SqliteDriver, SessionRow, TaskRow } from "./db.ts";
+import { checkProtectedPath, resolveSafeTargetPath } from "./policy.ts";
 import { redactSecrets } from "./redact.ts";
 import { renderPlanMd, renderProgressBoard } from "./render.ts";
 import {
@@ -37,7 +38,6 @@ import {
 import {
   detectLiveRuntimeCapabilities,
   inferModelFamily,
-  isFallbackTriggerOutput,
   normalizeAgentRole,
   resolveLightSubagentRoute,
   runWithFallbacks,
@@ -607,59 +607,83 @@ function parseDirectText(rawText: string): ParsedOpening | null {
   return null;
 }
 
-function extractTextFromJsonEnvelope(obj: Record<string, unknown>): string[] {
-  const texts: string[] = [];
-  if (typeof obj.text === "string" && obj.text.trim()) texts.push(obj.text);
-  if (typeof obj.result === "string" && obj.result.trim()) texts.push(obj.result);
-  if (obj.result && typeof obj.result === "object") {
-    const resRec = obj.result as Record<string, unknown>;
-    if (typeof resRec.response === "string" && resRec.response.trim()) {
-      texts.push(resRec.response);
-    }
-  }
+interface ExtractedEnvelopeText {
+  deltas: string[];
+  messages: string[];
+}
+
+function extractTextFromJsonEnvelope(
+  obj: Record<string, unknown>
+): ExtractedEnvelopeText {
+  const deltas: string[] = [];
+  const messages: string[] = [];
+
+  // 1. Streaming text delta fragments (must be joined with "" to avoid breaking split JSON tokens)
   if (obj.step_update && typeof obj.step_update === "object") {
     const su = obj.step_update as Record<string, unknown>;
     if (typeof su.text_delta === "string" && su.text_delta) {
-      texts.push(su.text_delta);
+      deltas.push(su.text_delta);
     }
   }
   if (obj.delta && typeof obj.delta === "object") {
     const d = obj.delta as Record<string, unknown>;
-    if (typeof d.text === "string" && d.text) {
-      texts.push(d.text);
+    if (typeof d.text === "string" && d.text && d.type !== "thinking_delta") {
+      deltas.push(d.text);
     }
   }
-  if (typeof obj.response === "string" && obj.response.trim()) texts.push(obj.response);
-  if (typeof obj.content === "string" && obj.content.trim()) texts.push(obj.content);
-  if (typeof obj.message === "string" && obj.message.trim()) texts.push(obj.message);
+  if (obj.properties && typeof obj.properties === "object") {
+    const props = obj.properties as Record<string, unknown>;
+    if (typeof props.delta === "string" && props.delta) {
+      deltas.push(props.delta);
+    }
+  }
+
+  // 2. Complete message / summary envelope fields (skip user prompt echoes and thinking blocks)
+  if (typeof obj.text === "string" && obj.text.trim()) messages.push(obj.text);
+  if (typeof obj.result === "string" && obj.result.trim()) messages.push(obj.result);
+  if (obj.result && typeof obj.result === "object") {
+    const resRec = obj.result as Record<string, unknown>;
+    if (typeof resRec.response === "string" && resRec.response.trim()) {
+      messages.push(resRec.response);
+    }
+  }
+  if (typeof obj.response === "string" && obj.response.trim()) messages.push(obj.response);
+  if (typeof obj.content === "string" && obj.content.trim()) messages.push(obj.content);
+  if (typeof obj.message === "string" && obj.message.trim()) messages.push(obj.message);
   if (obj.message && typeof obj.message === "object") {
     const msgRec = obj.message as Record<string, unknown>;
-    if (Array.isArray(msgRec.content)) {
+    if (msgRec.role !== "user" && Array.isArray(msgRec.content)) {
       for (const b of msgRec.content) {
-        if (b && typeof b === "object" && typeof (b as Record<string, unknown>).text === "string") {
-          texts.push(String((b as Record<string, unknown>).text));
+        if (
+          b &&
+          typeof b === "object" &&
+          (b as Record<string, unknown>).type !== "thinking" &&
+          typeof (b as Record<string, unknown>).text === "string"
+        ) {
+          messages.push(String((b as Record<string, unknown>).text));
         }
       }
     }
   }
   if (obj.part && typeof obj.part === "object") {
     const part = obj.part as Record<string, unknown>;
-    if (typeof part.text === "string" && part.text.trim()) texts.push(part.text);
+    if (typeof part.text === "string" && part.text.trim()) messages.push(part.text);
   }
   if (obj.item && typeof obj.item === "object") {
     const item = obj.item as Record<string, unknown>;
-    if (typeof item.text === "string" && item.text.trim()) texts.push(item.text);
+    if (typeof item.text === "string" && item.text.trim()) messages.push(item.text);
   }
   if (obj.msg && typeof obj.msg === "object") {
     const msg = obj.msg as Record<string, unknown>;
-    if (typeof msg.message === "string" && msg.message.trim()) texts.push(msg.message);
+    if (typeof msg.message === "string" && msg.message.trim()) messages.push(msg.message);
   }
-  return texts;
+
+  return { deltas, messages };
 }
 
 /**
  * Extracts structured verdict from subagent output:
- * 0. Unwraps JSON / NDJSON CLI envelopes (OpenCode `part.text`, Claude `result`, Codex `item.text`, Antigravity `response`)
+ * 0. Unwraps JSON / NDJSON CLI envelopes (OpenCode `part.text`, Claude `result`, Codex `item.text`, Antigravity `response` / `step_update.text_delta`)
  * 1. Markdown ```json code fences
  * 2. Entire raw text as JSON
  * 3. Embedded JSON object spanning from first '{' to last '}'
@@ -671,7 +695,8 @@ export function parseReviewerOpening(rawText: string): ParsedOpening | null {
   if (directParsed) return directParsed;
 
   // Unwrap NDJSON lines or JSON envelope objects emitted by CLI harnesses (--format json / --output-format json)
-  const extractedChunks: string[] = [];
+  const deltaChunks: string[] = [];
+  const messageChunks: string[] = [];
   const lines = rawText.split(/\r?\n/);
   for (const line of lines) {
     const trimmed = line.trim();
@@ -681,11 +706,14 @@ export function parseReviewerOpening(rawText: string): ParsedOpening | null {
       if (envObj && typeof envObj === "object") {
         const directLine = tryParseJsonObject(trimmed);
         if (directLine) return directLine;
-        const chunks = extractTextFromJsonEnvelope(envObj);
-        for (const chunk of chunks) {
-          const parsedChunk = parseDirectText(chunk);
-          if (parsedChunk) return parsedChunk;
-          extractedChunks.push(chunk);
+        const { deltas, messages } = extractTextFromJsonEnvelope(envObj);
+        for (const msg of messages) {
+          const parsedMsg = parseDirectText(msg);
+          if (parsedMsg) return parsedMsg;
+          messageChunks.push(msg);
+        }
+        for (const delta of deltas) {
+          deltaChunks.push(delta);
         }
       }
     } catch {
@@ -693,10 +721,18 @@ export function parseReviewerOpening(rawText: string): ParsedOpening | null {
     }
   }
 
-  if (extractedChunks.length > 0) {
-    const combined = extractedChunks.join("\n");
-    const parsedCombined = parseDirectText(combined);
-    if (parsedCombined) return parsedCombined;
+  // Prefer streaming delta buffer joined without newlines to preserve mid-token JSON splits
+  if (deltaChunks.length > 0) {
+    const parsedDeltas = parseDirectText(deltaChunks.join(""));
+    if (parsedDeltas) return parsedDeltas;
+  }
+
+  // Fallback to complete message chunks kept separate from delta stream (prevents double-concatenation)
+  if (messageChunks.length > 0) {
+    const parsedMessages = parseDirectText(messageChunks.join("\n"));
+    if (parsedMessages) return parsedMessages;
+    const parsedMessagesCompact = parseDirectText(messageChunks.join(""));
+    if (parsedMessagesCompact) return parsedMessagesCompact;
   }
 
   return null;
@@ -705,6 +741,33 @@ export function parseReviewerOpening(rawText: string): ParsedOpening | null {
 // ============================================================================
 // Prompts & Ground-Truth Code Context Builder (Method 1 + Method 3)
 // ============================================================================
+
+const MAX_DIFF_LINES = 200;
+const MAX_R2_CITATION_SNIPPETS = 5;
+const R2_CITATION_RADIUS_LINES = 15;
+const MAX_R2_CITATION_CHARS = 6_000;
+
+interface LoadedFileRange {
+  relPath: string;
+  startLine: number;
+  endLine: number;
+}
+
+function parseFileSliceSpec(spec: string): {
+  rawFilePath: string;
+  startLine: number;
+  endLine: number;
+} {
+  const match = spec.match(/^(.+?)(?::(\d+)(?:-(\d+))?)?$/);
+  const rawFilePath = (match?.[1] ?? spec).trim();
+  const startLine = match?.[2] ? Math.max(1, Number.parseInt(match[2], 10)) : 1;
+  const endLine = match?.[3]
+    ? Math.max(startLine, Number.parseInt(match[3], 10))
+    : match?.[2]
+      ? startLine + 149
+      : 150;
+  return { rawFilePath, startLine, endLine };
+}
 
 /**
  * Reads target file slices (`path[:start-end]`) and/or `git diff HEAD` directly
@@ -724,26 +787,14 @@ export function buildDebateCodeContext(
       const spec = rawSpec.trim();
       if (!spec) continue;
 
-      const match = spec.match(/^(.+?)(?::(\d+)(?:-(\d+))?)?$/);
-      const rawFilePath = (match?.[1] ?? spec).trim();
-      const startLine = match?.[2] ? Math.max(1, Number.parseInt(match[2], 10)) : 1;
-      const endLine = match?.[3]
-        ? Math.max(startLine, Number.parseInt(match[3], 10))
-        : match?.[2]
-          ? startLine + 149
-          : 150;
+      const { rawFilePath, startLine, endLine } = parseFileSliceSpec(spec);
 
-      const absPath = path.resolve(rootAbs, rawFilePath);
-      const relPath = path.relative(rootAbs, absPath).replace(/\\/g, "/");
-
-      // Prevent path traversal outside projectRoot or reading sensitive .env files
-      if (
-        relPath.startsWith("..") ||
-        path.isAbsolute(relPath) ||
-        /(?:^|\/)\.env(?:\.|$)/i.test(relPath)
-      ) {
-        continue;
-      }
+      // Prevent path traversal, symlink escape, and reading protected/secret files
+      const safeTarget = resolveSafeTargetPath(rawFilePath, rootAbs);
+      if (!safeTarget.safe || !safeTarget.relativeToRoot) continue;
+      const relPath = safeTarget.relativeToRoot;
+      if (checkProtectedPath(relPath).protected) continue;
+      const absPath = safeTarget.resolvedPath;
 
       if (!fs.existsSync(absPath)) {
         sections.push(`### File: ${relPath} (Not found)`);
@@ -761,10 +812,14 @@ export function buildDebateCodeContext(
         const numbered = sliced
           .map((line, idx) => `${clampedStart + idx}: ${redactSecrets(line)}`)
           .join("\n");
+        const truncatedNotice =
+          clampedStart > 1 || clampedEnd < allLines.length
+            ? `\n[... Truncated: showing lines ${clampedStart}-${clampedEnd} of ${allLines.length} ...]`
+            : "";
 
         sections.push(
           `### File: ${relPath} (Lines ${clampedStart}-${clampedEnd} of ${allLines.length})\n` +
-            `\`\`\`\n${numbered}\n\`\`\``
+            `\`\`\`\n${numbered}\n\`\`\`${truncatedNotice}`
         );
       } catch {
         // Ignore unreadable files
@@ -774,11 +829,24 @@ export function buildDebateCodeContext(
 
   if (includeDiff) {
     try {
+      const statRes = runGit(["diff", "--stat", "HEAD"], { cwd: rootAbs });
+      if (statRes.exitCode === 0 && statRes.stdout.trim()) {
+        sections.push(
+          `### Git Diff Stat (HEAD)\n\`\`\`\n${redactSecrets(statRes.stdout.trim())}\n\`\`\``
+        );
+      }
       const diffRes = runGit(["diff", "HEAD"], { cwd: rootAbs });
       if (diffRes.exitCode === 0 && diffRes.stdout.trim()) {
-        const diffLines = diffRes.stdout.trim().split(/\r?\n/).slice(0, 200);
+        const allDiffLines = diffRes.stdout.trim().split(/\r?\n/);
+        const diffLines = allDiffLines.slice(0, MAX_DIFF_LINES);
         const redactedDiff = redactSecrets(diffLines.join("\n"));
-        sections.push(`### Git Diff (HEAD)\n\`\`\`diff\n${redactedDiff}\n\`\`\``);
+        const diffTruncNotice =
+          allDiffLines.length > MAX_DIFF_LINES
+            ? `\n[... Truncated: showing lines 1-${MAX_DIFF_LINES} of ${allDiffLines.length} ...]`
+            : "";
+        sections.push(
+          `### Git Diff (HEAD)\n\`\`\`diff\n${redactedDiff}\n\`\`\`${diffTruncNotice}`
+        );
       }
     } catch {
       // Ignore git diff failures
@@ -788,16 +856,133 @@ export function buildDebateCodeContext(
   return sections.join("\n\n");
 }
 
+/**
+ * Extracts `file:line` citations from Round 1 openings and loads bounded,
+ * policy-verified surrounding source slices not already present in Round 1 context.
+ */
+export function buildRound2CitedCodeContext(
+  projectRoot: string,
+  round1: Round1Bundle,
+  initialFiles?: string[]
+): string {
+  const rootAbs = path.resolve(projectRoot);
+  const loadedRanges: LoadedFileRange[] = [];
+
+  for (const rawSpec of initialFiles ?? []) {
+    const spec = rawSpec.trim();
+    if (!spec) continue;
+    const { rawFilePath, startLine, endLine } = parseFileSliceSpec(spec);
+    const safeTarget = resolveSafeTargetPath(rawFilePath, rootAbs);
+    if (safeTarget.safe && safeTarget.relativeToRoot) {
+      loadedRanges.push({
+        relPath: safeTarget.relativeToRoot,
+        startLine,
+        endLine,
+      });
+    }
+  }
+
+  const corpus = round1.openings
+    .flatMap((o) => [o.reasoning, ...o.hard_constraints, ...o.decisions, ...o.risks])
+    .filter(Boolean)
+    .join("\n");
+
+  // Match relative file paths with extensions followed by :line or :start-end (avoids HH:MM and drive letters)
+  const citationRegex =
+    /(?<![A-Za-z0-9_:/\\.-])([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?\b/g;
+
+  const snippets: string[] = [];
+  let totalChars = 0;
+  let match: RegExpExecArray | null;
+
+  while (
+    (match = citationRegex.exec(corpus)) !== null &&
+    snippets.length < MAX_R2_CITATION_SNIPPETS &&
+    totalChars < MAX_R2_CITATION_CHARS
+  ) {
+    const rawCandidate = match[1]!.trim();
+    const citedStart = Math.max(1, Number.parseInt(match[2]!, 10));
+    const citedEnd = match[3]
+      ? Math.max(citedStart, Number.parseInt(match[3], 10))
+      : citedStart;
+
+    const safeTarget = resolveSafeTargetPath(rawCandidate, rootAbs);
+    if (!safeTarget.safe || !safeTarget.relativeToRoot) continue;
+    const relPath = safeTarget.relativeToRoot;
+    if (checkProtectedPath(relPath).protected) continue;
+
+    // Skip if already covered by Round 1 context or an earlier expanded snippet
+    const alreadyCovered = loadedRanges.some(
+      (r) =>
+        r.relPath === relPath &&
+        citedStart >= r.startLine &&
+        citedEnd <= r.endLine
+    );
+    if (alreadyCovered) continue;
+
+    try {
+      if (!fs.existsSync(safeTarget.resolvedPath)) continue;
+      const stat = fs.statSync(safeTarget.resolvedPath);
+      if (!stat.isFile()) continue;
+
+      const allLines = fs
+        .readFileSync(safeTarget.resolvedPath, "utf8")
+        .split(/\r?\n/);
+      if (allLines.length === 0 || citedStart > allLines.length) continue;
+
+      const winStart = Math.max(1, citedStart - R2_CITATION_RADIUS_LINES);
+      const winEnd = Math.min(
+        allLines.length,
+        Math.min(citedEnd, citedStart + R2_CITATION_RADIUS_LINES) +
+          R2_CITATION_RADIUS_LINES
+      );
+
+      const numbered = allLines
+        .slice(winStart - 1, winEnd)
+        .map((line, idx) => `${winStart + idx}: ${redactSecrets(line)}`)
+        .join("\n");
+      const block =
+        `### Cited File: ${relPath} (Lines ${winStart}-${winEnd} of ${allLines.length}, cited :${citedStart})\n` +
+        `\`\`\`\n${numbered}\n\`\`\``;
+
+      if (totalChars + block.length > MAX_R2_CITATION_CHARS) continue;
+      snippets.push(block);
+      totalChars += block.length;
+      loadedRanges.push({ relPath, startLine: winStart, endLine: winEnd });
+    } catch {
+      // Ignore unreadable cited file
+    }
+  }
+
+  return snippets.join("\n\n");
+}
+
+const DEBATE_ROLE_LENSES: Record<AgentRole, string> = {
+  critic:
+    "Focus on adversarial falsification: security boundaries, path traversal/secret leaks, race conditions, error/fallback handling, silent data corruption, and edge cases where the proposal contradicts actual code.",
+  architect:
+    "Focus on system architecture and invariants: module coupling, core purity (zero adapter imports, zero external runtime dependencies), type/API contracts, backward compatibility, and long-term maintainability.",
+  planner:
+    "Focus on execution planning and scope discipline: task decomposition, rollback/recovery safety, verifiable acceptance criteria, YAGNI/over-engineering risks, and wave/dependency ordering.",
+  worker:
+    "Focus on implementation feasibility: concrete code-level edge cases, deterministic unit testability, cross-platform/OS behavior, and runtime failure modes.",
+  scout:
+    "Focus on codebase consistency: cross-file call-site impacts, hidden references, existing test expectations, and documentation/contract drift.",
+};
+
 export function buildRound1Prompt(
   topic: string,
   proposal: string,
   taskId?: string | null,
-  codeContext?: string
+  codeContext?: string,
+  role?: AgentRole
 ): string {
+  const canonicalRole = role ? normalizeAgentRole(role) ?? role : undefined;
   const lines: string[] = [
     `# ASD Debate Round 1: Blind Review`,
     `Topic: ${topic}`,
     `Task ID: ${taskId ?? "N/A"}`,
+    ...(canonicalRole ? [`Reviewer Role: ${canonicalRole}`] : []),
     ``,
     `## Proposal`,
     proposal,
@@ -806,6 +991,14 @@ export function buildRound1Prompt(
 
   if (codeContext && codeContext.trim()) {
     lines.push(`## Ground-Truth Source Code`, codeContext.trim(), ``);
+  }
+
+  if (canonicalRole && DEBATE_ROLE_LENSES[canonicalRole]) {
+    lines.push(
+      `## Role-Specific Review Lens (${canonicalRole})`,
+      DEBATE_ROLE_LENSES[canonicalRole],
+      ``
+    );
   }
 
   lines.push(
@@ -884,6 +1077,7 @@ export function buildRound2Prompt(
     `At least one reviewer rejected the proposal or raised critical conflicts during Round 1.`,
     `As the final Arbiter, cross-examine both the Original Proposal and Round 1 reviewer claims against the Ground-Truth Source Code (if provided) and resolve the conflicts.`,
     `Produce the definitive binding verdict and list of hard constraints and decisions, citing concrete \`file:line\` evidence where applicable.`,
+    `IMPORTANT: Round 1 \`hard_constraints\` and \`decisions\` are NOT automatically inherited. Explicitly include every valid Round 1 constraint and decision you choose to uphold in your final JSON arrays; any Round 1 item you omit will be discarded.`,
     `IMPORTANT: Do NOT call any tools, do NOT read files, and do NOT execute shell commands. Evaluate based solely on the context provided above and respond immediately.`,
     ``,
     `You MUST return your final judgment strictly as a JSON block with this schema:`,
@@ -1060,6 +1254,8 @@ export function resolveDebateReviewers(options: {
         diversityDegraded: false,
       });
     }
+    const families = new Set(reviewers.map((r) => r.modelFamily));
+    if (reviewers.length > 1 && families.size === 1) diversityDegraded = true;
     return { reviewers, diversityDegraded };
   }
 
@@ -1192,7 +1388,13 @@ export function resolveDebateReviewers(options: {
     effectiveRoutingConfig?.heavyRouting?.agents ??
     effectiveRoutingConfig?.agents;
   const usedPairs = new Set<string>();
-  let prevRoute: ProposalRouteInput = proposerRoute;
+  const proposerFamily =
+    proposerRoute.modelFamily ||
+    inferModelFamily(
+      proposerRoute.model || "",
+      proposerRoute.harness as HarnessId | undefined
+    );
+  const excludedFamilies: string[] = proposerFamily ? [proposerFamily] : [];
 
   for (let i = 0; i < targetRoles.length; i++) {
     const role = targetRoles[i]!;
@@ -1235,10 +1437,18 @@ export function resolveDebateReviewers(options: {
       });
 
       const chosen =
+        candidates.find(
+          (c) =>
+            !usedPairs.has(`${c.harness}:${c.model}`) &&
+            !excludedFamilies.includes(c.modelFamily)
+        ) ??
         candidates.find((c) => !usedPairs.has(`${c.harness}:${c.model}`)) ??
         candidates[0];
       if (chosen) {
         usedPairs.add(`${chosen.harness}:${chosen.model}`);
+        if (chosen.modelFamily && !excludedFamilies.includes(chosen.modelFamily)) {
+          excludedFamilies.push(chosen.modelFamily);
+        }
         const remainingFallbacks = candidates.filter(
           (c) => !(c.harness === chosen.harness && c.model === chosen.model)
         );
@@ -1250,16 +1460,16 @@ export function resolveDebateReviewers(options: {
           diversityDegraded: false,
           fallbacks: remainingFallbacks,
         });
-        prevRoute = chosen;
         continue;
       }
     }
 
     const sel = selectDiverseReviewer(
-      prevRoute,
+      proposerRoute,
       role,
       effectiveRoutingConfig,
-      effectiveCapabilities
+      effectiveCapabilities,
+      excludedFamilies
     );
     if (sel.diversityDegraded) diversityDegraded = true;
 
@@ -1272,6 +1482,9 @@ export function resolveDebateReviewers(options: {
       diversityDegraded = true;
     } else {
       usedPairs.add(`${sel.harness}:${sel.model}`);
+      if (sel.modelFamily && !excludedFamilies.includes(sel.modelFamily)) {
+        excludedFamilies.push(sel.modelFamily);
+      }
       reviewers.push({
         role,
         harness: sel.harness,
@@ -1280,11 +1493,6 @@ export function resolveDebateReviewers(options: {
         diversityDegraded: sel.diversityDegraded,
         fallbacks: sel.route.fallbacks,
       });
-      prevRoute = {
-        harness: sel.harness,
-        model: sel.model,
-        modelFamily: sel.modelFamily,
-      };
     }
   }
 
@@ -1299,6 +1507,23 @@ export function resolveDebateReviewers(options: {
 // ============================================================================
 // Core Debate Broker
 // ============================================================================
+
+const DEBATE_MAX_FALLBACK_RETRIES = 2;
+
+function shouldRetryDebateAttempt(res: SpawnHybridSubagentResult): boolean {
+  if (res.exitCode !== 0 || res.timedOut) return true;
+  try {
+    const outFile = path.join(path.dirname(res.metaPath), "output.log");
+    if (!fs.existsSync(outFile)) return true;
+    const raw = fs.readFileSync(outFile, "utf8");
+    if (!parseReviewerOpening(raw)) {
+      return true;
+    }
+  } catch {
+    return true;
+  }
+  return false;
+}
 
 /**
  * Executes zero-polling parallel blind cross-model debate.
@@ -1357,6 +1582,11 @@ export async function runDebateBroker(
     );
 
     // 1. Select Reviewers (explicit harnesses/roles/models/count or diverse auto-selection)
+    const effectiveProposerRoute: ProposalRouteInput = options.proposerRoute ?? {
+      harness: "claude-code",
+      model: "claude-opus-5-5",
+      modelFamily: "claude",
+    };
     const effectiveRoutingConfig =
       options.routingConfig ??
       loadRoutingConfig(options.projectRoot, options.homeDir);
@@ -1365,7 +1595,7 @@ export async function runDebateBroker(
       (!options.commandRunner ? detectLiveRuntimeCapabilities() : undefined);
 
     const resolvedSelection = resolveDebateReviewers({
-      proposerRoute: options.proposerRoute,
+      proposerRoute: effectiveProposerRoute,
       routingConfig: effectiveRoutingConfig,
       runtimeCapabilities: effectiveCapabilities,
       harnesses: options.harnesses,
@@ -1390,12 +1620,6 @@ export async function runDebateBroker(
       options.files,
       options.includeDiff
     );
-    const round1Prompt = buildRound1Prompt(
-      options.topic,
-      options.proposal,
-      options.taskId,
-      codeContext
-    );
     const effectiveTimeoutMs = options.timeoutMs ?? DEFAULT_DEBATE_TIMEOUT_MS;
     const effectiveIdleTimeoutMs =
       options.timeoutMs !== undefined ? undefined : DEFAULT_IDLE_TIMEOUT_MS;
@@ -1403,6 +1627,13 @@ export async function runDebateBroker(
 
     const round1Promises = reviewers.map(async (reviewer, index) => {
       const subSessionId = `${options.sessionId}-deb-${debateId}-r1-${index + 1}`;
+      const round1Prompt = buildRound1Prompt(
+        options.topic,
+        options.proposal,
+        options.taskId,
+        codeContext,
+        reviewer.role
+      );
       const r1Run = await runWithFallbacks({
         initialRoute: {
           harness: reviewer.harness,
@@ -1415,21 +1646,8 @@ export async function runDebateBroker(
         runtimeCapabilities: effectiveCapabilities,
         baseSubSessionId: subSessionId,
         allowDefaultModelRetry: !options.commandBuilder,
-        shouldRetry: (res) => {
-          if (res.exitCode !== 0 || res.timedOut) return true;
-          try {
-            const outFile = path.join(path.dirname(res.metaPath), "output.log");
-            if (fs.existsSync(outFile)) {
-              const raw = fs.readFileSync(outFile, "utf8");
-              if (!parseReviewerOpening(raw) && isFallbackTriggerOutput(raw)) {
-                return true;
-              }
-            }
-          } catch {
-            // ignore
-          }
-          return false;
-        },
+        maxRetries: DEBATE_MAX_FALLBACK_RETRIES,
+        shouldRetry: shouldRetryDebateAttempt,
         attempt: (route, sid) => {
           spawnedDebateSubIds.push(sid);
           const cmdModel = route.model === "default" ? "" : route.model;
@@ -1559,6 +1777,18 @@ export async function runDebateBroker(
       );
     }
 
+    // Recompute post-run diversity degradation from surviving openings and active model families
+    // (only when configured with >1 reviewer so intentional single-reviewer configs are not false-flagged)
+    const survivingFamilies = new Set(
+      survivingOpenings.map((o) => o.modelFamily.toLowerCase())
+    );
+    if (
+      reviewers.length > 1 &&
+      (survivingOpenings.length <= 1 || survivingFamilies.size <= 1)
+    ) {
+      diversityDegraded = true;
+    }
+
     const round1Bundle: Round1Bundle = {
       openings: survivingOpenings,
       failedReviewers,
@@ -1616,16 +1846,22 @@ export async function runDebateBroker(
           diversityDegraded: false,
         };
       } else {
-        const rejectLead = rejectingOpenings[0]!;
+        const proposerFamily =
+          effectiveProposerRoute.modelFamily ||
+          inferModelFamily(
+            effectiveProposerRoute.model || "",
+            effectiveProposerRoute.harness as HarnessId | undefined
+          );
+        const arbiterExcludedFamilies = [
+          proposerFamily,
+          ...survivingOpenings.map((o) => o.modelFamily),
+        ].filter(Boolean);
         const arbiterSel = selectDiverseReviewer(
-          {
-            harness: rejectLead.harness,
-            model: rejectLead.model,
-            modelFamily: rejectLead.modelFamily,
-          },
+          effectiveProposerRoute,
           "arbiter" as AgentRole,
           effectiveRoutingConfig,
-          effectiveCapabilities
+          effectiveCapabilities,
+          arbiterExcludedFamilies
         );
         if (arbiterSel.diversityDegraded) diversityDegraded = true;
 
@@ -1639,12 +1875,22 @@ export async function runDebateBroker(
         };
       }
 
+      const r2CitedContext = buildRound2CitedCodeContext(
+        options.projectRoot,
+        round1Bundle,
+        options.files
+      );
+      const r2CodeContext =
+        r2CitedContext && codeContext
+          ? `${codeContext}\n\n${r2CitedContext}`
+          : r2CitedContext || codeContext;
+
       const r2Prompt = buildRound2Prompt(
         options.topic,
         options.proposal,
         round1Bundle,
         options.taskId,
-        codeContext
+        r2CodeContext
       );
       const r2SubSessionId = `${options.sessionId}-deb-${debateId}-r2-arbiter`;
 
@@ -1662,24 +1908,8 @@ export async function runDebateBroker(
           runtimeCapabilities: effectiveCapabilities,
           baseSubSessionId: r2SubSessionId,
           allowDefaultModelRetry: !options.commandBuilder,
-          shouldRetry: (res) => {
-            if (res.exitCode !== 0 || res.timedOut) return true;
-            try {
-              const outFile = path.join(
-                path.dirname(res.metaPath),
-                "output.log"
-              );
-              if (fs.existsSync(outFile)) {
-                const raw = fs.readFileSync(outFile, "utf8");
-                if (!parseReviewerOpening(raw) && isFallbackTriggerOutput(raw)) {
-                  return true;
-                }
-              }
-            } catch {
-              // ignore
-            }
-            return false;
-          },
+          maxRetries: DEBATE_MAX_FALLBACK_RETRIES,
+          shouldRetry: shouldRetryDebateAttempt,
           attempt: (route, sid) => {
             spawnedDebateSubIds.push(sid);
             const cmdModel = route.model === "default" ? "" : route.model;
@@ -1779,18 +2009,12 @@ export async function runDebateBroker(
         round1Reference: round1Bundle,
       };
 
-      const finalHardConstraints = deduplicateStrings([
-        ...arbiterOpening.hard_constraints,
-        ...survivingOpenings
-          .filter((o) => o.verdict !== "REJECT")
-          .flatMap((o) => o.hard_constraints),
-      ]);
-      const finalDecisions = deduplicateStrings([
-        ...arbiterOpening.decisions,
-        ...survivingOpenings
-          .filter((o) => o.verdict !== "REJECT")
-          .flatMap((o) => o.decisions),
-      ]);
+      // Arbiter holds sole authority for final hard_constraints & decisions
+      // (r2-arbiter-fallback already populates arbiterOpening with Round 1 unions).
+      const finalHardConstraints = deduplicateStrings(
+        arbiterOpening.hard_constraints
+      );
+      const finalDecisions = deduplicateStrings(arbiterOpening.decisions);
       const finalRisks = deduplicateStrings([
         ...arbiterOpening.risks,
         ...survivingOpenings.flatMap((o) => o.risks),
@@ -1817,10 +2041,14 @@ export async function runDebateBroker(
       );
     }
 
-    // 5. Automatic acceptance injection into tasks and PLAN.md update
+    // 5. Automatic acceptance injection into tasks and PLAN.md update (skipped on REJECT)
     let updatedAcceptance: string | undefined;
 
-    if (options.taskId && options.taskId.trim().length > 0) {
+    if (
+      options.taskId &&
+      options.taskId.trim().length > 0 &&
+      insightVerdict.verdict !== "REJECT"
+    ) {
       const acceptanceText = formatDebateAcceptance(
         debateId,
         insightVerdict.hard_constraints,

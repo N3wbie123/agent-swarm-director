@@ -46,6 +46,7 @@ import {
   resolveLightSubagentRoute,
   resolveNextLightSubagentFallback,
   resolveRoute,
+  runWithFallbacks,
   selectDiverseReviewer,
 } from "../src/core/router.ts";
 
@@ -713,6 +714,63 @@ test("detectLiveRuntimeCapabilities enables antigravity parallel_spawn when agy 
     fs.rmSync(tmpBin, { recursive: true, force: true });
   }
 });
+
+test("selectDiverseReviewer: honors cumulative excludedFamilies without falsely flagging single_model_family", () => {
+  // Proposer is claude, Reviewer 1 was gpt -> Reviewer 2 (architect) must pick glm (3rd family) instead of bouncing back to claude
+  const selThird = selectDiverseReviewer(
+    { harness: "claude-code", model: "claude-opus-5-5", modelFamily: "claude" },
+    "architect",
+    defaultRouting,
+    undefined,
+    ["claude", "gpt"]
+  );
+  assert.equal(selThird.modelFamily, "glm");
+  assert.equal(selThird.harness, "opencode");
+  assert.equal(selThird.diversityDegraded, false);
+
+  // When all 3 families in defaultRouting (claude, gpt, glm) are already excluded, degrades gracefully
+  // without throwing or falsely setting diversityDegraded (still avoids proposer family 'claude')
+  const selExhausted = selectDiverseReviewer(
+    { harness: "claude-code", model: "claude-opus-5-5", modelFamily: "claude" },
+    "arbiter",
+    defaultRouting,
+    undefined,
+    ["claude", "gpt", "glm"]
+  );
+  assert.notEqual(selExhausted.modelFamily, "claude");
+  assert.equal(selExhausted.diversityDegraded, false);
+});
+
+test("runWithFallbacks: enforces maxRetries cap across fallback hops and default-model retry", async () => {
+  const attempts: string[] = [];
+  const res = await runWithFallbacks({
+    initialRoute: {
+      harness: "codex",
+      model: "gpt-6-luna",
+      modelFamily: "gpt",
+      tier: 2,
+      fallbacks: [
+        { harness: "claude-code", model: "claude-opus-5-5", modelFamily: "claude" },
+        { harness: "opencode", model: "z-ai/glm-5.3-flash", modelFamily: "glm" },
+        { harness: "cursor", model: "claude-sonnet-5-5-high", modelFamily: "claude" },
+      ],
+    },
+    baseSubSessionId: "sub-cap",
+    allowDefaultModelRetry: true,
+    maxRetries: 2,
+    shouldRetry: () => true,
+    attempt: async (route, sid) => {
+      attempts.push(`${sid}:${route.harness}/${route.model}`);
+      return { exitCode: 0, metaPath: `${sid}/meta.json` };
+    },
+  });
+
+  // 1 initial attempt + 2 fallback retries = 3 total (3rd fallback & default-model retry are skipped)
+  assert.equal(attempts.length, 3);
+  assert.equal(res.fallbackCount, 2);
+  assert.equal(attempts[2]?.includes("-fb2:"), true);
+});
+
 
 
 

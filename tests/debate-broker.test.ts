@@ -23,6 +23,7 @@ import {
   deduplicateStrings,
   buildDefaultHarnessCommand,
   buildDebateCodeContext,
+  buildRound2CitedCodeContext,
 } from "../src/core/debate.ts";
 import { openProjectDb, SqliteDriver } from "../src/core/db.ts";
 import type { CommandRunner, CommandRunnerRunOptions } from "../src/core/spawner.ts";
@@ -1003,6 +1004,423 @@ rl.on("line", (line) => {
       } finally {
         fs.rmSync(projectRoot, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe("8. Debate Hardening Regression Suite (REQ-01..REQ-06)", () => {
+    test("REQ-01: REJECT verdict (normal and r2-arbiter-fallback) does not mutate tasks.acceptance or .asd/PLAN.md", async () => {
+      const projectRoot = makeProjectRoot();
+      const db = openProjectDb(projectRoot);
+      openDrivers.push(db);
+
+      const sessionId = "sess-reject-guard";
+      const taskId = "T8.1";
+      db.createOrGetSession({ sessionId, projectRoot, mainHarness: "claude-code" });
+      db.upsertTasks(sessionId, [
+        { taskId, turn: 1, title: "Protected Task", acceptance: "Original criteria only" },
+      ]);
+
+      // Case A: Normal Arbiter REJECT
+      const rejectRunner: CommandRunner = {
+        async run(_cmd, _args, opts) {
+          const meta: SubagentSessionMeta = JSON.parse(
+            fs.readFileSync(opts.env["ASD_SUBAGENT_META"] ?? "", "utf8")
+          );
+          opts.onSpawn?.(8101);
+          if (meta.subSessionId.includes("r2-arbiter")) {
+            opts.onStdout(
+              JSON.stringify({
+                verdict: "REJECT",
+                hard_constraints: ["Blocked constraint"],
+                decisions: ["Reject proposal completely"],
+                risks: ["High security risk"],
+                reasoning: "Unsafe design",
+              })
+            );
+          } else {
+            opts.onStdout(
+              JSON.stringify({
+                verdict: "REJECT",
+                hard_constraints: ["R1 blocked constraint"],
+                decisions: ["R1 reject"],
+                risks: ["R1 risk"],
+                reasoning: "Rejected in R1",
+              })
+            );
+          }
+          return { exitCode: 0, pid: 8101 };
+        },
+      };
+
+      const resNormal = await runDebateBroker({
+        projectRoot,
+        sessionId,
+        taskId,
+        debateId: "D-REJECT-NORMAL",
+        topic: "Unsafe feature",
+        proposal: "Disable all auth checks",
+        commandRunner: rejectRunner,
+        db,
+      });
+
+      assert.equal(resNormal.verdict, "REJECT");
+      assert.equal(resNormal.updatedAcceptance, undefined);
+      assert.equal(db.getTask(sessionId, taskId)?.acceptance, "Original criteria only");
+      assert.equal(fs.existsSync(path.join(projectRoot, ".asd", "PLAN.md")), false);
+      assert.equal(db.getDebate("D-REJECT-NORMAL")?.status, "done");
+
+      // Case B: r2-arbiter-fallback crash REJECT
+      const fallbackRunner: CommandRunner = {
+        async run(_cmd, _args, opts) {
+          const meta: SubagentSessionMeta = JSON.parse(
+            fs.readFileSync(opts.env["ASD_SUBAGENT_META"] ?? "", "utf8")
+          );
+          opts.onSpawn?.(8102);
+          if (meta.subSessionId.includes("r2-arbiter")) {
+            opts.onStderr("Arbiter crashed unexpectedly");
+            return { exitCode: 1, pid: 8102 };
+          }
+          opts.onStdout(
+            JSON.stringify({
+              verdict: meta.subSessionId.includes("r1-1") ? "REJECT" : "MINOR_AMEND",
+              hard_constraints: ["Must not leak into acceptance"],
+              decisions: ["Must not leak decision"],
+              risks: ["Crash risk"],
+              reasoning: "Conflict in R1",
+            })
+          );
+          return { exitCode: 0, pid: 8102 };
+        },
+      };
+
+      const resFallback = await runDebateBroker({
+        projectRoot,
+        sessionId,
+        taskId,
+        debateId: "D-REJECT-FALLBACK",
+        topic: "Arbiter crash case",
+        proposal: "Trigger fallback REJECT",
+        commandRunner: fallbackRunner,
+        db,
+      });
+
+      assert.equal(resFallback.verdict, "REJECT");
+      assert.equal(resFallback.round2Bundle?.arbiterVerdict.reviewerId, "r2-arbiter-fallback");
+      assert.equal(resFallback.updatedAcceptance, undefined);
+      assert.equal(db.getTask(sessionId, taskId)?.acceptance, "Original criteria only");
+      assert.equal(fs.existsSync(path.join(projectRoot, ".asd", "PLAN.md")), false);
+    });
+
+    test("REQ-02: Round 2 Arbiter is sole authority for hardConstraints and decisions (discarded R1 MINOR_AMEND constraints do not resurrect)", async () => {
+      const projectRoot = makeProjectRoot();
+      const db = openProjectDb(projectRoot);
+      openDrivers.push(db);
+
+      let capturedR2Prompt = "";
+      const mockRunner: CommandRunner = {
+        async run(_cmd, args, opts) {
+          const meta: SubagentSessionMeta = JSON.parse(
+            fs.readFileSync(opts.env["ASD_SUBAGENT_META"] ?? "", "utf8")
+          );
+          opts.onSpawn?.(8201);
+          if (meta.subSessionId.includes("r1-1")) {
+            opts.onStdout(
+              JSON.stringify({
+                verdict: "REJECT",
+                hard_constraints: ["R1 reject constraint"],
+                decisions: ["R1 reject decision"],
+                risks: ["R1 reject risk"],
+                reasoning: "Disagree",
+              })
+            );
+          } else if (meta.subSessionId.includes("r1-2")) {
+            opts.onStdout(
+              JSON.stringify({
+                verdict: "MINOR_AMEND",
+                hard_constraints: ["C1-discarded-by-arbiter"],
+                decisions: ["D1-discarded-by-arbiter"],
+                risks: ["R1 minor risk"],
+                reasoning: "Suggest C1",
+              })
+            );
+          } else {
+            capturedR2Prompt = args.join(" ");
+            opts.onStdout(
+              JSON.stringify({
+                verdict: "MINOR_AMEND",
+                hard_constraints: ["C2-arbiter-approved"],
+                decisions: ["D2-arbiter-approved"],
+                risks: ["Arbiter risk"],
+                reasoning: "Discarded C1/D1 after checking source code",
+              })
+            );
+          }
+          return { exitCode: 0, pid: 8201 };
+        },
+      };
+
+      const res = await runDebateBroker({
+        projectRoot,
+        sessionId: "sess-arbiter-authority",
+        debateId: "D-ARB-AUTH",
+        topic: "Arbiter authority",
+        proposal: "Ensure arbiter discards invalid R1 constraints",
+        commandRunner: mockRunner,
+        db,
+      });
+
+      assert.equal(res.verdict, "MINOR_AMEND");
+      assert.deepEqual(res.hardConstraints, ["C2-arbiter-approved"]);
+      assert.deepEqual(res.decisions, ["D2-arbiter-approved"]);
+      assert.equal(res.hardConstraints.includes("C1-discarded-by-arbiter"), false);
+      assert.equal(res.decisions.includes("D1-discarded-by-arbiter"), false);
+      // Risks still preserve Round 1 audit visibility
+      assert.ok(res.risks.includes("R1 reject risk"));
+      assert.ok(res.risks.includes("R1 minor risk"));
+      assert.ok(capturedR2Prompt.includes("NOT automatically inherited"));
+    });
+
+    test("REQ-03: parses mid-token split NDJSON deltas without newline corruption and retries non-JSON exitCode 0 within retry cap", async () => {
+      // Mid-key and mid-string splits across step_update.text_delta & delta.text + trailing user echo
+      const splitDeltaStream = [
+        JSON.stringify({
+          message: { role: "user", content: [{ type: "text", text: "Prompt echo" }] },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: { text_delta: '```json\n{"ver' },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: { text_delta: 'dict":"APPROVE","hard_const' },
+        }),
+        JSON.stringify({
+          type: "content_block_delta",
+          delta: { type: "text_delta", text: 'raints":["Keep zero ' },
+        }),
+        JSON.stringify({
+          type: "content_block_delta",
+          delta: { type: "text_delta", text: 'deps"],"decisions":["Use join empty"],"risks":[],"reasoning":"clean"}\n```' },
+        }),
+      ].join("\n");
+
+      const parsed = parseReviewerOpening(splitDeltaStream);
+      assert.ok(parsed);
+      assert.equal(parsed.verdict, "APPROVE");
+      assert.deepEqual(parsed.hard_constraints, ["Keep zero deps"]);
+      assert.deepEqual(parsed.decisions, ["Use join empty"]);
+
+      // Non-JSON prose with exitCode 0 triggers fallback retry and succeeds
+      const projectRoot = makeProjectRoot();
+      const db = openProjectDb(projectRoot);
+      openDrivers.push(db);
+
+      let callCount = 0;
+      const retryRunner: CommandRunner = {
+        async run(_cmd, _args, opts) {
+          callCount++;
+          opts.onSpawn?.(8301);
+          if (callCount === 1) {
+            opts.onStdout("Sure! Here is a plain markdown review with no JSON block.");
+            return { exitCode: 0, pid: 8301 };
+          }
+          opts.onStdout(
+            JSON.stringify({
+              verdict: "APPROVE",
+              hard_constraints: ["Fallback parsed cleanly"],
+              decisions: ["Retry succeeded"],
+              risks: [],
+              reasoning: "Valid JSON on fallback",
+            })
+          );
+          return { exitCode: 0, pid: 8301 };
+        },
+      };
+
+      const retryRes = await runDebateBroker({
+        projectRoot,
+        sessionId: "sess-parse-retry",
+        topic: "Parse failure fallback retry",
+        proposal: "Retry when model emits plain prose",
+        reviewerRoutes: [{ harness: "opencode", model: "glm-5", role: "critic" }],
+        commandRunner: retryRunner,
+        db,
+      });
+
+      assert.equal(retryRes.verdict, "APPROVE");
+      assert.equal(callCount, 2);
+      assert.ok(retryRes.hardConstraints.includes("Fallback parsed cleanly"));
+    });
+
+    test("REQ-04: recomputes post-crash diversityDegraded and assigns neutral non-proposer reviewers & Arbiter", async () => {
+      const projectRoot = makeProjectRoot();
+      const db = openProjectDb(projectRoot);
+      openDrivers.push(db);
+
+      // Part A: 2 reviewers configured, 1 crashes -> post-run diversityDegraded must flip to true
+      const crashRunner: CommandRunner = {
+        async run(_cmd, _args, opts) {
+          const meta: SubagentSessionMeta = JSON.parse(
+            fs.readFileSync(opts.env["ASD_SUBAGENT_META"] ?? "", "utf8")
+          );
+          opts.onSpawn?.(8401);
+          if (meta.subSessionId.includes("r1-1")) {
+            opts.onStderr("Simulated crash");
+            return { exitCode: 1, pid: 8401 };
+          }
+          opts.onStdout(
+            JSON.stringify({
+              verdict: "APPROVE",
+              hard_constraints: [],
+              decisions: ["Survived"],
+              risks: [],
+              reasoning: "OK",
+            })
+          );
+          return { exitCode: 0, pid: 8401 };
+        },
+      };
+
+      const crashRes = await runDebateBroker({
+        projectRoot,
+        sessionId: "sess-post-degraded",
+        debateId: "D-POST-DEG",
+        topic: "Single survivor degradation",
+        proposal: "Check post-run diversityDegraded",
+        commandRunner: crashRunner,
+        db,
+      });
+
+      assert.equal(crashRes.round1Bundle.openings.length, 1);
+      assert.equal(crashRes.diversityDegraded, true);
+      const savedInsight = JSON.parse(db.getDebate("D-POST-DEG")!.insight_verdict_json!);
+      assert.equal(savedInsight.diversity_degraded, true);
+
+      // Part B: 3+ families available -> R1 reviewers and Round 2 Arbiter avoid proposer family ('claude')
+      const seenRoutes: Array<{ subId: string; harness: string; model: string }> = [];
+      const diverseRunner: CommandRunner = {
+        async run(_cmd, _args, opts) {
+          const meta: SubagentSessionMeta = JSON.parse(
+            fs.readFileSync(opts.env["ASD_SUBAGENT_META"] ?? "", "utf8")
+          );
+          seenRoutes.push({ subId: meta.subSessionId, harness: meta.harness, model: meta.model });
+          opts.onSpawn?.(8402);
+          opts.onStdout(
+            JSON.stringify({
+              verdict: meta.subSessionId.includes("r1-1") ? "REJECT" : "APPROVE",
+              hard_constraints: [],
+              decisions: ["Checked"],
+              risks: [],
+              reasoning: "Reviewed",
+            })
+          );
+          return { exitCode: 0, pid: 8402 };
+        },
+      };
+
+      const neutralRes = await runDebateBroker({
+        projectRoot,
+        sessionId: "sess-neutral-arbiter",
+        topic: "Neutral arbiter assignment",
+        proposal: "Ensure proposer does not arbitrate its own proposal",
+        proposerRoute: { harness: "claude-code", model: "claude-opus-5-5", modelFamily: "claude" },
+        commandRunner: diverseRunner,
+        db,
+      });
+
+      assert.equal(neutralRes.diversityDegraded, false);
+      const r1Routes = seenRoutes.filter((r) => r.subId.includes("-r1-"));
+      const r2Route = seenRoutes.find((r) => r.subId.includes("r2-arbiter"));
+      assert.equal(r1Routes.length, 2);
+      // Neither Round 1 reviewer nor Round 2 Arbiter should be proposer's claude-code harness
+      assert.ok(r1Routes.every((r) => r.harness !== "claude-code"));
+      assert.ok(r2Route && r2Route.harness !== "claude-code");
+    });
+
+    test("REQ-05 & REQ-06: injects per-role lenses, truncation markers, and safe bounded Round 2 citation expansion", async () => {
+      const projectRoot = makeProjectRoot();
+      const db = openProjectDb(projectRoot);
+      openDrivers.push(db);
+
+      // Create a 180-line source file and a protected .env file
+      const bigFile = path.join(projectRoot, "src", "large.ts");
+      fs.mkdirSync(path.dirname(bigFile), { recursive: true });
+      const bigLines = Array.from({ length: 180 }, (_, idx) => `export const line_${idx + 1} = ${idx + 1};`);
+      fs.writeFileSync(bigFile, bigLines.join("\n"), "utf8");
+      fs.writeFileSync(path.join(projectRoot, ".env"), "SECRET_TOKEN=topsecret\n", "utf8");
+
+      // 1. Truncation marker for >150 lines
+      const initialCtx = buildDebateCodeContext(projectRoot, ["src/large.ts"]);
+      assert.ok(initialCtx.includes("### File: src/large.ts (Lines 1-150 of 180)"));
+      assert.ok(initialCtx.includes("[... Truncated: showing lines 1-150 of 180 ...]"));
+      assert.equal(initialCtx.includes("line_165"), false);
+
+      // 2. Round 2 citation auto-expansion loads line 165 and blocks .env / traversal
+      const r2Expanded = buildRound2CitedCodeContext(
+        projectRoot,
+        {
+          openings: [
+            {
+              reviewerId: "r1-1",
+              role: "critic",
+              harness: "codex",
+              model: "gpt-6-luna",
+              modelFamily: "gpt",
+              verdict: "REJECT",
+              hard_constraints: [],
+              decisions: [],
+              risks: [],
+              reasoning: "Check src/large.ts:165 and also .env:1 and ../outside.ts:10",
+            },
+          ],
+          failedReviewers: [],
+        },
+        ["src/large.ts"]
+      );
+      assert.ok(r2Expanded.includes("165: export const line_165 = 165;"));
+      assert.equal(r2Expanded.includes("SECRET_TOKEN"), false);
+      assert.equal(r2Expanded.includes("outside.ts"), false);
+
+      // 3. Per-role review lenses are distinct for critic vs architect
+      const promptsByRole = new Map<string, string>();
+      const roleRunner: CommandRunner = {
+        async run(_cmd, args, opts) {
+          const meta: SubagentSessionMeta = JSON.parse(
+            fs.readFileSync(opts.env["ASD_SUBAGENT_META"] ?? "", "utf8")
+          );
+          promptsByRole.set(meta.role, args.join(" "));
+          opts.onSpawn?.(8501);
+          opts.onStdout(
+            JSON.stringify({
+              verdict: "APPROVE",
+              hard_constraints: [],
+              decisions: [],
+              risks: [],
+              reasoning: "Role reviewed",
+            })
+          );
+          return { exitCode: 0, pid: 8501 };
+        },
+      };
+
+      const roleRes = await runDebateBroker({
+        projectRoot,
+        sessionId: "sess-role-lenses",
+        topic: "Role-specific prompts",
+        proposal: "Verify orthogonal review lenses",
+        files: ["src/large.ts"],
+        reviewerRoutes: [
+          { harness: "codex", model: "gpt-6-luna", role: "critic" },
+          { harness: "opencode", model: "z-ai/glm-5.3-flash", role: "architect" },
+        ],
+        commandRunner: roleRunner,
+        db,
+      });
+
+      assert.equal(roleRes.verdict, "APPROVE");
+      assert.ok(promptsByRole.get("critic")?.includes("## Role-Specific Review Lens (critic)"));
+      assert.ok(promptsByRole.get("architect")?.includes("## Role-Specific Review Lens (architect)"));
+      assert.notEqual(promptsByRole.get("critic"), promptsByRole.get("architect"));
     });
   });
 });
